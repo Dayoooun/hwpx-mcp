@@ -1795,6 +1795,7 @@ export class HwpxDocument {
 
   /**
    * Update specific cells in a table XML string.
+   * Groups updates by row to avoid index corruption when multiple cells in the same row are updated.
    */
   private updateTableCellsInXml(tableXml: string, updates: Array<{ row: number; col: number; text: string; charShapeId?: number }>): string {
     let result = tableXml;
@@ -1802,23 +1803,52 @@ export class HwpxDocument {
     // Find all rows using depth tracking to handle nested tables correctly
     const rows = this.findAllElementsWithDepth(tableXml, 'tr');
 
-    // Sort updates by row (descending) to process from end to start (avoid index shifting)
-    const sortedUpdates = [...updates].sort((a, b) => b.row - a.row || b.col - a.col);
-
-    for (const update of sortedUpdates) {
+    // Group updates by row to process each row only once
+    const updatesByRow = new Map<number, Array<{ col: number; text: string; charShapeId?: number }>>();
+    for (const update of updates) {
       if (update.row >= rows.length) continue;
+      if (!updatesByRow.has(update.row)) {
+        updatesByRow.set(update.row, []);
+      }
+      updatesByRow.get(update.row)!.push({ col: update.col, text: update.text, charShapeId: update.charShapeId });
+    }
 
-      const rowData = rows[update.row];
-      const updatedRowXml = this.updateCellInRow(rowData.xml, update.col, update.text, update.charShapeId);
+    // Sort row indices descending to process from end to start (avoid index shifting)
+    const sortedRowIndices = Array.from(updatesByRow.keys()).sort((a, b) => b - a);
+
+    for (const rowIndex of sortedRowIndices) {
+      const rowData = rows[rowIndex];
+      const cellUpdates = updatesByRow.get(rowIndex)!;
+
+      // Apply all cell updates to this row at once
+      const updatedRowXml = this.updateMultipleCellsInRow(rowData.xml, cellUpdates);
 
       result = result.substring(0, rowData.startIndex) + updatedRowXml + result.substring(rowData.endIndex);
+    }
 
-      // Update row positions for subsequent rows (those with lower indices)
-      const lengthDiff = updatedRowXml.length - rowData.xml.length;
-      for (let i = update.row - 1; i >= 0; i--) {
-        // Earlier rows (lower indices) are before in the string, so they don't need adjustment
-        // But we need to update the row data for current processing
-      }
+    return result;
+  }
+
+  /**
+   * Update multiple cells in a single row XML string.
+   * Processes cells from right to left (descending col order) to avoid index shifting.
+   */
+  private updateMultipleCellsInRow(rowXml: string, updates: Array<{ col: number; text: string; charShapeId?: number }>): string {
+    let result = rowXml;
+
+    // Find all cells in this row using depth tracking to handle nested tables correctly
+    const cells = this.findAllElementsWithDepth(rowXml, 'tc');
+
+    // Sort updates by col descending to process from right to left (avoid index shifting)
+    const sortedUpdates = [...updates].sort((a, b) => b.col - a.col);
+
+    for (const update of sortedUpdates) {
+      if (update.col >= cells.length) continue;
+
+      const cellData = cells[update.col];
+      const updatedCellXml = this.updateTextInCell(cellData.xml, update.text, update.charShapeId);
+
+      result = result.substring(0, cellData.startIndex) + updatedCellXml + result.substring(cellData.endIndex);
     }
 
     return result;
@@ -1826,17 +1856,10 @@ export class HwpxDocument {
 
   /**
    * Update a specific cell in a row XML string.
+   * @deprecated Use updateMultipleCellsInRow for better index handling
    */
   private updateCellInRow(rowXml: string, colIndex: number, newText: string, charShapeId?: number): string {
-    // Find all cells in this row using depth tracking to handle nested tables correctly
-    const cells = this.findAllElementsWithDepth(rowXml, 'tc');
-
-    if (colIndex >= cells.length) return rowXml;
-
-    const cellData = cells[colIndex];
-    const updatedCellXml = this.updateTextInCell(cellData.xml, newText, charShapeId);
-
-    return rowXml.substring(0, cellData.startIndex) + updatedCellXml + rowXml.substring(cellData.endIndex);
+    return this.updateMultipleCellsInRow(rowXml, [{ col: colIndex, text: newText, charShapeId }]);
   }
 
   /**
