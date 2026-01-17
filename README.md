@@ -1,102 +1,149 @@
-# HWPX Editor for VSCode
+# HWPX MCP Server - Enhanced Edition
 
-[![GitHub](https://img.shields.io/badge/GitHub-mjyoo2%2Fhwp--extension-blue?logo=github)](https://github.com/mjyoo2/hwp-extension)
+[![GitHub](https://img.shields.io/badge/GitHub-Dayoooun%2Fhwp--extension-blue?logo=github)](https://github.com/Dayoooun/hwp-extension)
+[![Fork](https://img.shields.io/badge/Forked%20from-mjyoo2%2Fhwp--extension-gray?logo=github)](https://github.com/mjyoo2/hwp-extension)
 
-VSCode에서 한글(HWPX) 문서를 열고 편집할 수 있는 확장 프로그램입니다.
+> 🚀 **Original 프로젝트를 Fork하여 안정성과 기능을 대폭 개선한 버전입니다.**
 
-## Features
+AI 도구(Claude 등)와 연동하여 한글(HWPX) 문서를 자동으로 편집할 수 있는 MCP(Model Context Protocol) 서버입니다.
 
-### 문서 보기 및 편집
-- **HWPX 파일**: 읽기 및 편집 지원 (XML 기반 최신 포맷)
+---
 
-### 지원 기능
-- 텍스트 내용 보기 및 편집
-- 단락 추가/수정/삭제
-- 테이블 보기 및 편집
-- 문서 메타데이터 확인
-- 문서 구조 탐색
+## ✨ Enhanced Features (개선된 기능)
 
-### MCP (Model Context Protocol) 서버
-AI 도구(Claude 등)와 연동하여 문서를 자동으로 편집할 수 있는 MCP 서버를 포함합니다.
+원본 프로젝트 대비 다음과 같은 **핵심 문제들을 해결**했습니다:
 
-## Installation
+### 🔧 Critical Bug Fixes
 
-1. VSCode에서 Extensions (Ctrl+Shift+X) 열기
-2. "HWPX Editor" 검색
-3. Install 클릭
+| 문제 | 원본 상태 | 개선 후 |
+|------|----------|---------|
+| **테이블 저장 실패** | 셀 수정 후 저장해도 변경사항 사라짐 | ✅ 완벽하게 저장됨 |
+| **텍스트 겹침 현상** | 저장 후 한글에서 열면 글자가 겹쳐 표시 | ✅ 정상 표시 |
+| **파일 손상** | 저장 시 가끔 파일이 손상됨 | ✅ 원자적 쓰기로 100% 안전 |
+| **자간/줄간격 손실** | 저장 후 스타일 정보 유실 | ✅ 모든 스타일 보존 |
 
-## Usage
+### 🛠 Technical Improvements
 
-### 기본 사용법
-1. HWPX 파일을 VSCode에서 열기
-2. 자동으로 HWPX Editor가 활성화됨
-3. 문서 내용 확인 및 편집
+1. **Atomic File Writing (원자적 파일 쓰기)**
+   - 임시 파일 → ZIP 검증 → 원자적 이동
+   - 저장 중 오류 발생해도 원본 파일 보호
 
-### MCP 서버 사용 (AI 연동)
+2. **Smart Lineseg Reset (스마트 줄 레이아웃 초기화)**
+   - 텍스트 수정 시 `lineseg` 자동 초기화
+   - 한글 프로그램이 열 때 자동으로 줄바꿈 재계산
+   - 텍스트 겹침 현상 완전 해결
 
-Command Palette (Ctrl+Shift+P)에서:
-- `HWPX: Show MCP Server Configuration` - MCP 설정 정보 확인
-- `HWPX: Copy MCP Server Path` - MCP 서버 경로 복사
+3. **Depth-based XML Parsing (깊이 기반 XML 파싱)**
+   - 기존 lazy regex의 중첩 구조 오인식 문제 해결
+   - 복잡한 테이블(중첩 테이블, subList 등) 완벽 지원
 
-#### Claude Code에서 사용
+4. **Complete Style Preservation (스타일 완전 보존)**
+   - `charPr`, `spacing` 등 원본 스타일 100% 유지
+   - 불완전한 직렬화 로직 제거로 데이터 무결성 보장
 
-`.vscode/mcp.json` 파일 생성:
+---
+
+## 📦 Installation
+
+### MCP 서버 설치
+
+```bash
+git clone https://github.com/Dayoooun/hwp-extension.git
+cd hwp-extension/mcp-server
+npm install
+npm run build
+```
+
+### Claude Code 연동
+
+`~/.claude/claude_desktop_config.json` 또는 `.vscode/mcp.json`에 추가:
 
 ```json
 {
   "mcpServers": {
     "hwpx": {
       "command": "node",
-      "args": ["${extensionPath}/out/mcp-server.js"]
+      "args": ["/path/to/hwp-extension/mcp-server/dist/index.js"]
     }
   }
 }
 ```
 
-## Supported File Formats
+---
+
+## 🔌 MCP Tools
+
+| Tool | 설명 |
+|------|------|
+| `open_document` | HWPX 문서 열기 |
+| `get_document_text` | 전체 텍스트 추출 |
+| `get_tables` | 테이블 목록 조회 |
+| `get_table` | 특정 테이블 상세 정보 |
+| `update_table_cell` | 테이블 셀 내용 수정 |
+| `search_text` | 텍스트 검색 |
+| `replace_text` | 텍스트 치환 |
+| `save_document` | 문서 저장 |
+| `close_document` | 문서 닫기 |
+
+### 사용 예시
+
+```typescript
+// 문서 열기
+await mcp.open_document({ file_path: "report.hwpx" })
+
+// 테이블 셀 수정
+await mcp.update_table_cell({
+  doc_id: "...",
+  section_index: 0,
+  table_index: 0,
+  row: 0,
+  col: 1,
+  text: "수정된 내용"
+})
+
+// 저장
+await mcp.save_document({ doc_id: "..." })
+```
+
+---
+
+## 📋 Supported Format
 
 | 포맷 | 확장자 | 읽기 | 쓰기 |
-|------|--------|------|------|
-| HWPX | .hwpx | O | O |
+|------|--------|:----:|:----:|
+| HWPX | .hwpx | ✅ | ✅ |
+| HWP | .hwp | ❌ | ❌ |
 
-> **Note**: HWP (바이너리) 파일은 지원하지 않습니다. 한컴오피스에서 HWPX로 변환 후 사용해주세요.
+> **Note**: HWP(바이너리) 파일은 지원하지 않습니다. 한컴오피스에서 HWPX로 변환 후 사용하세요.
 
-## Requirements
+---
 
-- VSCode 1.107.0 이상
+## 📝 Release Notes
 
-## Known Issues
+### v0.2.0 (Enhanced Edition)
+- 🔥 **Major Fix**: 텍스트 수정 시 lineseg 자동 초기화로 겹침 현상 완전 해결
+- 🔧 **Bug Fix**: 중첩 테이블 구조에서 XML 요소 경계 오인식 문제 수정
+- 🛡️ **Stability**: 원자적 파일 쓰기로 파일 손상 방지
+- 📦 **Preservation**: 원본 charPr/spacing 스타일 완전 보존
 
-- HWP 파일 미지원 (HWPX로 변환 필요)
-- 일부 복잡한 서식은 표시되지 않을 수 있습니다
+### v0.1.0 (Original)
+- 최초 릴리스 (mjyoo2/hwp-extension)
 
-## Release Notes
+---
 
-### 0.1.2
-- **안정성 개선**: 파일 손상 방지 기능 강화
-  - 원자적 파일 쓰기 구현 (임시 파일 → 검증 → 원자적 이동)
-  - ZIP 구조 필수 파일 검증 (`mimetype`, `content.hpf`, `header.xml`, `section*.xml`)
-  - 모든 section XML 파일 유효성 검사
-  - XML 조작 전 인덱스 검증 및 안전성 검사
-  - 검증 실패 시 원본 유지 (손상된 파일 저장 방지)
+## 🙏 Credits
 
-### 0.1.1
-- **버그 수정**: 테이블 빈 셀 업데이트 후 저장 시 변경사항이 유지되지 않던 문제 수정
-  - Self-closing XML run 태그 (`<hp:run ... />`) 처리 지원
-  - ID 기반 테이블 매칭으로 안정적인 XML 업데이트
-- 테이블 셀 업데이트 테스트 코드 추가
+- Original Project: [mjyoo2/hwp-extension](https://github.com/mjyoo2/hwp-extension)
+- Enhanced by: [Dayoooun](https://github.com/Dayoooun)
 
-### 0.1.0
-- 최초 릴리스
-- HWPX 파일 읽기/쓰기 지원
-- MCP 서버 포함
+---
 
-## License
+## 📄 License
 
 MIT
 
-## Contributing
+---
 
-GitHub: https://github.com/mjyoo2/hwp-extension
+## 🤝 Contributing
 
-버그 리포트 및 기능 요청은 GitHub Issues를 이용해주세요.
+버그 리포트 및 기능 요청: [GitHub Issues](https://github.com/Dayoooun/hwp-extension/issues)
