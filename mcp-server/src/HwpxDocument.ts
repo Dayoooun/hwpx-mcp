@@ -1515,6 +1515,12 @@ export class HwpxDocument {
       this._pendingTextReplacements = [];
     }
 
+    // NOTE: Do NOT call syncCharShapesToZip() here.
+    // The current serialization is incomplete and loses critical attributes
+    // (textColor, shadeColor, symMark, underline, strikeout, outline, shadow).
+    // Original header.xml charPr/charShape elements should be preserved as-is.
+    // Only sync charShapes when they are explicitly modified.
+
     // Sync metadata
     await this.syncMetadataToZip();
 
@@ -1734,23 +1740,67 @@ export class HwpxDocument {
   }
 
   /**
+   * Find all elements of a given type using depth tracking.
+   * This correctly handles nested elements (e.g., nested tables).
+   * @param xml The XML string to search in
+   * @param elementName The element name without namespace prefix (e.g., 'tr', 'tc')
+   * @returns Array of elements with their positions
+   */
+  private findAllElementsWithDepth(xml: string, elementName: string): Array<{ xml: string; startIndex: number; endIndex: number }> {
+    const elements: Array<{ xml: string; startIndex: number; endIndex: number }> = [];
+
+    // Match all namespace prefixes (hp, hs, hc)
+    const startPattern = new RegExp(`<(hp|hs|hc):${elementName}[^>]*>`, 'g');
+    let match;
+
+    while ((match = startPattern.exec(xml)) !== null) {
+      const startIndex = match.index;
+      const prefix = match[1];
+      const openTag = `<${prefix}:${elementName}`;
+      const closeTag = `</${prefix}:${elementName}>`;
+
+      let depth = 1;
+      let pos = match.index + match[0].length;
+
+      while (depth > 0 && pos < xml.length) {
+        const nextOpen = xml.indexOf(openTag, pos);
+        const nextClose = xml.indexOf(closeTag, pos);
+
+        if (nextClose === -1) break;
+
+        if (nextOpen !== -1 && nextOpen < nextClose) {
+          // Found another opening tag - go deeper
+          depth++;
+          pos = nextOpen + 1;
+        } else {
+          // Found closing tag
+          depth--;
+          if (depth === 0) {
+            const endIndex = nextClose + closeTag.length;
+            elements.push({
+              xml: xml.substring(startIndex, endIndex),
+              startIndex,
+              endIndex
+            });
+            // Update regex lastIndex to continue after this element
+            startPattern.lastIndex = endIndex;
+          }
+          pos = nextClose + 1;
+        }
+      }
+    }
+
+    return elements;
+  }
+
+  /**
    * Update specific cells in a table XML string.
    */
   private updateTableCellsInXml(tableXml: string, updates: Array<{ row: number; col: number; text: string; charShapeId?: number }>): string {
     let result = tableXml;
 
-    // Find all rows
-    const rowRegex = /<(?:hp|hs|hc):tr[^>]*>[\s\S]*?<\/(?:hp|hs|hc):tr>/g;
-    const rows: Array<{ xml: string; startIndex: number; endIndex: number }> = [];
-    let rowMatch;
-
-    while ((rowMatch = rowRegex.exec(tableXml)) !== null) {
-      rows.push({
-        xml: rowMatch[0],
-        startIndex: rowMatch.index,
-        endIndex: rowMatch.index + rowMatch[0].length
-      });
-    }
+    // Find all rows using depth tracking to handle nested tables correctly
+    const rows = this.findAllElementsWithDepth(tableXml, 'tr');
 
     // Sort updates by row (descending) to process from end to start (avoid index shifting)
     const sortedUpdates = [...updates].sort((a, b) => b.row - a.row || b.col - a.col);
@@ -1778,18 +1828,8 @@ export class HwpxDocument {
    * Update a specific cell in a row XML string.
    */
   private updateCellInRow(rowXml: string, colIndex: number, newText: string, charShapeId?: number): string {
-    // Find all cells in this row
-    const cellRegex = /<(?:hp|hs|hc):tc[^>]*>[\s\S]*?<\/(?:hp|hs|hc):tc>/g;
-    const cells: Array<{ xml: string; startIndex: number; endIndex: number }> = [];
-    let cellMatch;
-
-    while ((cellMatch = cellRegex.exec(rowXml)) !== null) {
-      cells.push({
-        xml: cellMatch[0],
-        startIndex: cellMatch.index,
-        endIndex: cellMatch.index + cellMatch[0].length
-      });
-    }
+    // Find all cells in this row using depth tracking to handle nested tables correctly
+    const cells = this.findAllElementsWithDepth(rowXml, 'tc');
 
     if (colIndex >= cells.length) return rowXml;
 
@@ -1797,6 +1837,30 @@ export class HwpxDocument {
     const updatedCellXml = this.updateTextInCell(cellData.xml, newText, charShapeId);
 
     return rowXml.substring(0, cellData.startIndex) + updatedCellXml + rowXml.substring(cellData.endIndex);
+  }
+
+  /**
+   * Reset lineseg values to default so Hancom Word recalculates line layout.
+   * When text content changes, the old lineseg values (horzsize, textpos, etc.)
+   * no longer match the new text, causing rendering issues like overlapping text.
+   * By resetting to default values, Hancom Word will recalculate proper line breaks.
+   */
+  private resetLinesegInXml(xml: string): string {
+    // Find all linesegarray elements and reset their lineseg children to default values
+    // Default lineseg: single line with minimal values - Hancom Word will recalculate
+    const defaultLineseg = '<hp:lineseg textpos="0" vertpos="0" vertsize="1000" textheight="1000" baseline="850" spacing="600" horzpos="0" horzsize="0" flags="0"/>';
+
+    // Replace linesegarray content with default single lineseg
+    // This pattern matches <hp:linesegarray>...</hp:linesegarray> and replaces content
+    const linesegArrayPattern = /(<(?:hp|hs|hc):linesegarray[^>]*>)[\s\S]*?(<\/(?:hp|hs|hc):linesegarray>)/g;
+
+    return xml.replace(linesegArrayPattern, (match, openTag, closeTag) => {
+      // Determine the prefix (hp, hs, or hc) from the opening tag
+      const prefixMatch = openTag.match(/<(hp|hs|hc):linesegarray/);
+      const prefix = prefixMatch ? prefixMatch[1] : 'hp';
+      const defaultSeg = `<${prefix}:lineseg textpos="0" vertpos="0" vertsize="1000" textheight="1000" baseline="850" spacing="600" horzpos="0" horzsize="0" flags="0"/>`;
+      return openTag + defaultSeg + closeTag;
+    });
   }
 
   /**
@@ -1828,13 +1892,14 @@ export class HwpxDocument {
       return match;
     });
 
-    if (foundText) return result;
+    if (foundText) return this.resetLinesegInXml(result);
 
     // Pattern 2: Cell has empty <hp:t/> or <hp:t></hp:t> tags
     const emptyTTagPattern = /<((?:hp|hs|hc):t)([^>]*)\s*\/>/;
     const emptyTMatch = xml.match(emptyTTagPattern);
     if (emptyTMatch) {
-      return xml.replace(emptyTTagPattern, `<${emptyTMatch[1]}${emptyTMatch[2]}>${escapedText}</${emptyTMatch[1]}>`);
+      const updated = xml.replace(emptyTTagPattern, `<${emptyTMatch[1]}${emptyTMatch[2]}>${escapedText}</${emptyTMatch[1]}>`);
+      return this.resetLinesegInXml(updated);
     }
 
     // Pattern 3a: Self-closing <hp:run .../> - expand to full run with text
@@ -1852,7 +1917,8 @@ export class HwpxDocument {
         }
       }
       const prefix = tagName.split(':')[0]; // e.g., "hp"
-      return xml.replace(selfClosingRunPattern, `<${tagName}${attrs}><${prefix}:t>${escapedText}</${prefix}:t></${tagName}>`);
+      const updated = xml.replace(selfClosingRunPattern, `<${tagName}${attrs}><${prefix}:t>${escapedText}</${prefix}:t></${tagName}>`);
+      return this.resetLinesegInXml(updated);
     }
 
     // Pattern 3b: Cell has <hp:run> but no <hp:t> - add text inside run
@@ -1861,7 +1927,8 @@ export class HwpxDocument {
     if (runMatch) {
       const prefix = runMatch[1].match(/<(hp|hs|hc):run/)?.[1] || 'hp';
       const newRunContent = runMatch[2] + `<${prefix}:t>${escapedText}</${prefix}:t>`;
-      return xml.replace(runPattern, runMatch[1] + newRunContent + runMatch[3]);
+      const updated = xml.replace(runPattern, runMatch[1] + newRunContent + runMatch[3]);
+      return this.resetLinesegInXml(updated);
     }
 
     // Pattern 4: Cell has <hp:subList><hp:p> structure - find the paragraph and add text
@@ -1873,7 +1940,8 @@ export class HwpxDocument {
       if (!subListMatch[2].includes(':run')) {
         const charAttr = charShapeId !== undefined ? ` charPrIDRef="${charShapeId}"` : '';
         const newContent = subListMatch[2] + `<${prefix}:run${charAttr}><${prefix}:t>${escapedText}</${prefix}:t></${prefix}:run>`;
-        return xml.replace(subListPattern, subListMatch[1] + newContent + subListMatch[3]);
+        const updated = xml.replace(subListPattern, subListMatch[1] + newContent + subListMatch[3]);
+        return this.resetLinesegInXml(updated);
       }
     }
 
@@ -1885,7 +1953,8 @@ export class HwpxDocument {
       if (!pMatch[2].includes(':run') && !pMatch[2].includes(':t>')) {
         const charAttr = charShapeId !== undefined ? ` charPrIDRef="${charShapeId}"` : '';
         const newContent = pMatch[2] + `<${prefix}:run${charAttr}><${prefix}:t>${escapedText}</${prefix}:t></${prefix}:run>`;
-        return xml.replace(pPattern, pMatch[1] + newContent + pMatch[3]);
+        const updated = xml.replace(pPattern, pMatch[1] + newContent + pMatch[3]);
+        return this.resetLinesegInXml(updated);
       }
     }
 
@@ -2176,6 +2245,190 @@ export class HwpxDocument {
       // Empty subsequent text tags
       return `<hp:t${attrs}></hp:t>`;
     });
+  }
+
+  /**
+   * Serialize a CharShape object to XML string.
+   * This preserves all character style properties including spacing (자간).
+   */
+  private serializeCharShape(charShape: CharShape): string {
+    // Use original tag name (charPr or charShape), default to charPr for compatibility
+    const tagName = charShape.tagName || 'charPr';
+    let xml = `<hh:${tagName} id="${charShape.id}"`;
+
+    // Basic attributes - height takes precedence over fontSize (height is the raw value)
+    if (charShape.height !== undefined) {
+      xml += ` height="${charShape.height}"`;
+    } else if (charShape.fontSize !== undefined) {
+      xml += ` height="${Math.round(charShape.fontSize * 100)}"`;
+    }
+    if (charShape.color) xml += ` textColor="${charShape.color}"`;
+    if (charShape.backgroundColor) xml += ` shadeColor="${charShape.backgroundColor}"`;
+    if (charShape.useFontSpace !== undefined) xml += ` useFontSpace="${charShape.useFontSpace ? '1' : '0'}"`;
+    if (charShape.useKerning !== undefined) xml += ` useKerning="${charShape.useKerning ? '1' : '0'}"`;
+    if (charShape.borderFillId !== undefined) xml += ` borderFillIDRef="${charShape.borderFillId}"`;
+
+    xml += `>`;
+
+    // Font references
+    if (charShape.fontRefs) {
+      xml += `<hh:fontRef`;
+      if (charShape.fontRefs.hangul !== undefined) xml += ` hangul="${charShape.fontRefs.hangul}"`;
+      if (charShape.fontRefs.latin !== undefined) xml += ` latin="${charShape.fontRefs.latin}"`;
+      if (charShape.fontRefs.hanja !== undefined) xml += ` hanja="${charShape.fontRefs.hanja}"`;
+      if (charShape.fontRefs.japanese !== undefined) xml += ` japanese="${charShape.fontRefs.japanese}"`;
+      if (charShape.fontRefs.other !== undefined) xml += ` other="${charShape.fontRefs.other}"`;
+      if (charShape.fontRefs.symbol !== undefined) xml += ` symbol="${charShape.fontRefs.symbol}"`;
+      if (charShape.fontRefs.user !== undefined) xml += ` user="${charShape.fontRefs.user}"`;
+      xml += `/>`;
+    }
+
+    // Ratio (장평)
+    if (charShape.ratio) {
+      xml += `<hh:ratio`;
+      if (charShape.ratio.hangul !== undefined) xml += ` hangul="${charShape.ratio.hangul}"`;
+      if (charShape.ratio.latin !== undefined) xml += ` latin="${charShape.ratio.latin}"`;
+      if (charShape.ratio.hanja !== undefined) xml += ` hanja="${charShape.ratio.hanja}"`;
+      if (charShape.ratio.japanese !== undefined) xml += ` japanese="${charShape.ratio.japanese}"`;
+      if (charShape.ratio.other !== undefined) xml += ` other="${charShape.ratio.other}"`;
+      if (charShape.ratio.symbol !== undefined) xml += ` symbol="${charShape.ratio.symbol}"`;
+      if (charShape.ratio.user !== undefined) xml += ` user="${charShape.ratio.user}"`;
+      xml += `/>`;
+    }
+
+    // Spacing (자간) - CRITICAL for character spacing!
+    if (charShape.charSpacing) {
+      xml += `<hh:spacing`;
+      if (charShape.charSpacing.hangul !== undefined) xml += ` hangul="${charShape.charSpacing.hangul}"`;
+      if (charShape.charSpacing.latin !== undefined) xml += ` latin="${charShape.charSpacing.latin}"`;
+      if (charShape.charSpacing.hanja !== undefined) xml += ` hanja="${charShape.charSpacing.hanja}"`;
+      if (charShape.charSpacing.japanese !== undefined) xml += ` japanese="${charShape.charSpacing.japanese}"`;
+      if (charShape.charSpacing.other !== undefined) xml += ` other="${charShape.charSpacing.other}"`;
+      if (charShape.charSpacing.symbol !== undefined) xml += ` symbol="${charShape.charSpacing.symbol}"`;
+      if (charShape.charSpacing.user !== undefined) xml += ` user="${charShape.charSpacing.user}"`;
+      xml += `/>`;
+    }
+
+    // Relative size (상대크기)
+    if (charShape.relSize) {
+      xml += `<hh:relSz`;
+      if (charShape.relSize.hangul !== undefined) xml += ` hangul="${charShape.relSize.hangul}"`;
+      if (charShape.relSize.latin !== undefined) xml += ` latin="${charShape.relSize.latin}"`;
+      if (charShape.relSize.hanja !== undefined) xml += ` hanja="${charShape.relSize.hanja}"`;
+      if (charShape.relSize.japanese !== undefined) xml += ` japanese="${charShape.relSize.japanese}"`;
+      if (charShape.relSize.other !== undefined) xml += ` other="${charShape.relSize.other}"`;
+      if (charShape.relSize.symbol !== undefined) xml += ` symbol="${charShape.relSize.symbol}"`;
+      if (charShape.relSize.user !== undefined) xml += ` user="${charShape.relSize.user}"`;
+      xml += `/>`;
+    }
+
+    // Char offset (글자위치)
+    if (charShape.charOffset) {
+      xml += `<hh:offset`;
+      if (charShape.charOffset.hangul !== undefined) xml += ` hangul="${charShape.charOffset.hangul}"`;
+      if (charShape.charOffset.latin !== undefined) xml += ` latin="${charShape.charOffset.latin}"`;
+      if (charShape.charOffset.hanja !== undefined) xml += ` hanja="${charShape.charOffset.hanja}"`;
+      if (charShape.charOffset.japanese !== undefined) xml += ` japanese="${charShape.charOffset.japanese}"`;
+      if (charShape.charOffset.other !== undefined) xml += ` other="${charShape.charOffset.other}"`;
+      if (charShape.charOffset.symbol !== undefined) xml += ` symbol="${charShape.charOffset.symbol}"`;
+      if (charShape.charOffset.user !== undefined) xml += ` user="${charShape.charOffset.user}"`;
+      xml += `/>`;
+    }
+
+    // Bold/Italic
+    if (charShape.bold) xml += `<hh:bold/>`;
+    if (charShape.italic) xml += `<hh:italic/>`;
+
+    // Underline
+    if (charShape.underline && typeof charShape.underline === 'object') {
+      xml += `<hh:underline type="${charShape.underline.type.toUpperCase()}" shape="${charShape.underline.shape.toUpperCase()}" color="${charShape.underline.color}"/>`;
+    }
+
+    // Strikeout
+    if (charShape.strikeout && typeof charShape.strikeout === 'object') {
+      xml += `<hh:strikeout type="${charShape.strikeout.type.toUpperCase()}" shape="${charShape.strikeout.shape.toUpperCase()}" color="${charShape.strikeout.color}"/>`;
+    }
+
+    // Outline
+    if (charShape.outline) {
+      const outlineType = typeof charShape.outline === 'object' ? charShape.outline.type : charShape.outline;
+      xml += `<hh:outline type="${outlineType.toUpperCase()}"/>`;
+    }
+
+    // Shadow
+    if (charShape.shadow && typeof charShape.shadow === 'object' && charShape.shadow.type !== 'None') {
+      xml += `<hh:shadow type="${charShape.shadow.type.toUpperCase()}"`;
+      if (charShape.shadow.offsetX !== undefined) xml += ` offsetX="${Math.round(charShape.shadow.offsetX * 100)}"`;
+      if (charShape.shadow.offsetY !== undefined) xml += ` offsetY="${Math.round(charShape.shadow.offsetY * 100)}"`;
+      if (charShape.shadow.color) xml += ` color="${charShape.shadow.color}"`;
+      xml += `/>`;
+    }
+
+    // Emboss/Engrave
+    if (charShape.emboss) xml += `<hh:emboss/>`;
+    if (charShape.engrave) xml += `<hh:engrave/>`;
+
+    // SymMark (강조점)
+    if (charShape.symMark && charShape.symMark !== 'None') {
+      xml += `<hh:symMark symMarkType="${charShape.symMark.toUpperCase()}"/>`;
+    }
+
+    xml += `</hh:${tagName}>`;
+    return xml;
+  }
+
+  /**
+   * Sync charShapes from memory to header.xml.
+   * This ensures character styles (including spacing) are preserved after save.
+   */
+  private async syncCharShapesToZip(): Promise<void> {
+    if (!this._zip || !this._content.styles?.charShapes) return;
+
+    const headerPath = 'Contents/header.xml';
+    let headerXml = await this._zip.file(headerPath)?.async('string');
+    if (!headerXml) return;
+
+    // Debug: count charShapes before modification
+    const originalCharShapeCount = (headerXml.match(/<hh:charShape/gi) || []).length;
+    const originalCharPrCount = (headerXml.match(/<hh:charPr/gi) || []).length;
+    console.log(`[HwpxDocument] syncCharShapesToZip: original charShape=${originalCharShapeCount}, charPr=${originalCharPrCount}`);
+
+    // For each charShape in memory, update or preserve in XML
+    for (const [id, charShape] of this._content.styles.charShapes) {
+      const newXml = this.serializeCharShape(charShape);
+
+      // Try to match existing charShape with this ID (supports both hh:charShape and hh:charPr)
+      // Use non-greedy match with [\s\S]*? for content between tags
+      const charShapePattern = new RegExp(
+        `<hh:charShape[^>]*\\bid="${id}"[^>]*>[\\s\\S]*?</hh:charShape>`,
+        'i'
+      );
+      const charPrPattern = new RegExp(
+        `<hh:charPr[^>]*\\bid="${id}"[^>]*>[\\s\\S]*?</hh:charPr>`,
+        'i'
+      );
+
+      if (headerXml.match(charShapePattern)) {
+        headerXml = headerXml.replace(charShapePattern, newXml);
+      } else if (headerXml.match(charPrPattern)) {
+        headerXml = headerXml.replace(charPrPattern, newXml);
+      }
+      // If no match found, the charShape might be new - but we don't add new ones
+      // to avoid corrupting the structure. Original charShapes are preserved.
+    }
+
+    // Debug: count charShapes/charPr after modification
+    const newCharShapeCount = (headerXml.match(/<hh:charShape/gi) || []).length;
+    const newCharPrCount = (headerXml.match(/<hh:charPr/gi) || []).length;
+    console.log(`[HwpxDocument] syncCharShapesToZip: after update charShape=${newCharShapeCount}, charPr=${newCharPrCount}`);
+
+    const totalBefore = originalCharShapeCount + originalCharPrCount;
+    const totalAfter = newCharShapeCount + newCharPrCount;
+    if (totalAfter < totalBefore) {
+      console.warn(`[HwpxDocument] WARNING: charShape/charPr count decreased from ${totalBefore} to ${totalAfter}`);
+    }
+
+    this._zip.file(headerPath, headerXml);
   }
 
   /**
