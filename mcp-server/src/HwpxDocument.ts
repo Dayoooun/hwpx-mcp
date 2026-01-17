@@ -43,6 +43,7 @@ export class HwpxDocument {
   private _redoStack: string[] = [];
   private _pendingTextReplacements: Array<{ oldText: string; newText: string; options: { caseSensitive?: boolean; regex?: boolean; replaceAll?: boolean } }> = [];
   private _pendingDirectTextUpdates: Array<{ oldText: string; newText: string }> = [];
+  private _pendingTableCellUpdates: Array<{ sectionIndex: number; tableIndex: number; tableId: string; row: number; col: number; text: string }> = [];
 
   private constructor(id: string, path: string, zip: JSZip | null, content: HwpxContent, format: DocumentFormat) {
     this._id = id;
@@ -434,13 +435,9 @@ export class HwpxDocument {
     const cell = table.rows[row]?.cells[col];
     if (!cell) return false;
 
-    // Track old text for XML update
-    if (cell.paragraphs.length > 0 && cell.paragraphs[0].runs.length > 0) {
-      const oldText = cell.paragraphs[0].runs[0].text;
-      if (oldText && oldText !== text && this._zip) {
-        this._pendingDirectTextUpdates.push({ oldText, newText: text });
-      }
-    }
+    // Track cell update for XML sync (works for both empty and non-empty cells)
+    // Store table ID for reliable XML matching
+    this._pendingTableCellUpdates.push({ sectionIndex, tableIndex, tableId: table.id, row, col, text });
 
     this.saveState();
     if (cell.paragraphs.length > 0 && cell.paragraphs[0].runs.length > 0) {
@@ -1499,10 +1496,13 @@ export class HwpxDocument {
   private async syncContentToZip(): Promise<void> {
     if (!this._zip) return;
 
-    // Sync structural changes (new paragraphs, tables, etc.)
-    await this.syncStructuralChangesToZip();
+    // Apply table cell updates first (preserves original XML structure)
+    if (this._pendingTableCellUpdates && this._pendingTableCellUpdates.length > 0) {
+      await this.applyTableCellUpdatesToXml();
+      this._pendingTableCellUpdates = [];
+    }
 
-    // Apply direct text updates (from updateParagraphText, updateTableCell)
+    // Apply direct text updates (from updateParagraphText)
     if (this._pendingDirectTextUpdates && this._pendingDirectTextUpdates.length > 0) {
       await this.applyDirectTextUpdatesToXml();
       this._pendingDirectTextUpdates = [];
@@ -1518,6 +1518,298 @@ export class HwpxDocument {
     await this.syncMetadataToZip();
 
     this._isDirty = false;
+  }
+
+  /**
+   * Apply table cell updates to XML while preserving original structure.
+   * This function modifies only the text content of specific cells,
+   * keeping all other XML elements, attributes, and structure intact.
+   */
+  private async applyTableCellUpdatesToXml(): Promise<void> {
+    if (!this._zip) return;
+
+    // Group updates by section for efficiency
+    const updatesBySection = new Map<number, Array<{ tableId: string; row: number; col: number; text: string }>>();
+    for (const update of this._pendingTableCellUpdates) {
+      const sectionUpdates = updatesBySection.get(update.sectionIndex) || [];
+      sectionUpdates.push({ tableId: update.tableId, row: update.row, col: update.col, text: update.text });
+      updatesBySection.set(update.sectionIndex, sectionUpdates);
+    }
+
+    // Process each section that has updates
+    for (const [sectionIndex, updates] of updatesBySection) {
+      const sectionPath = `Contents/section${sectionIndex}.xml`;
+      const file = this._zip.file(sectionPath);
+      if (!file) continue;
+
+      let xml = await file.async('string');
+
+      // Group updates by table ID
+      const updatesByTableId = new Map<string, Array<{ row: number; col: number; text: string }>>();
+      for (const update of updates) {
+        const tableUpdates = updatesByTableId.get(update.tableId) || [];
+        tableUpdates.push({ row: update.row, col: update.col, text: update.text });
+        updatesByTableId.set(update.tableId, tableUpdates);
+      }
+
+      // Process each table that has updates (by ID)
+      for (const [tableId, tableUpdates] of updatesByTableId) {
+        // Find the table by ID in XML
+        const tableMatch = this.findTableById(xml, tableId);
+        if (!tableMatch) continue;
+
+        // Update the table XML with cell changes
+        const updatedTableXml = this.updateTableCellsInXml(tableMatch.xml, tableUpdates);
+
+        // Replace the old table XML with the updated one
+        xml = xml.substring(0, tableMatch.startIndex) + updatedTableXml + xml.substring(tableMatch.endIndex);
+      }
+
+      this._zip.file(sectionPath, xml);
+    }
+  }
+
+  /**
+   * Find a table by its ID in XML.
+   */
+  private findTableById(xml: string, tableId: string): { xml: string; startIndex: number; endIndex: number } | null {
+    // Match table with specific ID
+    const tableStartRegex = new RegExp(`<(?:hp|hs|hc):tbl[^>]*\\bid="${tableId}"[^>]*>`, 'g');
+    const match = tableStartRegex.exec(xml);
+
+    if (!match) {
+      // Try alternate ID format (id='...' instead of id="...")
+      const altRegex = new RegExp(`<(?:hp|hs|hc):tbl[^>]*\\bid='${tableId}'[^>]*>`, 'g');
+      const altMatch = altRegex.exec(xml);
+      if (!altMatch) return null;
+      return this.extractTableFromMatch(xml, altMatch);
+    }
+
+    return this.extractTableFromMatch(xml, match);
+  }
+
+  /**
+   * Extract complete table XML from a regex match.
+   */
+  private extractTableFromMatch(xml: string, match: RegExpExecArray): { xml: string; startIndex: number; endIndex: number } | null {
+    const startIndex = match.index;
+    const prefix = match[0].match(/<(hp|hs|hc):tbl/)?.[1] || 'hp';
+
+    // Find the matching closing tag
+    const endTag = `</${prefix}:tbl>`;
+    let depth = 1;
+    let pos = match.index + match[0].length;
+
+    while (depth > 0 && pos < xml.length) {
+      const nextOpen = xml.indexOf(`<${prefix}:tbl`, pos);
+      const nextClose = xml.indexOf(endTag, pos);
+
+      if (nextClose === -1) return null;
+
+      if (nextOpen !== -1 && nextOpen < nextClose) {
+        depth++;
+        pos = nextOpen + 1;
+      } else {
+        depth--;
+        if (depth === 0) {
+          const endIndex = nextClose + endTag.length;
+          return {
+            xml: xml.substring(startIndex, endIndex),
+            startIndex,
+            endIndex
+          };
+        }
+        pos = nextClose + 1;
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Find all tables in XML and return their positions and content.
+   */
+  private findAllTables(xml: string): Array<{ xml: string; startIndex: number; endIndex: number }> {
+    const tables: Array<{ xml: string; startIndex: number; endIndex: number }> = [];
+
+    // Match both hp:tbl and hs:tbl (different namespace prefixes)
+    const tableStartRegex = /<(?:hp|hs|hc):tbl[^>]*>/g;
+    let match;
+
+    while ((match = tableStartRegex.exec(xml)) !== null) {
+      const startIndex = match.index;
+      const prefix = match[0].match(/<(hp|hs|hc):tbl/)?.[1] || 'hp';
+
+      // Find the matching closing tag
+      const endTag = `</${prefix}:tbl>`;
+      let depth = 1;
+      let pos = match.index + match[0].length;
+
+      while (depth > 0 && pos < xml.length) {
+        const nextOpen = xml.indexOf(`<${prefix}:tbl`, pos);
+        const nextClose = xml.indexOf(endTag, pos);
+
+        if (nextClose === -1) break;
+
+        if (nextOpen !== -1 && nextOpen < nextClose) {
+          depth++;
+          pos = nextOpen + 1;
+        } else {
+          depth--;
+          if (depth === 0) {
+            const endIndex = nextClose + endTag.length;
+            tables.push({
+              xml: xml.substring(startIndex, endIndex),
+              startIndex,
+              endIndex
+            });
+          }
+          pos = nextClose + 1;
+        }
+      }
+    }
+
+    return tables;
+  }
+
+  /**
+   * Update specific cells in a table XML string.
+   */
+  private updateTableCellsInXml(tableXml: string, updates: Array<{ row: number; col: number; text: string }>): string {
+    let result = tableXml;
+
+    // Find all rows
+    const rowRegex = /<(?:hp|hs|hc):tr[^>]*>[\s\S]*?<\/(?:hp|hs|hc):tr>/g;
+    const rows: Array<{ xml: string; startIndex: number; endIndex: number }> = [];
+    let rowMatch;
+
+    while ((rowMatch = rowRegex.exec(tableXml)) !== null) {
+      rows.push({
+        xml: rowMatch[0],
+        startIndex: rowMatch.index,
+        endIndex: rowMatch.index + rowMatch[0].length
+      });
+    }
+
+    // Sort updates by row (descending) to process from end to start (avoid index shifting)
+    const sortedUpdates = [...updates].sort((a, b) => b.row - a.row || b.col - a.col);
+
+    for (const update of sortedUpdates) {
+      if (update.row >= rows.length) continue;
+
+      const rowData = rows[update.row];
+      const updatedRowXml = this.updateCellInRow(rowData.xml, update.col, update.text);
+
+      result = result.substring(0, rowData.startIndex) + updatedRowXml + result.substring(rowData.endIndex);
+
+      // Update row positions for subsequent rows (those with lower indices)
+      const lengthDiff = updatedRowXml.length - rowData.xml.length;
+      for (let i = update.row - 1; i >= 0; i--) {
+        // Earlier rows (lower indices) are before in the string, so they don't need adjustment
+        // But we need to update the row data for current processing
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * Update a specific cell in a row XML string.
+   */
+  private updateCellInRow(rowXml: string, colIndex: number, newText: string): string {
+    // Find all cells in this row
+    const cellRegex = /<(?:hp|hs|hc):tc[^>]*>[\s\S]*?<\/(?:hp|hs|hc):tc>/g;
+    const cells: Array<{ xml: string; startIndex: number; endIndex: number }> = [];
+    let cellMatch;
+
+    while ((cellMatch = cellRegex.exec(rowXml)) !== null) {
+      cells.push({
+        xml: cellMatch[0],
+        startIndex: cellMatch.index,
+        endIndex: cellMatch.index + cellMatch[0].length
+      });
+    }
+
+    if (colIndex >= cells.length) return rowXml;
+
+    const cellData = cells[colIndex];
+    const updatedCellXml = this.updateTextInCell(cellData.xml, newText);
+
+    return rowXml.substring(0, cellData.startIndex) + updatedCellXml + rowXml.substring(cellData.endIndex);
+  }
+
+  /**
+   * Update text content in a cell XML string.
+   * Handles both existing text replacement and empty cell population.
+   */
+  private updateTextInCell(cellXml: string, newText: string): string {
+    const escapedText = this.escapeXml(newText);
+
+    // Pattern 1: Cell has existing <hp:t> or <hs:t> or <hc:t> tags with content
+    const tTagPattern = /(<(?:hp|hs|hc):t[^>]*>)([^<]*)(<\/(?:hp|hs|hc):t>)/g;
+    let foundText = false;
+    let result = cellXml.replace(tTagPattern, (match, openTag, _oldText, closeTag, offset) => {
+      // Only replace the first text occurrence
+      if (!foundText) {
+        foundText = true;
+        return openTag + escapedText + closeTag;
+      }
+      return match;
+    });
+
+    if (foundText) return result;
+
+    // Pattern 2: Cell has empty <hp:t/> or <hp:t></hp:t> tags
+    const emptyTTagPattern = /<((?:hp|hs|hc):t)([^>]*)\s*\/>/;
+    const emptyTMatch = cellXml.match(emptyTTagPattern);
+    if (emptyTMatch) {
+      return cellXml.replace(emptyTTagPattern, `<${emptyTMatch[1]}${emptyTMatch[2]}>${escapedText}</${emptyTMatch[1]}>`);
+    }
+
+    // Pattern 3a: Self-closing <hp:run .../> - expand to full run with text
+    const selfClosingRunPattern = /<((?:hp|hs|hc):run)([^>]*)\s*\/>/;
+    const selfClosingRunMatch = cellXml.match(selfClosingRunPattern);
+    if (selfClosingRunMatch) {
+      const tagName = selfClosingRunMatch[1]; // e.g., "hp:run"
+      const attrs = selfClosingRunMatch[2];
+      const prefix = tagName.split(':')[0]; // e.g., "hp"
+      return cellXml.replace(selfClosingRunPattern, `<${tagName}${attrs}><${prefix}:t>${escapedText}</${prefix}:t></${tagName}>`);
+    }
+
+    // Pattern 3b: Cell has <hp:run> but no <hp:t> - add text inside run
+    const runPattern = /(<(?:hp|hs|hc):run[^>]*>)([\s\S]*?)(<\/(?:hp|hs|hc):run>)/;
+    const runMatch = cellXml.match(runPattern);
+    if (runMatch) {
+      const prefix = runMatch[1].match(/<(hp|hs|hc):run/)?.[1] || 'hp';
+      const newRunContent = runMatch[2] + `<${prefix}:t>${escapedText}</${prefix}:t>`;
+      return cellXml.replace(runPattern, runMatch[1] + newRunContent + runMatch[3]);
+    }
+
+    // Pattern 4: Cell has <hp:subList><hp:p> structure - find the paragraph and add text
+    const subListPattern = /(<(?:hp|hs|hc):subList[^>]*>[\s\S]*?<(?:hp|hs|hc):p[^>]*>)([\s\S]*?)(<\/(?:hp|hs|hc):p>)/;
+    const subListMatch = cellXml.match(subListPattern);
+    if (subListMatch) {
+      const prefix = subListMatch[1].match(/<(hp|hs|hc):subList/)?.[1] || 'hp';
+      // Check if there's already a run
+      if (!subListMatch[2].includes(':run')) {
+        const newContent = subListMatch[2] + `<${prefix}:run><${prefix}:t>${escapedText}</${prefix}:t></${prefix}:run>`;
+        return cellXml.replace(subListPattern, subListMatch[1] + newContent + subListMatch[3]);
+      }
+    }
+
+    // Pattern 5: Cell has only <hp:p> without subList
+    const pPattern = /(<(?:hp|hs|hc):p[^>]*>)([\s\S]*?)(<\/(?:hp|hs|hc):p>)/;
+    const pMatch = cellXml.match(pPattern);
+    if (pMatch) {
+      const prefix = pMatch[1].match(/<(hp|hs|hc):p/)?.[1] || 'hp';
+      if (!pMatch[2].includes(':run') && !pMatch[2].includes(':t>')) {
+        const newContent = pMatch[2] + `<${prefix}:run><${prefix}:t>${escapedText}</${prefix}:t></${prefix}:run>`;
+        return cellXml.replace(pPattern, pMatch[1] + newContent + pMatch[3]);
+      }
+    }
+
+    // Fallback: return unchanged (shouldn't happen in well-formed HWPX)
+    return cellXml;
   }
 
   /**
