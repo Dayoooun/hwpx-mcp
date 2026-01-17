@@ -72,6 +72,14 @@ Command Palette (Ctrl+Shift+P)에서:
 
 ## Release Notes
 
+### 0.1.2
+- **안정성 개선**: 파일 손상 방지 기능 강화
+  - 원자적 파일 쓰기 구현 (임시 파일 → 검증 → 원자적 이동)
+  - ZIP 구조 필수 파일 검증 (`mimetype`, `content.hpf`, `header.xml`, `section*.xml`)
+  - 모든 section XML 파일 유효성 검사
+  - XML 조작 전 인덱스 검증 및 안전성 검사
+  - 검증 실패 시 원본 유지 (손상된 파일 저장 방지)
+
 ### 0.1.1
 - **버그 수정**: 테이블 빈 셀 업데이트 후 저장 시 변경사항이 유지되지 않던 문제 수정
   - Self-closing XML run 태그 (`<hp:run ... />`) 처리 지원

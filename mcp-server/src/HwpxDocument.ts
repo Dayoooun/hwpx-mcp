@@ -43,7 +43,7 @@ export class HwpxDocument {
   private _redoStack: string[] = [];
   private _pendingTextReplacements: Array<{ oldText: string; newText: string; options: { caseSensitive?: boolean; regex?: boolean; replaceAll?: boolean } }> = [];
   private _pendingDirectTextUpdates: Array<{ oldText: string; newText: string }> = [];
-  private _pendingTableCellUpdates: Array<{ sectionIndex: number; tableIndex: number; tableId: string; row: number; col: number; text: string }> = [];
+  private _pendingTableCellUpdates: Array<{ sectionIndex: number; tableIndex: number; tableId: string; row: number; col: number; text: string; charShapeId?: number }> = [];
 
   private constructor(id: string, path: string, zip: JSZip | null, content: HwpxContent, format: DocumentFormat) {
     this._id = id;
@@ -429,7 +429,7 @@ export class HwpxDocument {
     };
   }
 
-  updateTableCell(sectionIndex: number, tableIndex: number, row: number, col: number, text: string): boolean {
+  updateTableCell(sectionIndex: number, tableIndex: number, row: number, col: number, text: string, charShapeId?: number): boolean {
     const table = this.findTable(sectionIndex, tableIndex);
     if (!table) return false;
     const cell = table.rows[row]?.cells[col];
@@ -437,7 +437,8 @@ export class HwpxDocument {
 
     // Track cell update for XML sync (works for both empty and non-empty cells)
     // Store table ID for reliable XML matching
-    this._pendingTableCellUpdates.push({ sectionIndex, tableIndex, tableId: table.id, row, col, text });
+    // charShapeId is optional - if provided, it will override the existing charPrIDRef
+    this._pendingTableCellUpdates.push({ sectionIndex, tableIndex, tableId: table.id, row, col, text, charShapeId });
 
     this.saveState();
     if (cell.paragraphs.length > 0 && cell.paragraphs[0].runs.length > 0) {
@@ -1524,15 +1525,20 @@ export class HwpxDocument {
    * Apply table cell updates to XML while preserving original structure.
    * This function modifies only the text content of specific cells,
    * keeping all other XML elements, attributes, and structure intact.
+   *
+   * Safety features:
+   * - Backs up original XML before modification
+   * - Validates XML structure after changes
+   * - Reverts to original if validation fails
    */
   private async applyTableCellUpdatesToXml(): Promise<void> {
     if (!this._zip) return;
 
     // Group updates by section for efficiency
-    const updatesBySection = new Map<number, Array<{ tableId: string; row: number; col: number; text: string }>>();
+    const updatesBySection = new Map<number, Array<{ tableId: string; row: number; col: number; text: string; charShapeId?: number }>>();
     for (const update of this._pendingTableCellUpdates) {
       const sectionUpdates = updatesBySection.get(update.sectionIndex) || [];
-      sectionUpdates.push({ tableId: update.tableId, row: update.row, col: update.col, text: update.text });
+      sectionUpdates.push({ tableId: update.tableId, row: update.row, col: update.col, text: update.text, charShapeId: update.charShapeId });
       updatesBySection.set(update.sectionIndex, sectionUpdates);
     }
 
@@ -1542,13 +1548,15 @@ export class HwpxDocument {
       const file = this._zip.file(sectionPath);
       if (!file) continue;
 
-      let xml = await file.async('string');
+      // Backup original XML for safety
+      const originalXml = await file.async('string');
+      let xml = originalXml;
 
       // Group updates by table ID
-      const updatesByTableId = new Map<string, Array<{ row: number; col: number; text: string }>>();
+      const updatesByTableId = new Map<string, Array<{ row: number; col: number; text: string; charShapeId?: number }>>();
       for (const update of updates) {
         const tableUpdates = updatesByTableId.get(update.tableId) || [];
-        tableUpdates.push({ row: update.row, col: update.col, text: update.text });
+        tableUpdates.push({ row: update.row, col: update.col, text: update.text, charShapeId: update.charShapeId });
         updatesByTableId.set(update.tableId, tableUpdates);
       }
 
@@ -1558,15 +1566,68 @@ export class HwpxDocument {
         const tableMatch = this.findTableById(xml, tableId);
         if (!tableMatch) continue;
 
+        // Safety check: validate indices before substring operations
+        if (tableMatch.startIndex < 0 || tableMatch.endIndex > xml.length || tableMatch.startIndex > tableMatch.endIndex) {
+          console.warn(`[HwpxDocument] Invalid table indices for table ${tableId}, skipping update`);
+          continue;
+        }
+
         // Update the table XML with cell changes
         const updatedTableXml = this.updateTableCellsInXml(tableMatch.xml, tableUpdates);
+
+        // Safety check: ensure updated XML is not empty or drastically smaller
+        if (!updatedTableXml || updatedTableXml.length < tableMatch.xml.length * 0.5) {
+          console.warn(`[HwpxDocument] Suspicious table update result for table ${tableId}, skipping`);
+          continue;
+        }
 
         // Replace the old table XML with the updated one
         xml = xml.substring(0, tableMatch.startIndex) + updatedTableXml + xml.substring(tableMatch.endIndex);
       }
 
+      // Validate modified XML before saving
+      if (!this.validateXmlStructure(xml)) {
+        console.error(`[HwpxDocument] XML validation failed for ${sectionPath}, reverting to original`);
+        // Revert to original - don't save corrupted XML
+        continue;
+      }
+
       this._zip.file(sectionPath, xml);
     }
+  }
+
+  /**
+   * Basic XML structure validation.
+   * Checks for common corruption indicators.
+   * Note: This is intentionally lenient to avoid false positives.
+   */
+  private validateXmlStructure(xml: string): boolean {
+    // Must start with XML declaration or root element
+    if (!xml.trim().startsWith('<?xml') && !xml.trim().startsWith('<')) {
+      console.warn(`[HwpxDocument] XML does not start with declaration or element`);
+      return false;
+    }
+
+    // Check for truncated XML (ends with incomplete tag)
+    if (xml.match(/<[^>]*$/)) {
+      console.warn(`[HwpxDocument] XML appears truncated (incomplete tag at end)`);
+      return false;
+    }
+
+    // Check for broken opening tags (< followed by another < without >)
+    // This catches cases like: <tag<broken>
+    if (xml.match(/<[^>]*</)) {
+      console.warn(`[HwpxDocument] Broken opening tag detected`);
+      return false;
+    }
+
+    // Check for empty or near-empty content (likely corruption)
+    if (xml.trim().length < 100) {
+      console.warn(`[HwpxDocument] Suspiciously short XML content`);
+      return false;
+    }
+
+    return true;
   }
 
   /**
@@ -1675,7 +1736,7 @@ export class HwpxDocument {
   /**
    * Update specific cells in a table XML string.
    */
-  private updateTableCellsInXml(tableXml: string, updates: Array<{ row: number; col: number; text: string }>): string {
+  private updateTableCellsInXml(tableXml: string, updates: Array<{ row: number; col: number; text: string; charShapeId?: number }>): string {
     let result = tableXml;
 
     // Find all rows
@@ -1698,7 +1759,7 @@ export class HwpxDocument {
       if (update.row >= rows.length) continue;
 
       const rowData = rows[update.row];
-      const updatedRowXml = this.updateCellInRow(rowData.xml, update.col, update.text);
+      const updatedRowXml = this.updateCellInRow(rowData.xml, update.col, update.text, update.charShapeId);
 
       result = result.substring(0, rowData.startIndex) + updatedRowXml + result.substring(rowData.endIndex);
 
@@ -1716,7 +1777,7 @@ export class HwpxDocument {
   /**
    * Update a specific cell in a row XML string.
    */
-  private updateCellInRow(rowXml: string, colIndex: number, newText: string): string {
+  private updateCellInRow(rowXml: string, colIndex: number, newText: string, charShapeId?: number): string {
     // Find all cells in this row
     const cellRegex = /<(?:hp|hs|hc):tc[^>]*>[\s\S]*?<\/(?:hp|hs|hc):tc>/g;
     const cells: Array<{ xml: string; startIndex: number; endIndex: number }> = [];
@@ -1733,7 +1794,7 @@ export class HwpxDocument {
     if (colIndex >= cells.length) return rowXml;
 
     const cellData = cells[colIndex];
-    const updatedCellXml = this.updateTextInCell(cellData.xml, newText);
+    const updatedCellXml = this.updateTextInCell(cellData.xml, newText, charShapeId);
 
     return rowXml.substring(0, cellData.startIndex) + updatedCellXml + rowXml.substring(cellData.endIndex);
   }
@@ -1741,14 +1802,24 @@ export class HwpxDocument {
   /**
    * Update text content in a cell XML string.
    * Handles both existing text replacement and empty cell population.
+   * If charShapeId is provided, overrides the charPrIDRef attribute.
    */
-  private updateTextInCell(cellXml: string, newText: string): string {
+  private updateTextInCell(cellXml: string, newText: string, charShapeId?: number): string {
     const escapedText = this.escapeXml(newText);
+    let xml = cellXml;
+
+    // If charShapeId is provided, update charPrIDRef in the first run tag
+    if (charShapeId !== undefined) {
+      xml = xml.replace(
+        /(<(?:hp|hs|hc):run\s+)charPrIDRef="[^"]*"/,
+        `$1charPrIDRef="${charShapeId}"`
+      );
+    }
 
     // Pattern 1: Cell has existing <hp:t> or <hs:t> or <hc:t> tags with content
     const tTagPattern = /(<(?:hp|hs|hc):t[^>]*>)([^<]*)(<\/(?:hp|hs|hc):t>)/g;
     let foundText = false;
-    let result = cellXml.replace(tTagPattern, (match, openTag, _oldText, closeTag, offset) => {
+    let result = xml.replace(tTagPattern, (match, openTag, _oldText, closeTag, offset) => {
       // Only replace the first text occurrence
       if (!foundText) {
         foundText = true;
@@ -1761,55 +1832,65 @@ export class HwpxDocument {
 
     // Pattern 2: Cell has empty <hp:t/> or <hp:t></hp:t> tags
     const emptyTTagPattern = /<((?:hp|hs|hc):t)([^>]*)\s*\/>/;
-    const emptyTMatch = cellXml.match(emptyTTagPattern);
+    const emptyTMatch = xml.match(emptyTTagPattern);
     if (emptyTMatch) {
-      return cellXml.replace(emptyTTagPattern, `<${emptyTMatch[1]}${emptyTMatch[2]}>${escapedText}</${emptyTMatch[1]}>`);
+      return xml.replace(emptyTTagPattern, `<${emptyTMatch[1]}${emptyTMatch[2]}>${escapedText}</${emptyTMatch[1]}>`);
     }
 
     // Pattern 3a: Self-closing <hp:run .../> - expand to full run with text
     const selfClosingRunPattern = /<((?:hp|hs|hc):run)([^>]*)\s*\/>/;
-    const selfClosingRunMatch = cellXml.match(selfClosingRunPattern);
+    const selfClosingRunMatch = xml.match(selfClosingRunPattern);
     if (selfClosingRunMatch) {
       const tagName = selfClosingRunMatch[1]; // e.g., "hp:run"
-      const attrs = selfClosingRunMatch[2];
+      let attrs = selfClosingRunMatch[2];
+      // If charShapeId is provided, update or add charPrIDRef
+      if (charShapeId !== undefined) {
+        if (attrs.includes('charPrIDRef=')) {
+          attrs = attrs.replace(/charPrIDRef="[^"]*"/, `charPrIDRef="${charShapeId}"`);
+        } else {
+          attrs = ` charPrIDRef="${charShapeId}"` + attrs;
+        }
+      }
       const prefix = tagName.split(':')[0]; // e.g., "hp"
-      return cellXml.replace(selfClosingRunPattern, `<${tagName}${attrs}><${prefix}:t>${escapedText}</${prefix}:t></${tagName}>`);
+      return xml.replace(selfClosingRunPattern, `<${tagName}${attrs}><${prefix}:t>${escapedText}</${prefix}:t></${tagName}>`);
     }
 
     // Pattern 3b: Cell has <hp:run> but no <hp:t> - add text inside run
     const runPattern = /(<(?:hp|hs|hc):run[^>]*>)([\s\S]*?)(<\/(?:hp|hs|hc):run>)/;
-    const runMatch = cellXml.match(runPattern);
+    const runMatch = xml.match(runPattern);
     if (runMatch) {
       const prefix = runMatch[1].match(/<(hp|hs|hc):run/)?.[1] || 'hp';
       const newRunContent = runMatch[2] + `<${prefix}:t>${escapedText}</${prefix}:t>`;
-      return cellXml.replace(runPattern, runMatch[1] + newRunContent + runMatch[3]);
+      return xml.replace(runPattern, runMatch[1] + newRunContent + runMatch[3]);
     }
 
     // Pattern 4: Cell has <hp:subList><hp:p> structure - find the paragraph and add text
     const subListPattern = /(<(?:hp|hs|hc):subList[^>]*>[\s\S]*?<(?:hp|hs|hc):p[^>]*>)([\s\S]*?)(<\/(?:hp|hs|hc):p>)/;
-    const subListMatch = cellXml.match(subListPattern);
+    const subListMatch = xml.match(subListPattern);
     if (subListMatch) {
       const prefix = subListMatch[1].match(/<(hp|hs|hc):subList/)?.[1] || 'hp';
       // Check if there's already a run
       if (!subListMatch[2].includes(':run')) {
-        const newContent = subListMatch[2] + `<${prefix}:run><${prefix}:t>${escapedText}</${prefix}:t></${prefix}:run>`;
-        return cellXml.replace(subListPattern, subListMatch[1] + newContent + subListMatch[3]);
+        const charAttr = charShapeId !== undefined ? ` charPrIDRef="${charShapeId}"` : '';
+        const newContent = subListMatch[2] + `<${prefix}:run${charAttr}><${prefix}:t>${escapedText}</${prefix}:t></${prefix}:run>`;
+        return xml.replace(subListPattern, subListMatch[1] + newContent + subListMatch[3]);
       }
     }
 
     // Pattern 5: Cell has only <hp:p> without subList
     const pPattern = /(<(?:hp|hs|hc):p[^>]*>)([\s\S]*?)(<\/(?:hp|hs|hc):p>)/;
-    const pMatch = cellXml.match(pPattern);
+    const pMatch = xml.match(pPattern);
     if (pMatch) {
       const prefix = pMatch[1].match(/<(hp|hs|hc):p/)?.[1] || 'hp';
       if (!pMatch[2].includes(':run') && !pMatch[2].includes(':t>')) {
-        const newContent = pMatch[2] + `<${prefix}:run><${prefix}:t>${escapedText}</${prefix}:t></${prefix}:run>`;
-        return cellXml.replace(pPattern, pMatch[1] + newContent + pMatch[3]);
+        const charAttr = charShapeId !== undefined ? ` charPrIDRef="${charShapeId}"` : '';
+        const newContent = pMatch[2] + `<${prefix}:run${charAttr}><${prefix}:t>${escapedText}</${prefix}:t></${prefix}:run>`;
+        return xml.replace(pPattern, pMatch[1] + newContent + pMatch[3]);
       }
     }
 
     // Fallback: return unchanged (shouldn't happen in well-formed HWPX)
-    return cellXml;
+    return xml;
   }
 
   /**

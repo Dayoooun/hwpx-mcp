@@ -50,12 +50,14 @@ const tools = [
   },
   {
     name: 'save_document',
-    description: 'Save the document (HWPX only)',
+    description: 'Save the document (HWPX only). Supports backup creation and integrity verification.',
     inputSchema: {
       type: 'object',
       properties: {
         doc_id: { type: 'string', description: 'Document ID' },
         output_path: { type: 'string', description: 'Output path (optional, saves to original if omitted)' },
+        create_backup: { type: 'boolean', description: 'Create .bak backup before saving (default: true)' },
+        verify_integrity: { type: 'boolean', description: 'Verify saved file integrity (default: true)' },
       },
       required: ['doc_id'],
     },
@@ -368,7 +370,7 @@ const tools = [
   },
   {
     name: 'update_table_cell',
-    description: 'Update content of a table cell (HWPX only)',
+    description: 'Update content of a table cell (HWPX only). Preserves existing charPrIDRef by default.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -378,6 +380,7 @@ const tools = [
         row: { type: 'number', description: 'Row index' },
         col: { type: 'number', description: 'Column index' },
         text: { type: 'string', description: 'New cell content' },
+        char_shape_id: { type: 'number', description: 'Character shape ID to apply (optional, uses existing style if omitted)' },
       },
       required: ['doc_id', 'section_index', 'table_index', 'row', 'col', 'text'],
     },
@@ -1156,11 +1159,109 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (!doc) return error('Document not found');
         if (doc.format === 'hwp') return error('HWP files are read-only');
 
-        const data = await doc.save();
         const savePath = (args?.output_path as string) || doc.path;
-        fs.writeFileSync(savePath, data);
+        const createBackup = args?.create_backup !== false; // default: true
+        const verifyIntegrity = args?.verify_integrity !== false; // default: true
+        let backupPath: string | null = null;
+        const tempPath = savePath + '.tmp';
 
-        return success({ message: `Saved to ${savePath}` });
+        // Create backup if file exists and backup is enabled
+        if (createBackup && fs.existsSync(savePath)) {
+          backupPath = savePath + '.bak';
+          try {
+            fs.copyFileSync(savePath, backupPath);
+          } catch (backupErr) {
+            return error(`Failed to create backup: ${backupErr}`);
+          }
+        }
+
+        try {
+          const data = await doc.save();
+
+          // Phase 1: Write to temp file first (atomic write pattern)
+          fs.writeFileSync(tempPath, data);
+
+          // Verify integrity on temp file before moving
+          if (verifyIntegrity) {
+            try {
+              const JSZip = require('jszip');
+              const savedData = fs.readFileSync(tempPath);
+              const zip = await JSZip.loadAsync(savedData);
+
+              // Check essential HWPX structure files
+              const requiredFiles = [
+                'mimetype',
+                'Contents/content.hpf',
+                'Contents/header.xml',
+                'Contents/section0.xml'
+              ];
+
+              const missingFiles: string[] = [];
+              for (const requiredFile of requiredFiles) {
+                if (!zip.file(requiredFile)) {
+                  missingFiles.push(requiredFile);
+                }
+              }
+
+              if (missingFiles.length > 0) {
+                throw new Error(`Missing required files: ${missingFiles.join(', ')}`);
+              }
+
+              // Verify all section XML files are valid
+              const sectionFiles = Object.keys(zip.files).filter(f => f.match(/^Contents\/section\d+\.xml$/));
+              for (const sectionFile of sectionFiles) {
+                const file = zip.file(sectionFile);
+                if (file) {
+                  const xmlContent = await file.async('string');
+                  if (!xmlContent || !xmlContent.includes('<?xml')) {
+                    throw new Error(`Invalid XML in ${sectionFile}`);
+                  }
+                  // Basic XML tag balance check
+                  const openTags = (xmlContent.match(/<[^/!?][^>]*[^/]>/g) || []).length;
+                  const closeTags = (xmlContent.match(/<\/[^>]+>/g) || []).length;
+                  const selfClosing = (xmlContent.match(/<[^>]+\/>/g) || []).length;
+                  // Allow some tolerance for self-closing tags
+                  if (Math.abs(openTags - closeTags - selfClosing) > openTags * 0.1) {
+                    throw new Error(`XML tag imbalance in ${sectionFile}: open=${openTags}, close=${closeTags}, self=${selfClosing}`);
+                  }
+                }
+              }
+            } catch (verifyErr) {
+              // Clean up temp file
+              if (fs.existsSync(tempPath)) {
+                fs.unlinkSync(tempPath);
+              }
+              // Restore from backup if exists
+              if (backupPath && fs.existsSync(backupPath)) {
+                return error(`Save verification failed, backup preserved: ${verifyErr}`);
+              }
+              return error(`Save verification failed: ${verifyErr}`);
+            }
+          }
+
+          // Phase 2: Atomic move - rename temp to final (atomic on same filesystem)
+          if (fs.existsSync(savePath)) {
+            fs.unlinkSync(savePath);
+          }
+          fs.renameSync(tempPath, savePath);
+
+          return success({
+            message: `Saved to ${savePath}`,
+            backup_created: backupPath ? true : false,
+            integrity_verified: verifyIntegrity
+          });
+        } catch (saveErr) {
+          // Clean up temp file if exists
+          if (fs.existsSync(tempPath)) {
+            try { fs.unlinkSync(tempPath); } catch {}
+          }
+          // Restore from backup if save fails
+          if (backupPath && fs.existsSync(backupPath)) {
+            fs.copyFileSync(backupPath, savePath);
+            return error(`Save failed, restored from backup: ${saveErr}`);
+          }
+          return error(`Save failed: ${saveErr}`);
+        }
       }
 
       case 'list_open_documents': {
@@ -1433,12 +1534,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (!doc) return error('Document not found');
         if (doc.format === 'hwp') return error('HWP files are read-only');
 
+        const charShapeId = args?.char_shape_id as number | undefined;
         if (doc.updateTableCell(
           args?.section_index as number,
           args?.table_index as number,
           args?.row as number,
           args?.col as number,
-          args?.text as string
+          args?.text as string,
+          charShapeId
         )) {
           return success({ message: 'Cell updated' });
         }
