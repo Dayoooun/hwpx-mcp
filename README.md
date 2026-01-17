@@ -72,6 +72,12 @@ Command Palette (Ctrl+Shift+P)에서:
 
 ## Release Notes
 
+### 0.1.1
+- **버그 수정**: 테이블 빈 셀 업데이트 후 저장 시 변경사항이 유지되지 않던 문제 수정
+  - Self-closing XML run 태그 (`<hp:run ... />`) 처리 지원
+  - ID 기반 테이블 매칭으로 안정적인 XML 업데이트
+- 테이블 셀 업데이트 테스트 코드 추가
+
 ### 0.1.0
 - 최초 릴리스
 - HWPX 파일 읽기/쓰기 지원

@@ -107,6 +107,17 @@ AI: [insert_paragraph 도구 사용]
 AI: [insert_table 도구 사용]
 ```
 
+## 변경 이력
+
+### 0.1.1
+- **버그 수정**: `update_table_cell` 후 `save_document` 시 빈 셀 변경사항이 저장되지 않던 문제 수정
+  - Self-closing XML run 태그 (`<hp:run ... />`) 처리 지원 추가
+  - ID 기반 테이블 매칭으로 정확한 XML 업데이트 구현
+  - 원본 XML 구조를 최대한 보존하면서 텍스트만 수정
+
+### 0.1.0
+- 최초 릴리스
+
 ## 라이선스
 
 MIT
