@@ -1,4 +1,5 @@
 import JSZip from 'jszip';
+import pako from 'pako';
 import { HwpxParser } from './HwpxParser';
 import {
   HwpxContent,
@@ -45,6 +46,7 @@ export class HwpxDocument {
   private _pendingDirectTextUpdates: Array<{ oldText: string; newText: string }> = [];
   private _pendingTableCellUpdates: Array<{ sectionIndex: number; tableIndex: number; tableId: string; row: number; col: number; text: string; charShapeId?: number }> = [];
   private _pendingNestedTableInserts: Array<{ sectionIndex: number; parentTableIndex: number; row: number; col: number; nestedRows: number; nestedCols: number; data: string[][] }> = [];
+  private _pendingImageInserts: Array<{ sectionIndex: number; afterElementIndex: number; imageId: string; binaryId: string; data: string; mimeType: string; width: number; height: number }> = [];
 
   private constructor(id: string, path: string, zip: JSZip | null, content: HwpxContent, format: DocumentFormat) {
     this._id = id;
@@ -543,8 +545,8 @@ export class HwpxDocument {
   // Search & Replace
   // ============================================================
 
-  searchText(query: string, options: { caseSensitive?: boolean; regex?: boolean } = {}): Array<{ section: number; element: number; text: string; matches: string[]; count: number }> {
-    const { caseSensitive = false, regex = false } = options;
+  searchText(query: string, options: { caseSensitive?: boolean; regex?: boolean; includeTables?: boolean } = {}): Array<{ section: number; element: number; text: string; matches: string[]; count: number; location?: { type: 'paragraph' | 'table'; tableIndex?: number; row?: number; col?: number } }> {
+    const { caseSensitive = false, regex = false, includeTables = true } = options;
     let pattern: RegExp;
 
     if (regex) {
@@ -554,9 +556,10 @@ export class HwpxDocument {
       pattern = new RegExp(escaped, caseSensitive ? 'g' : 'gi');
     }
 
-    const results: Array<{ section: number; element: number; text: string; matches: string[]; count: number }> = [];
+    const results: Array<{ section: number; element: number; text: string; matches: string[]; count: number; location?: { type: 'paragraph' | 'table'; tableIndex?: number; row?: number; col?: number } }> = [];
 
     this._content.sections.forEach((section, si) => {
+      let tableIndex = 0;
       section.elements.forEach((el, ei) => {
         if (el.type === 'paragraph') {
           const text = el.data.runs.map(r => r.text).join('');
@@ -568,8 +571,30 @@ export class HwpxDocument {
               text,
               matches: found,
               count: found.length,
+              location: { type: 'paragraph' },
             });
           }
+        }
+        // Search in table cells
+        if (el.type === 'table' && includeTables) {
+          const table = el.data as HwpxTable;
+          table.rows.forEach((row, ri) => {
+            row.cells.forEach((cell, ci) => {
+              const cellText = cell.paragraphs.map(p => p.runs.map(r => r.text).join('')).join('\n');
+              const found = cellText.match(pattern);
+              if (found) {
+                results.push({
+                  section: si,
+                  element: ei,
+                  text: cellText,
+                  matches: found,
+                  count: found.length,
+                  location: { type: 'table', tableIndex, row: ri, col: ci },
+                });
+              }
+            });
+          });
+          tableIndex++;
         }
       });
     });
@@ -631,6 +656,96 @@ export class HwpxDocument {
     }
 
     return count;
+  }
+
+  /**
+   * Replace text within a specific table cell.
+   * This is more targeted than replaceText and works directly on cell content.
+   */
+  replaceTextInCell(
+    sectionIndex: number,
+    tableIndex: number,
+    row: number,
+    col: number,
+    oldText: string,
+    newText: string,
+    options: { caseSensitive?: boolean; regex?: boolean; replaceAll?: boolean } = {}
+  ): { success: boolean; count: number; error?: string } {
+    const { caseSensitive = false, regex = false, replaceAll = true } = options;
+
+    const section = this._content.sections[sectionIndex];
+    if (!section) {
+      return { success: false, count: 0, error: `Section ${sectionIndex} not found` };
+    }
+
+    // Find the table
+    let tableCount = 0;
+    let targetTable: HwpxTable | null = null;
+    for (const el of section.elements) {
+      if (el.type === 'table') {
+        if (tableCount === tableIndex) {
+          targetTable = el.data as HwpxTable;
+          break;
+        }
+        tableCount++;
+      }
+    }
+
+    if (!targetTable) {
+      return { success: false, count: 0, error: `Table ${tableIndex} not found in section ${sectionIndex}` };
+    }
+
+    if (row >= targetTable.rows.length) {
+      return { success: false, count: 0, error: `Row ${row} out of range (max: ${targetTable.rows.length - 1})` };
+    }
+
+    if (col >= targetTable.rows[row].cells.length) {
+      return { success: false, count: 0, error: `Column ${col} out of range (max: ${targetTable.rows[row].cells.length - 1})` };
+    }
+
+    const cell = targetTable.rows[row].cells[col];
+    this.saveState();
+
+    let pattern: RegExp;
+    if (regex) {
+      pattern = new RegExp(oldText, caseSensitive ? (replaceAll ? 'g' : '') : (replaceAll ? 'gi' : 'i'));
+    } else {
+      const escaped = oldText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      pattern = new RegExp(escaped, caseSensitive ? (replaceAll ? 'g' : '') : (replaceAll ? 'gi' : 'i'));
+    }
+
+    let count = 0;
+
+    // Replace in memory
+    for (const para of cell.paragraphs) {
+      for (const run of para.runs) {
+        const matches = run.text.match(pattern);
+        if (matches) {
+          count += matches.length;
+          run.text = run.text.replace(pattern, newText);
+        }
+      }
+    }
+
+    // Add to pending cell updates for XML sync
+    if (count > 0 && this._zip) {
+      const tableId = targetTable.id || '';
+      const cellText = cell.paragraphs.map(p => p.runs.map(r => r.text).join('')).join('\n');
+
+      // Use existing pending table cell update mechanism
+      this._pendingTableCellUpdates = this._pendingTableCellUpdates || [];
+      this._pendingTableCellUpdates.push({
+        sectionIndex,
+        tableIndex,
+        tableId,
+        row,
+        col,
+        text: cellText,
+      });
+      this._isDirty = true;
+    }
+
+    return { success: true, count };
   }
 
   // ============================================================
@@ -1106,8 +1221,14 @@ export class HwpxDocument {
 
     this.saveState();
 
-    const imageId = Math.random().toString(36).substring(2, 11);
-    const binaryId = Math.random().toString(36).substring(2, 11);
+    // Generate sequential image ID (image1, image2, ...)
+    const existingImageIds = this.getExistingImageIds();
+    let nextNum = 1;
+    while (existingImageIds.has(`image${nextNum}`)) {
+      nextNum++;
+    }
+    const imageId = `image${nextNum}`;
+    const binaryId = imageId; // Use same ID for binary reference
 
     const newImage: HwpxImage = {
       id: imageId,
@@ -1132,8 +1253,42 @@ export class HwpxDocument {
     const newElement: SectionElement = { type: 'image', data: newImage };
     section.elements.splice(afterElementIndex + 1, 0, newElement);
 
+    // Add to pending inserts for XML sync
+    this._pendingImageInserts.push({
+      sectionIndex,
+      afterElementIndex,
+      imageId,
+      binaryId,
+      data: imageData.data,
+      mimeType: imageData.mimeType,
+      width: imageData.width,
+      height: imageData.height,
+    });
+
     this._isDirty = true;
     return { id: imageId };
+  }
+
+  /**
+   * Get existing image IDs from ZIP file
+   */
+  private getExistingImageIds(): Set<string> {
+    const ids = new Set<string>();
+    if (this._zip) {
+      this._zip.forEach((relativePath) => {
+        if (relativePath.startsWith('BinData/image')) {
+          const match = relativePath.match(/BinData\/(image\d+)\./);
+          if (match) {
+            ids.add(match[1]);
+          }
+        }
+      });
+    }
+    // Also include pending inserts
+    for (const insert of this._pendingImageInserts) {
+      ids.add(insert.imageId);
+    }
+    return ids;
   }
 
   updateImageSize(imageId: string, width: number, height: number): boolean {
@@ -1583,6 +1738,12 @@ export class HwpxDocument {
       this._pendingTextReplacements = [];
     }
 
+    // Apply image inserts
+    if (this._pendingImageInserts && this._pendingImageInserts.length > 0) {
+      await this.applyImageInsertsToZip();
+      this._pendingImageInserts = [];
+    }
+
     // NOTE: Do NOT call syncCharShapesToZip() here.
     // The current serialization is incomplete and loses critical attributes
     // (textColor, shadeColor, symMark, underline, strikeout, outline, shadow).
@@ -1634,6 +1795,10 @@ export class HwpxDocument {
       for (const insert of sortedInserts) {
         if (insert.parentTableIndex >= tables.length) continue;
 
+        // Count tags before insertion for validation
+        const beforeTblOpen = (xml.match(/<(?:hp|hs|hc):tbl/g) || []).length;
+        const beforeTblClose = (xml.match(/<\/(?:hp|hs|hc):tbl>/g) || []).length;
+
         const tableData = tables[insert.parentTableIndex];
         const tableXml = tableData.xml;
 
@@ -1667,6 +1832,15 @@ export class HwpxDocument {
         xml = xml.substring(0, tableData.startIndex) +
           updatedTableXml +
           xml.substring(tableData.endIndex);
+
+        // Validate XML integrity after insertion
+        const afterTblOpen = (xml.match(/<(?:hp|hs|hc):tbl/g) || []).length;
+        const afterTblClose = (xml.match(/<\/(?:hp|hs|hc):tbl>/g) || []).length;
+
+        if (afterTblOpen !== beforeTblOpen + 1 || afterTblClose !== beforeTblClose + 1) {
+          console.error(`[HwpxDocument] XML corruption detected in nested table insertion! tbl tags: ${beforeTblOpen}→${afterTblOpen} open, ${beforeTblClose}→${afterTblClose} close`);
+          throw new Error(`Nested table insertion failed: XML tag imbalance detected (expected +1 for open and close tags)`);
+        }
       }
 
       this._zip.file(sectionPath, xml);
@@ -1979,6 +2153,8 @@ export class HwpxDocument {
               startIndex,
               endIndex
             });
+            // Skip nested tables by moving regex lastIndex to end of current table
+            tableStartRegex.lastIndex = endIndex;
           }
           pos = nextClose + 1;
         }
@@ -2740,5 +2916,394 @@ export class HwpxDocument {
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&apos;');
+  }
+
+  /**
+   * Get raw XML content of a section.
+   * Useful for AI-based document manipulation.
+   */
+  public async getSectionXml(sectionIndex: number): Promise<string | null> {
+    if (!this._zip) return null;
+
+    const sectionPath = `Contents/section${sectionIndex}.xml`;
+    const file = this._zip.file(sectionPath);
+    if (!file) return null;
+
+    return await file.async('string');
+  }
+
+  /**
+   * Set (replace) raw XML content of a section.
+   * WARNING: This completely replaces the section XML. Use with caution.
+   * The XML must be valid HWPML format.
+   *
+   * @param sectionIndex The section index to replace
+   * @param xml The new XML content (must be valid HWPML)
+   * @param validate If true, performs basic XML validation before replacing
+   * @returns Object with success status and any validation errors
+   */
+  public async setSectionXml(
+    sectionIndex: number,
+    xml: string,
+    validate: boolean = true
+  ): Promise<{ success: boolean; error?: string }> {
+    if (!this._zip) {
+      return { success: false, error: 'Document not loaded or is HWP format (read-only)' };
+    }
+
+    const sectionPath = `Contents/section${sectionIndex}.xml`;
+    const existingFile = this._zip.file(sectionPath);
+    if (!existingFile) {
+      return { success: false, error: `Section ${sectionIndex} does not exist` };
+    }
+
+    if (validate) {
+      // Basic XML structure validation
+      const validation = this.validateSectionXml(xml);
+      if (!validation.valid) {
+        return { success: false, error: validation.error };
+      }
+    }
+
+    // Save undo state
+    const originalXml = await existingFile.async('string');
+    this.saveState();
+
+    // Replace section XML
+    this._zip.file(sectionPath, xml);
+    this._isDirty = true;
+
+    // Re-parse the section to update in-memory content
+    try {
+      const updatedContent = await HwpxParser.parse(this._zip);
+      this._content = updatedContent;
+      return { success: true };
+    } catch (parseError) {
+      // Rollback on parse error
+      this._zip.file(sectionPath, originalXml);
+      return {
+        success: false,
+        error: `XML parsing failed: ${parseError instanceof Error ? parseError.message : String(parseError)}`
+      };
+    }
+  }
+
+  /**
+   * Validate section XML structure.
+   */
+  private validateSectionXml(xml: string): { valid: boolean; error?: string } {
+    // Check for required root element
+    if (!xml.includes('<hs:sec') && !xml.includes('<hp:sec')) {
+      return { valid: false, error: 'Missing section root element (<hs:sec> or <hp:sec>)' };
+    }
+
+    // Check for basic tag balance
+    const openTags = (xml.match(/<(?:hp|hs|hc):[a-zA-Z]+[^/>]*>/g) || []).length;
+    const closeTags = (xml.match(/<\/(?:hp|hs|hc):[a-zA-Z]+>/g) || []).length;
+    const selfCloseTags = (xml.match(/<(?:hp|hs|hc):[a-zA-Z]+[^>]*\/>/g) || []).length;
+
+    // Note: This is a rough check. openTags - selfCloseTags should equal closeTags
+    // But some tags might be counted in both patterns, so we do a simpler check
+    const pOpen = (xml.match(/<(?:hp|hs):p[^>]*>/g) || []).length;
+    const pClose = (xml.match(/<\/(?:hp|hs):p>/g) || []).length;
+    if (pOpen !== pClose) {
+      return { valid: false, error: `Paragraph tag imbalance: ${pOpen} open, ${pClose} close` };
+    }
+
+    const tblOpen = (xml.match(/<(?:hp|hs):tbl[^>]*>/g) || []).length;
+    const tblClose = (xml.match(/<\/(?:hp|hs):tbl>/g) || []).length;
+    if (tblOpen !== tblClose) {
+      return { valid: false, error: `Table tag imbalance: ${tblOpen} open, ${tblClose} close` };
+    }
+
+    return { valid: true };
+  }
+
+  /**
+   * Render Mermaid diagram and insert as image into the document.
+   * Uses mermaid.ink API for rendering.
+   *
+   * @param mermaidCode The Mermaid diagram code
+   * @param sectionIndex Section to insert into
+   * @param afterElementIndex Insert after this element index (-1 for beginning)
+   * @param options Optional rendering options
+   * @returns Object with image ID or null on failure
+   */
+  public async renderMermaidToImage(
+    mermaidCode: string,
+    sectionIndex: number,
+    afterElementIndex: number,
+    options?: {
+      width?: number;
+      height?: number;
+      theme?: 'default' | 'dark' | 'forest' | 'neutral';
+      backgroundColor?: string;
+    }
+  ): Promise<{ success: boolean; imageId?: string; error?: string }> {
+    if (!this._zip) {
+      return { success: false, error: 'Document not loaded or is HWP format' };
+    }
+
+    const section = this._content.sections[sectionIndex];
+    if (!section) {
+      return { success: false, error: `Section ${sectionIndex} not found` };
+    }
+
+    try {
+      // Create state object for mermaid.ink (same format as mermaid.live)
+      const stateObject = {
+        code: mermaidCode,
+        mermaid: { theme: options?.theme || 'default' },
+        autoSync: true,
+        updateDiagram: true
+      };
+
+      // Encode using pako deflate + base64 URL-safe (mermaid.live format)
+      const jsonString = JSON.stringify(stateObject);
+      const compressed = pako.deflate(jsonString, { level: 9 });
+      const base64Code = Buffer.from(compressed)
+        .toString('base64')
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_');
+
+      // Build URL with optional background color
+      let url = `https://mermaid.ink/img/pako:${base64Code}?type=png`;
+      if (options?.backgroundColor) {
+        // Remove # from color if present
+        const bgColor = options.backgroundColor.replace(/^#/, '');
+        url += `&bgColor=${bgColor}`;
+      }
+      const response = await fetch(url);
+
+      if (!response.ok) {
+        return {
+          success: false,
+          error: `Mermaid rendering failed: ${response.status} ${response.statusText}`
+        };
+      }
+
+      // Get image data as base64
+      const arrayBuffer = await response.arrayBuffer();
+      const imageBase64 = Buffer.from(arrayBuffer).toString('base64');
+
+      // Default dimensions (can be overridden)
+      const width = options?.width ?? 400;
+      const height = options?.height ?? 300;
+
+      // Insert image using existing method
+      const result = this.insertImage(sectionIndex, afterElementIndex, {
+        data: imageBase64,
+        mimeType: 'image/png',
+        width,
+        height,
+      });
+
+      if (result) {
+        return { success: true, imageId: result.id };
+      } else {
+        return { success: false, error: 'Failed to insert image into document' };
+      }
+    } catch (err) {
+      return {
+        success: false,
+        error: `Mermaid rendering error: ${err instanceof Error ? err.message : String(err)}`
+      };
+    }
+  }
+
+  /**
+   * Get list of available sections.
+   */
+  public async getAvailableSections(): Promise<number[]> {
+    if (!this._zip) return [];
+
+    const sections: number[] = [];
+    const files = this._zip.file(/Contents\/section\d+\.xml/);
+
+    for (const file of files) {
+      const match = file.name.match(/section(\d+)\.xml/);
+      if (match) {
+        sections.push(parseInt(match[1], 10));
+      }
+    }
+
+    return sections.sort((a, b) => a - b);
+  }
+
+  // ============================================================
+  // Image Insert to ZIP (BinData, content.hpf, section XML)
+  // ============================================================
+
+  /**
+   * Apply pending image inserts to ZIP file.
+   * 1. Add image file to BinData/ folder
+   * 2. Update content.hpf manifest
+   * 3. Add hp:pic tag to section XML
+   */
+  private async applyImageInsertsToZip(): Promise<void> {
+    if (!this._zip || this._pendingImageInserts.length === 0) return;
+
+    for (const insert of this._pendingImageInserts) {
+      // 1. Add image file to BinData/ folder
+      const extension = this.getExtensionFromMimeType(insert.mimeType);
+      const binDataPath = `BinData/${insert.imageId}.${extension}`;
+      const imageBuffer = Buffer.from(insert.data, 'base64');
+      this._zip.file(binDataPath, imageBuffer);
+
+      // 2. Update content.hpf manifest
+      await this.addImageToContentHpf(insert.imageId, binDataPath, insert.mimeType);
+
+      // 3. Add hp:pic tag to section XML
+      await this.addImageToSectionXml(
+        insert.sectionIndex,
+        insert.afterElementIndex,
+        insert.imageId,
+        insert.width,
+        insert.height
+      );
+    }
+  }
+
+  /**
+   * Get file extension from MIME type
+   */
+  private getExtensionFromMimeType(mimeType: string): string {
+    const mimeToExt: Record<string, string> = {
+      'image/png': 'png',
+      'image/jpeg': 'jpg',
+      'image/jpg': 'jpg',
+      'image/gif': 'gif',
+      'image/bmp': 'bmp',
+      'image/webp': 'webp',
+    };
+    return mimeToExt[mimeType] || 'png';
+  }
+
+  /**
+   * Add image entry to content.hpf manifest
+   */
+  private async addImageToContentHpf(imageId: string, binDataPath: string, mimeType: string): Promise<void> {
+    if (!this._zip) return;
+
+    const contentHpfFile = this._zip.file('Contents/content.hpf');
+    if (!contentHpfFile) return;
+
+    let contentHpf = await contentHpfFile.async('string');
+
+    // Find </opf:manifest> and insert new item before it
+    const manifestEndTag = '</opf:manifest>';
+    const insertPos = contentHpf.indexOf(manifestEndTag);
+    if (insertPos === -1) return;
+
+    // Generate hash key (simple base64 of image id for uniqueness)
+    const hashKey = Buffer.from(imageId + Date.now().toString()).toString('base64').substring(0, 22) + '==';
+
+    // Create new item entry
+    const newItem = `<opf:item id="${imageId}" href="${binDataPath}" media-type="${mimeType}" isEmbeded="1" hashkey="${hashKey}"/>`;
+
+    // Insert before </opf:manifest>
+    contentHpf = contentHpf.substring(0, insertPos) + newItem + contentHpf.substring(insertPos);
+
+    this._zip.file('Contents/content.hpf', contentHpf);
+  }
+
+  /**
+   * Add hp:pic tag to section XML
+   */
+  private async addImageToSectionXml(
+    sectionIndex: number,
+    afterElementIndex: number,
+    imageId: string,
+    width: number,
+    height: number
+  ): Promise<void> {
+    if (!this._zip) return;
+
+    const sectionPath = `Contents/section${sectionIndex}.xml`;
+    const sectionFile = this._zip.file(sectionPath);
+    if (!sectionFile) return;
+
+    let sectionXml = await sectionFile.async('string');
+
+    // Convert width/height from points to hwpunit (1pt ≈ 100 hwpunit)
+    const hwpWidth = Math.round(width * 100);
+    const hwpHeight = Math.round(height * 100);
+
+    // Generate unique IDs
+    const picId = Math.floor(Math.random() * 2000000000) + 100000000;
+    const instId = Math.floor(Math.random() * 2000000000) + 100000000;
+    const zOrder = Math.floor(Math.random() * 100);
+
+    // Generate hp:pic XML tag
+    const picXml = this.generateImagePicXml(picId, instId, zOrder, imageId, hwpWidth, hwpHeight);
+
+    // Find insertion point - after the specified paragraph
+    // Find all paragraphs
+    const paraRegex = /<hp:p[^>]*>[\s\S]*?<\/hp:p>/g;
+    const paragraphs: Array<{ start: number; end: number }> = [];
+    let match;
+    while ((match = paraRegex.exec(sectionXml)) !== null) {
+      paragraphs.push({ start: match.index, end: match.index + match[0].length });
+    }
+
+    // Insert after the specified paragraph (or at the beginning if -1)
+    let insertPos: number;
+    if (afterElementIndex < 0 || paragraphs.length === 0) {
+      // Insert at the beginning of section (after <hs:sec ...>)
+      const secStartMatch = sectionXml.match(/<hs:sec[^>]*>/);
+      insertPos = secStartMatch ? secStartMatch.index! + secStartMatch[0].length : 0;
+    } else if (afterElementIndex >= paragraphs.length) {
+      // Insert at the end (before </hs:sec>)
+      const secEndMatch = sectionXml.lastIndexOf('</hs:sec>');
+      insertPos = secEndMatch !== -1 ? secEndMatch : sectionXml.length;
+    } else {
+      // Insert after the specified paragraph
+      insertPos = paragraphs[afterElementIndex].end;
+    }
+
+    // Insert the image XML
+    sectionXml = sectionXml.substring(0, insertPos) + '\n' + picXml + sectionXml.substring(insertPos);
+
+    this._zip.file(sectionPath, sectionXml);
+  }
+
+  /**
+   * Generate hp:pic XML tag for image
+   */
+  private generateImagePicXml(
+    picId: number,
+    instId: number,
+    zOrder: number,
+    binaryItemId: string,
+    width: number,
+    height: number
+  ): string {
+    return `<hp:pic id="${picId}" zOrder="${zOrder}" numberingType="PICTURE" textWrap="TOP_AND_BOTTOM" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" href="" groupLevel="0" instid="${instId}" reverse="0">
+  <hp:offset x="0" y="0"/>
+  <hp:orgSz width="${width}" height="${height}"/>
+  <hp:curSz width="${width}" height="${height}"/>
+  <hp:flip horizontal="0" vertical="0"/>
+  <hp:rotationInfo angle="0" centerX="${Math.round(width / 2)}" centerY="${Math.round(height / 2)}" rotateimage="1"/>
+  <hp:renderingInfo>
+    <hc:transMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/>
+    <hc:scaMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/>
+    <hc:rotMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/>
+  </hp:renderingInfo>
+  <hc:img binaryItemIDRef="${binaryItemId}" bright="0" contrast="0" effect="REAL_PIC" alpha="0"/>
+  <hp:imgRect>
+    <hc:pt0 x="0" y="0"/>
+    <hc:pt1 x="${width}" y="0"/>
+    <hc:pt2 x="${width}" y="${height}"/>
+    <hc:pt3 x="0" y="${height}"/>
+  </hp:imgRect>
+  <hp:imgClip left="0" right="${width}" top="0" bottom="${height}"/>
+  <hp:inMargin left="0" right="0" top="0" bottom="0"/>
+  <hp:imgDim dimwidth="${width}" dimheight="${height}"/>
+  <hp:effects/>
+  <hp:sz width="${width}" widthRelTo="ABSOLUTE" height="${height}" heightRelTo="ABSOLUTE" protect="0"/>
+  <hp:pos treatAsChar="0" affectLSpacing="0" flowWithText="1" allowOverlap="0" holdAnchorAndSO="0" vertRelTo="PARA" horzRelTo="COLUMN" vertAlign="TOP" horzAlign="LEFT" vertOffset="0" horzOffset="0"/>
+  <hp:outMargin left="0" right="0" top="0" bottom="0"/>
+  <hp:shapeComment>Inserted by HWPX MCP</hp:shapeComment>
+</hp:pic>`;
   }
 }

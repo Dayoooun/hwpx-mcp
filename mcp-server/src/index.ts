@@ -277,7 +277,7 @@ const tools = [
   // === Search & Replace ===
   {
     name: 'search_text',
-    description: 'Search for text in the document',
+    description: 'Search for text in the document (includes table cells by default)',
     inputSchema: {
       type: 'object',
       properties: {
@@ -285,6 +285,7 @@ const tools = [
         query: { type: 'string', description: 'Text to search for' },
         case_sensitive: { type: 'boolean', description: 'Case sensitive search (default: false)' },
         regex: { type: 'boolean', description: 'Use regular expression (default: false)' },
+        include_tables: { type: 'boolean', description: 'Include table cell text in search (default: true)' },
       },
       required: ['doc_id', 'query'],
     },
@@ -325,6 +326,26 @@ const tools = [
         },
       },
       required: ['doc_id', 'replacements'],
+    },
+  },
+  {
+    name: 'replace_text_in_cell',
+    description: 'Replace text within a specific table cell (HWPX only). More targeted than replace_text.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        doc_id: { type: 'string', description: 'Document ID' },
+        section_index: { type: 'number', description: 'Section index' },
+        table_index: { type: 'number', description: 'Table index within section' },
+        row: { type: 'number', description: 'Row index (0-based)' },
+        col: { type: 'number', description: 'Column index (0-based)' },
+        old_text: { type: 'string', description: 'Text to find' },
+        new_text: { type: 'string', description: 'Replacement text' },
+        case_sensitive: { type: 'boolean', description: 'Case sensitive (default: false)' },
+        regex: { type: 'boolean', description: 'Use regular expression (default: false)' },
+        replace_all: { type: 'boolean', description: 'Replace all occurrences (default: true)' },
+      },
+      required: ['doc_id', 'section_index', 'table_index', 'row', 'col', 'old_text', 'new_text'],
     },
   },
 
@@ -864,6 +885,24 @@ const tools = [
       required: ['doc_id', 'section_index', 'image_index'],
     },
   },
+  {
+    name: 'render_mermaid',
+    description: 'Render a Mermaid diagram and insert it as an image (HWPX only). Uses mermaid.ink API. Supports flowcharts, sequence diagrams, class diagrams, etc.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        doc_id: { type: 'string', description: 'Document ID' },
+        mermaid_code: { type: 'string', description: 'Mermaid diagram code (e.g., "graph TD; A-->B;")' },
+        section_index: { type: 'number', description: 'Section index (default 0)' },
+        after_index: { type: 'number', description: 'Insert after this element index (-1 for beginning)' },
+        width: { type: 'number', description: 'Image width in points (default 400)' },
+        height: { type: 'number', description: 'Image height in points (default 300)' },
+        theme: { type: 'string', enum: ['default', 'dark', 'forest', 'neutral'], description: 'Diagram theme (default: default)' },
+        background_color: { type: 'string', description: 'Background color (e.g., "#ffffff" or "transparent")' },
+      },
+      required: ['doc_id', 'mermaid_code', 'after_index'],
+    },
+  },
 
   // === Drawing Objects ===
   {
@@ -1027,6 +1066,32 @@ const tools = [
         section_index: { type: 'number', description: 'Section index to delete' },
       },
       required: ['doc_id', 'section_index'],
+    },
+  },
+  {
+    name: 'get_section_xml',
+    description: 'Get raw XML content of a section. Useful for AI-based document manipulation. Returns the complete section XML that can be modified and set back using set_section_xml.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        doc_id: { type: 'string', description: 'Document ID' },
+        section_index: { type: 'number', description: 'Section index (default 0)' },
+      },
+      required: ['doc_id'],
+    },
+  },
+  {
+    name: 'set_section_xml',
+    description: 'Set (replace) raw XML content of a section (HWPX only). WARNING: This completely replaces the section XML. The XML must be valid HWPML format. Use get_section_xml first to get the current structure, modify it, then set it back.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        doc_id: { type: 'string', description: 'Document ID' },
+        section_index: { type: 'number', description: 'Section index (default 0)' },
+        xml: { type: 'string', description: 'New XML content (must be valid HWPML section XML)' },
+        validate: { type: 'boolean', description: 'Validate XML structure before replacing (default: true)' },
+      },
+      required: ['doc_id', 'xml'],
     },
   },
 
@@ -1484,6 +1549,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const results = doc.searchText(args?.query as string, {
           caseSensitive: args?.case_sensitive as boolean,
           regex: args?.regex as boolean,
+          includeTables: args?.include_tables !== false, // default true
         });
 
         return success({
@@ -1522,6 +1588,35 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
 
         return success({ results });
+      }
+
+      case 'replace_text_in_cell': {
+        const doc = getDoc(args?.doc_id as string);
+        if (!doc) return error('Document not found');
+        if (doc.format === 'hwp') return error('HWP files are read-only');
+
+        const result = doc.replaceTextInCell(
+          args?.section_index as number,
+          args?.table_index as number,
+          args?.row as number,
+          args?.col as number,
+          args?.old_text as string,
+          args?.new_text as string,
+          {
+            caseSensitive: args?.case_sensitive as boolean,
+            regex: args?.regex as boolean,
+            replaceAll: args?.replace_all as boolean ?? true,
+          }
+        );
+
+        if (!result.success) {
+          return error(result.error || 'Replace failed');
+        }
+
+        return success({
+          message: `Replaced ${result.count} occurrence(s) in cell [${args?.row}, ${args?.col}]`,
+          count: result.count,
+        });
       }
 
       // === Table Operations ===
@@ -2041,6 +2136,33 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return error('Failed to delete image');
       }
 
+      case 'render_mermaid': {
+        const doc = getDoc(args?.doc_id as string);
+        if (!doc) return error('Document not found');
+        if (doc.format === 'hwp') return error('HWP files are read-only');
+
+        const mermaidCode = args?.mermaid_code as string;
+        if (!mermaidCode) return error('Mermaid code is required');
+
+        const sectionIndex = (args?.section_index as number) ?? 0;
+        const afterIndex = args?.after_index as number;
+
+        const result = await doc.renderMermaidToImage(mermaidCode, sectionIndex, afterIndex, {
+          width: args?.width as number | undefined,
+          height: args?.height as number | undefined,
+          theme: args?.theme as 'default' | 'dark' | 'forest' | 'neutral' | undefined,
+          backgroundColor: args?.background_color as string | undefined,
+        });
+
+        if (result.success) {
+          return success({
+            message: 'Mermaid diagram rendered and inserted',
+            image_id: result.imageId,
+          });
+        }
+        return error(result.error || 'Failed to render Mermaid diagram');
+      }
+
       // === Drawing Objects ===
       case 'insert_line': {
         const doc = getDoc(args?.doc_id as string);
@@ -2181,6 +2303,38 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           return success({ message: 'Section deleted' });
         }
         return error('Failed to delete section');
+      }
+
+      case 'get_section_xml': {
+        const doc = getDoc(args?.doc_id as string);
+        if (!doc) return error('Document not found');
+
+        const sectionIndex = (args?.section_index as number) ?? 0;
+        const xml = await doc.getSectionXml(sectionIndex);
+        if (xml === null) {
+          return error(`Section ${sectionIndex} not found or document is HWP format`);
+        }
+        return success({ section_index: sectionIndex, xml });
+      }
+
+      case 'set_section_xml': {
+        const doc = getDoc(args?.doc_id as string);
+        if (!doc) return error('Document not found');
+        if (doc.format === 'hwp') return error('HWP files are read-only');
+
+        const sectionIndex = (args?.section_index as number) ?? 0;
+        const xml = args?.xml as string;
+        const validate = (args?.validate as boolean) ?? true;
+
+        if (!xml) {
+          return error('XML content is required');
+        }
+
+        const result = await doc.setSectionXml(sectionIndex, xml, validate);
+        if (result.success) {
+          return success({ message: `Section ${sectionIndex} XML replaced successfully` });
+        }
+        return error(result.error || 'Failed to set section XML');
       }
 
       // === Styles ===
