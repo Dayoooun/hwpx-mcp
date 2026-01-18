@@ -431,6 +431,71 @@ const tools = [
       required: ['doc_id'],
     },
   },
+
+  // === Position/Index Helper Tools ===
+  {
+    name: 'get_element_index_for_table',
+    description: 'Convert a global table index to element index in its section. Use this to find the right position for inserting content near a table.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        doc_id: { type: 'string', description: 'Document ID' },
+        table_index: { type: 'number', description: 'Global table index (0-based, from get_tables or get_table_map)' },
+      },
+      required: ['doc_id', 'table_index'],
+    },
+  },
+  {
+    name: 'find_paragraph_by_text',
+    description: 'Find paragraphs containing specific text. Returns element indices with surrounding context.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        doc_id: { type: 'string', description: 'Document ID' },
+        search_text: { type: 'string', description: 'Text to search for (partial match, case-insensitive)' },
+        section_index: { type: 'number', description: 'Optional: limit search to specific section' },
+      },
+      required: ['doc_id', 'search_text'],
+    },
+  },
+  {
+    name: 'get_insert_context',
+    description: 'Get context around an element index to verify insertion point. Shows elements before/after.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        doc_id: { type: 'string', description: 'Document ID' },
+        section_index: { type: 'number', description: 'Section index' },
+        element_index: { type: 'number', description: 'Element index to inspect' },
+        context_range: { type: 'number', description: 'Number of elements before/after to show (default: 2)' },
+      },
+      required: ['doc_id', 'section_index', 'element_index'],
+    },
+  },
+  {
+    name: 'find_insert_position_after_header',
+    description: 'Find the right insertion position after a paragraph containing specific header text. Returns section_index and insert_after value ready to use in insert_image/render_mermaid.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        doc_id: { type: 'string', description: 'Document ID' },
+        header_text: { type: 'string', description: 'Header/title text to search for' },
+      },
+      required: ['doc_id', 'header_text'],
+    },
+  },
+  {
+    name: 'find_insert_position_after_table',
+    description: 'Find the right insertion position after a specific table. Returns section_index and insert_after value ready to use in insert_image/render_mermaid.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        doc_id: { type: 'string', description: 'Document ID' },
+        table_index: { type: 'number', description: 'Global table index (0-based)' },
+      },
+      required: ['doc_id', 'table_index'],
+    },
+  },
   {
     name: 'get_table',
     description: 'Get a specific table with full data',
@@ -913,13 +978,15 @@ const tools = [
   // === Images ===
   {
     name: 'insert_image',
-    description: 'Insert an image into the document (HWPX only). Supports preserving original aspect ratio and precise positioning.',
+    description: 'Insert an image into the document (HWPX only). Supports preserving original aspect ratio and precise positioning. Use after_table or after_header for easier positioning instead of after_index.',
     inputSchema: {
       type: 'object',
       properties: {
         doc_id: { type: 'string', description: 'Document ID' },
-        section_index: { type: 'number', description: 'Section index' },
-        after_index: { type: 'number', description: 'Insert after this element index (-1 for beginning)' },
+        section_index: { type: 'number', description: 'Section index (auto-detected if using after_table or after_header)' },
+        after_index: { type: 'number', description: 'Insert after this element index. Use after_table or after_header instead for easier positioning.' },
+        after_table: { type: 'number', description: 'RECOMMENDED: Insert after this table index (0-based global index from get_table_map). Automatically sets section_index and after_index.' },
+        after_header: { type: 'string', description: 'RECOMMENDED: Insert after paragraph containing this text. Automatically sets section_index and after_index.' },
         image_path: { type: 'string', description: 'Path to the image file' },
         width: { type: 'number', description: 'Image width in points (optional). If only width is specified with preserve_aspect_ratio=true, height is auto-calculated.' },
         height: { type: 'number', description: 'Image height in points (optional). If only height is specified with preserve_aspect_ratio=true, width is auto-calculated.' },
@@ -933,7 +1000,7 @@ const tools = [
         horz_offset: { type: 'number', description: 'Horizontal offset from anchor in points. Default: 0.' },
         text_wrap: { type: 'string', enum: ['top_and_bottom', 'square', 'tight', 'behind_text', 'in_front_of_text', 'none'], description: 'Text wrap mode. Default: top_and_bottom.' },
       },
-      required: ['doc_id', 'section_index', 'after_index', 'image_path'],
+      required: ['doc_id', 'image_path'],
     },
   },
   {
@@ -966,14 +1033,16 @@ const tools = [
   },
   {
     name: 'render_mermaid',
-    description: 'Render a Mermaid diagram and insert it as an image (HWPX only). Uses mermaid.ink API. Supports flowcharts, sequence diagrams, class diagrams, etc. By default, preserves the original aspect ratio.',
+    description: 'Render a Mermaid diagram and insert it as an image (HWPX only). Uses mermaid.ink API. Use after_table or after_header for easier positioning.',
     inputSchema: {
       type: 'object',
       properties: {
         doc_id: { type: 'string', description: 'Document ID' },
         mermaid_code: { type: 'string', description: 'Mermaid diagram code (e.g., "graph TD; A-->B;")' },
-        section_index: { type: 'number', description: 'Section index (default 0)' },
-        after_index: { type: 'number', description: 'Insert after this element index (-1 for beginning)' },
+        section_index: { type: 'number', description: 'Section index (auto-detected if using after_table or after_header)' },
+        after_index: { type: 'number', description: 'Insert after this element index. Use after_table or after_header instead for easier positioning.' },
+        after_table: { type: 'number', description: 'RECOMMENDED: Insert after this table index (0-based global index from get_table_map). Automatically sets section_index and after_index.' },
+        after_header: { type: 'string', description: 'RECOMMENDED: Insert after paragraph containing this text. Automatically sets section_index and after_index.' },
         width: { type: 'number', description: 'Image width in points (optional). If specified with preserve_aspect_ratio=true, height is auto-calculated.' },
         height: { type: 'number', description: 'Image height in points (optional). If specified with preserve_aspect_ratio=true, width is auto-calculated.' },
         theme: { type: 'string', enum: ['default', 'dark', 'forest', 'neutral'], description: 'Diagram theme (default: default)' },
@@ -988,7 +1057,7 @@ const tools = [
         horz_offset: { type: 'number', description: 'Horizontal offset from anchor in points. Default: 0.' },
         text_wrap: { type: 'string', enum: ['top_and_bottom', 'square', 'tight', 'behind_text', 'in_front_of_text', 'none'], description: 'Text wrap mode. Default: top_and_bottom.' },
       },
-      required: ['doc_id', 'mermaid_code', 'after_index'],
+      required: ['doc_id', 'mermaid_code'],
     },
   },
 
@@ -1811,6 +1880,66 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return success({ outline: doc.getDocumentOutline() });
       }
 
+      // === Position/Index Helper Handlers ===
+      case 'get_element_index_for_table': {
+        const doc = getDoc(args?.doc_id as string);
+        if (!doc) return error('Document not found');
+        const tableIndex = args?.table_index as number;
+        if (typeof tableIndex !== 'number') return error('table_index is required');
+        const result = doc.getElementIndexForTable(tableIndex);
+        if (!result) return error(`Table ${tableIndex} not found`);
+        return success(result);
+      }
+
+      case 'find_paragraph_by_text': {
+        const doc = getDoc(args?.doc_id as string);
+        if (!doc) return error('Document not found');
+        const searchText = args?.search_text as string;
+        if (!searchText) return error('search_text is required');
+        const sectionIndex = args?.section_index as number | undefined;
+        const results = doc.findParagraphByText(searchText, sectionIndex);
+        return success({ matches: results, count: results.length });
+      }
+
+      case 'get_insert_context': {
+        const doc = getDoc(args?.doc_id as string);
+        if (!doc) return error('Document not found');
+        const sectionIdx = args?.section_index as number;
+        const elementIdx = args?.element_index as number;
+        if (typeof sectionIdx !== 'number') return error('section_index is required');
+        if (typeof elementIdx !== 'number') return error('element_index is required');
+        const contextRange = args?.context_range as number | undefined;
+        const result = doc.getInsertContext(sectionIdx, elementIdx, contextRange);
+        if (!result) return error('Invalid section or element index');
+        return success(result);
+      }
+
+      case 'find_insert_position_after_header': {
+        const doc = getDoc(args?.doc_id as string);
+        if (!doc) return error('Document not found');
+        const headerText = args?.header_text as string;
+        if (!headerText) return error('header_text is required');
+        const result = doc.findInsertPositionAfterHeader(headerText);
+        if (!result) return error(`Header "${headerText}" not found`);
+        return success({
+          ...result,
+          usage_hint: `Use section_index=${result.section_index} and after_index=${result.insert_after} in insert_image/render_mermaid`,
+        });
+      }
+
+      case 'find_insert_position_after_table': {
+        const doc = getDoc(args?.doc_id as string);
+        if (!doc) return error('Document not found');
+        const tableIndex = args?.table_index as number;
+        if (typeof tableIndex !== 'number') return error('table_index is required');
+        const result = doc.findInsertPositionAfterTable(tableIndex);
+        if (!result) return error(`Table ${tableIndex} not found`);
+        return success({
+          ...result,
+          usage_hint: `Use section_index=${result.section_index} and after_index=${result.insert_after} in insert_image/render_mermaid`,
+        });
+      }
+
       case 'get_table': {
         const doc = getDoc(args?.doc_id as string);
         if (!doc) return error('Document not found');
@@ -2262,6 +2391,35 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const imagePath = args?.image_path as string;
         if (!fs.existsSync(imagePath)) return error('Image file not found');
 
+        // Resolve position using after_table, after_header, or direct indices
+        let sectionIndex = args?.section_index as number | undefined;
+        let afterIndex = args?.after_index as number | undefined;
+        let insertedAfter = '';
+
+        const afterTable = args?.after_table as number | undefined;
+        const afterHeader = args?.after_header as string | undefined;
+
+        if (afterTable !== undefined) {
+          // Insert after a specific table
+          const pos = doc.findInsertPositionAfterTable(afterTable);
+          if (!pos) return error(`Table ${afterTable} not found`);
+          sectionIndex = pos.section_index;
+          afterIndex = pos.insert_after;
+          insertedAfter = `table ${afterTable} ("${pos.table_info.header.substring(0, 50)}")`;
+        } else if (afterHeader) {
+          // Insert after a header paragraph
+          const pos = doc.findInsertPositionAfterHeader(afterHeader);
+          if (!pos) return error(`Header "${afterHeader}" not found`);
+          sectionIndex = pos.section_index;
+          afterIndex = pos.insert_after;
+          insertedAfter = `header "${pos.header_found.substring(0, 50)}"`;
+        } else {
+          // Use direct indices
+          if (sectionIndex === undefined) return error('section_index is required when not using after_table or after_header');
+          if (afterIndex === undefined) return error('after_index is required when not using after_table or after_header');
+          insertedAfter = `element ${afterIndex}`;
+        }
+
         const imageData = fs.readFileSync(imagePath);
         const ext = path.extname(imagePath).toLowerCase();
         const mimeTypes: Record<string, string> = {
@@ -2291,8 +2449,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         } : undefined;
 
         const result = doc.insertImage(
-          args?.section_index as number,
-          args?.after_index as number,
+          sectionIndex,
+          afterIndex,
           {
             data: imageData.toString('base64'),
             mimeType: mimeTypes[ext] || 'image/png',
@@ -2303,11 +2461,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           }
         );
         if (!result) return error('Failed to insert image');
+
+        // Get context around insertion point for verification
+        const context = doc.getInsertContext(sectionIndex, afterIndex + 1, 1);
+
         return success({
-          message: 'Image inserted',
+          message: `Image inserted after ${insertedAfter}`,
           id: result.id,
           actualWidth: result.actualWidth,
-          actualHeight: result.actualHeight
+          actualHeight: result.actualHeight,
+          section_index: sectionIndex,
+          element_index: afterIndex + 1,
+          context: context ? {
+            before: context.elements_before.map(e => e.text).join(' → '),
+            after: context.elements_after.map(e => e.text).join(' → '),
+          } : undefined,
         });
       }
 
@@ -2354,8 +2522,34 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const mermaidCode = args?.mermaid_code as string;
         if (!mermaidCode) return error('Mermaid code is required');
 
-        const sectionIndex = (args?.section_index as number) ?? 0;
-        const afterIndex = args?.after_index as number;
+        // Resolve position using after_table, after_header, or direct indices
+        let sectionIndex = args?.section_index as number | undefined;
+        let afterIndex = args?.after_index as number | undefined;
+        let insertedAfter = '';
+
+        const afterTable = args?.after_table as number | undefined;
+        const afterHeader = args?.after_header as string | undefined;
+
+        if (afterTable !== undefined) {
+          // Insert after a specific table
+          const pos = doc.findInsertPositionAfterTable(afterTable);
+          if (!pos) return error(`Table ${afterTable} not found`);
+          sectionIndex = pos.section_index;
+          afterIndex = pos.insert_after;
+          insertedAfter = `table ${afterTable} ("${pos.table_info.header.substring(0, 50)}")`;
+        } else if (afterHeader) {
+          // Insert after a header paragraph
+          const pos = doc.findInsertPositionAfterHeader(afterHeader);
+          if (!pos) return error(`Header "${afterHeader}" not found`);
+          sectionIndex = pos.section_index;
+          afterIndex = pos.insert_after;
+          insertedAfter = `header "${pos.header_found.substring(0, 50)}"`;
+        } else {
+          // Use direct indices (default section to 0)
+          sectionIndex = sectionIndex ?? 0;
+          if (afterIndex === undefined) return error('after_index is required when not using after_table or after_header');
+          insertedAfter = `element ${afterIndex}`;
+        }
 
         // Build position options from args
         const positionOptions: ImagePositionOptions | undefined = (
@@ -2383,11 +2577,20 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         });
 
         if (result.success) {
+          // Get context around insertion point for verification
+          const context = doc.getInsertContext(sectionIndex, afterIndex + 1, 1);
+
           return success({
-            message: 'Mermaid diagram rendered and inserted',
+            message: `Mermaid diagram inserted after ${insertedAfter}`,
             image_id: result.imageId,
             actualWidth: result.actualWidth,
             actualHeight: result.actualHeight,
+            section_index: sectionIndex,
+            element_index: afterIndex + 1,
+            context: context ? {
+              before: context.elements_before.map(e => e.text).join(' → '),
+              after: context.elements_after.map(e => e.text).join(' → '),
+            } : undefined,
           });
         }
         return error(result.error || 'Failed to render Mermaid diagram');

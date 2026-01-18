@@ -782,6 +782,269 @@ export class HwpxDocument {
     return outline;
   }
 
+  // ============================================================
+  // Position/Index Helper Methods
+  // ============================================================
+
+  /**
+   * Convert a global table index to element index in its section
+   * @param tableIndex - Global table index (0-based across all sections)
+   * @returns Object with section_index and element_index, or null if not found
+   */
+  getElementIndexForTable(tableIndex: number): {
+    section_index: number;
+    element_index: number;
+    table_info: { rows: number; cols: number; header: string };
+  } | null {
+    let currentTableIndex = 0;
+
+    for (let sectionIndex = 0; sectionIndex < this._content.sections.length; sectionIndex++) {
+      const section = this._content.sections[sectionIndex];
+      let lastParagraphText = '';
+
+      for (let elementIndex = 0; elementIndex < section.elements.length; elementIndex++) {
+        const element = section.elements[elementIndex];
+
+        if (element.type === 'paragraph') {
+          const para = element.data as HwpxParagraph;
+          const text = para.runs.map(r => r.text).join('').trim();
+          if (text) lastParagraphText = text;
+        } else if (element.type === 'table') {
+          if (currentTableIndex === tableIndex) {
+            const table = element.data as HwpxTable;
+            return {
+              section_index: sectionIndex,
+              element_index: elementIndex,
+              table_info: {
+                rows: table.rows.length,
+                cols: table.rows[0]?.cells.length || 0,
+                header: lastParagraphText,
+              },
+            };
+          }
+          currentTableIndex++;
+        }
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Find element index of a paragraph containing specific text
+   * @param searchText - Text to search for (partial match, case-insensitive)
+   * @param sectionIndex - Optional: limit search to specific section
+   * @returns Array of matching positions with context
+   */
+  findParagraphByText(searchText: string, sectionIndex?: number): Array<{
+    section_index: number;
+    element_index: number;
+    text: string;
+    context_before: string;
+    context_after: string;
+  }> {
+    const results: Array<{
+      section_index: number;
+      element_index: number;
+      text: string;
+      context_before: string;
+      context_after: string;
+    }> = [];
+
+    const lowerSearch = searchText.toLowerCase();
+    const sectionsToSearch = sectionIndex !== undefined
+      ? [{ idx: sectionIndex, section: this._content.sections[sectionIndex] }]
+      : this._content.sections.map((s, i) => ({ idx: i, section: s }));
+
+    for (const { idx, section } of sectionsToSearch) {
+      if (!section) continue;
+
+      for (let elemIdx = 0; elemIdx < section.elements.length; elemIdx++) {
+        const element = section.elements[elemIdx];
+
+        if (element.type === 'paragraph') {
+          const para = element.data as HwpxParagraph;
+          const text = para.runs.map(r => r.text).join('');
+
+          if (text.toLowerCase().includes(lowerSearch)) {
+            // Get context
+            const beforeElem = section.elements[elemIdx - 1];
+            const afterElem = section.elements[elemIdx + 1];
+
+            let contextBefore = '';
+            let contextAfter = '';
+
+            if (beforeElem?.type === 'paragraph') {
+              contextBefore = (beforeElem.data as HwpxParagraph).runs.map(r => r.text).join('').substring(0, 50);
+            } else if (beforeElem?.type === 'table') {
+              contextBefore = '[Table]';
+            }
+
+            if (afterElem?.type === 'paragraph') {
+              contextAfter = (afterElem.data as HwpxParagraph).runs.map(r => r.text).join('').substring(0, 50);
+            } else if (afterElem?.type === 'table') {
+              contextAfter = '[Table]';
+            }
+
+            results.push({
+              section_index: idx,
+              element_index: elemIdx,
+              text: text.substring(0, 100) + (text.length > 100 ? '...' : ''),
+              context_before: contextBefore,
+              context_after: contextAfter,
+            });
+          }
+        }
+      }
+    }
+
+    return results;
+  }
+
+  /**
+   * Get context around an element index (useful for verifying insertion point)
+   * @param sectionIndex - Section index
+   * @param elementIndex - Element index
+   * @param contextRange - Number of elements before/after to include (default: 2)
+   */
+  getInsertContext(sectionIndex: number, elementIndex: number, contextRange = 2): {
+    target_element: { type: string; text: string };
+    elements_before: Array<{ type: string; text: string; element_index: number }>;
+    elements_after: Array<{ type: string; text: string; element_index: number }>;
+    recommended_insert_after: number;
+  } | null {
+    const section = this._content.sections[sectionIndex];
+    if (!section) return null;
+
+    const getElementSummary = (elem: SectionElement): string => {
+      if (elem.type === 'paragraph') {
+        const text = (elem.data as HwpxParagraph).runs.map(r => r.text).join('');
+        return text.substring(0, 80) + (text.length > 80 ? '...' : '');
+      } else if (elem.type === 'table') {
+        const table = elem.data as HwpxTable;
+        return `[Table ${table.rows.length}x${table.rows[0]?.cells.length || 0}]`;
+      } else if (elem.type === 'image') {
+        return '[Image]';
+      }
+      return `[${elem.type}]`;
+    };
+
+    const targetElem = section.elements[elementIndex];
+    if (!targetElem) return null;
+
+    const elementsBefore: Array<{ type: string; text: string; element_index: number }> = [];
+    const elementsAfter: Array<{ type: string; text: string; element_index: number }> = [];
+
+    for (let i = Math.max(0, elementIndex - contextRange); i < elementIndex; i++) {
+      const elem = section.elements[i];
+      if (elem) {
+        elementsBefore.push({
+          type: elem.type,
+          text: getElementSummary(elem),
+          element_index: i,
+        });
+      }
+    }
+
+    for (let i = elementIndex + 1; i <= Math.min(section.elements.length - 1, elementIndex + contextRange); i++) {
+      const elem = section.elements[i];
+      if (elem) {
+        elementsAfter.push({
+          type: elem.type,
+          text: getElementSummary(elem),
+          element_index: i,
+        });
+      }
+    }
+
+    return {
+      target_element: { type: targetElem.type, text: getElementSummary(targetElem) },
+      elements_before: elementsBefore,
+      elements_after: elementsAfter,
+      recommended_insert_after: elementIndex,
+    };
+  }
+
+  /**
+   * Find insertion position by searching for a header/title text
+   * Returns position right after the found paragraph (good for inserting content under a header)
+   * @param headerText - Text to search for in paragraph headers
+   */
+  findInsertPositionAfterHeader(headerText: string): {
+    section_index: number;
+    element_index: number;
+    insert_after: number;
+    header_found: string;
+    next_element: { type: string; text: string } | null;
+  } | null {
+    const matches = this.findParagraphByText(headerText);
+    if (matches.length === 0) return null;
+
+    const match = matches[0]; // Take first match
+    const section = this._content.sections[match.section_index];
+    const nextElem = section.elements[match.element_index + 1];
+
+    let nextElementInfo: { type: string; text: string } | null = null;
+    if (nextElem) {
+      if (nextElem.type === 'paragraph') {
+        const text = (nextElem.data as HwpxParagraph).runs.map(r => r.text).join('');
+        nextElementInfo = { type: 'paragraph', text: text.substring(0, 80) };
+      } else if (nextElem.type === 'table') {
+        const table = nextElem.data as HwpxTable;
+        nextElementInfo = { type: 'table', text: `${table.rows.length}x${table.rows[0]?.cells.length || 0}` };
+      } else {
+        nextElementInfo = { type: nextElem.type, text: '' };
+      }
+    }
+
+    return {
+      section_index: match.section_index,
+      element_index: match.element_index,
+      insert_after: match.element_index, // Insert after the header paragraph
+      header_found: match.text,
+      next_element: nextElementInfo,
+    };
+  }
+
+  /**
+   * Find insertion position right after a specific table
+   * @param tableIndex - Global table index
+   */
+  findInsertPositionAfterTable(tableIndex: number): {
+    section_index: number;
+    element_index: number;
+    insert_after: number;
+    table_info: { rows: number; cols: number; header: string };
+    next_element: { type: string; text: string } | null;
+  } | null {
+    const tablePos = this.getElementIndexForTable(tableIndex);
+    if (!tablePos) return null;
+
+    const section = this._content.sections[tablePos.section_index];
+    const nextElem = section.elements[tablePos.element_index + 1];
+
+    let nextElementInfo: { type: string; text: string } | null = null;
+    if (nextElem) {
+      if (nextElem.type === 'paragraph') {
+        const text = (nextElem.data as HwpxParagraph).runs.map(r => r.text).join('');
+        nextElementInfo = { type: 'paragraph', text: text.substring(0, 80) };
+      } else if (nextElem.type === 'table') {
+        const table = nextElem.data as HwpxTable;
+        nextElementInfo = { type: 'table', text: `${table.rows.length}x${table.rows[0]?.cells.length || 0}` };
+      } else {
+        nextElementInfo = { type: nextElem.type, text: '' };
+      }
+    }
+
+    return {
+      section_index: tablePos.section_index,
+      element_index: tablePos.element_index,
+      insert_after: tablePos.element_index, // Insert after the table
+      table_info: tablePos.table_info,
+      next_element: nextElementInfo,
+    };
+  }
+
   getTable(sectionIndex: number, tableIndex: number): { rows: number; cols: number; data: any[][] } | null {
     const table = this.findTable(sectionIndex, tableIndex);
     if (!table) return null;
