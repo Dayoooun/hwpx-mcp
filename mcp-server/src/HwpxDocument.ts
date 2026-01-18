@@ -3512,6 +3512,11 @@ export class HwpxDocument {
    * If charShapeId is provided, overrides the charPrIDRef attribute.
    */
   private updateTextInCell(cellXml: string, newText: string, charShapeId?: number): string {
+    // Check if text contains newlines - if so, create multiple paragraphs
+    if (newText.includes('\n')) {
+      return this.updateTextInCellMultiline(cellXml, newText, charShapeId);
+    }
+
     const escapedText = this.escapeXml(newText);
     let xml = cellXml;
 
@@ -3603,6 +3608,144 @@ export class HwpxDocument {
 
     // Fallback: return unchanged (shouldn't happen in well-formed HWPX)
     return xml;
+  }
+
+  /**
+   * Update text content in a cell with multiple paragraphs (for text with newlines).
+   * Each line becomes a separate <hp:p> element, allowing independent styling.
+   */
+  private updateTextInCellMultiline(cellXml: string, newText: string, charShapeId?: number): string {
+    const lines = newText.split('\n');
+    const charAttr = charShapeId !== undefined ? ` charPrIDRef="${charShapeId}"` : ' charPrIDRef="0"';
+
+    // Find the OUTER subList element with balanced tag matching
+    // This is crucial because cells can contain nested tables with their own subLists
+    const subListStartMatch = cellXml.match(/<(hp|hs|hc):subList[^>]*>/);
+    if (subListStartMatch) {
+      const prefix = subListStartMatch[1];
+      const startTag = subListStartMatch[0];
+      const startIndex = cellXml.indexOf(startTag);
+      const contentStartIndex = startIndex + startTag.length;
+
+      // Find matching closing tag using balanced bracket counting
+      const openTag = `<${prefix}:subList`;
+      const closeTag = `</${prefix}:subList>`;
+      let depth = 1;
+      let searchIndex = contentStartIndex;
+      let contentEndIndex = -1;
+
+      while (depth > 0 && searchIndex < cellXml.length) {
+        const nextOpen = cellXml.indexOf(openTag, searchIndex);
+        const nextClose = cellXml.indexOf(closeTag, searchIndex);
+
+        if (nextClose === -1) {
+          // No closing tag found - malformed XML
+          break;
+        }
+
+        if (nextOpen !== -1 && nextOpen < nextClose) {
+          // Found another opening tag first - increase depth
+          depth++;
+          searchIndex = nextOpen + openTag.length;
+        } else {
+          // Found closing tag
+          depth--;
+          if (depth === 0) {
+            contentEndIndex = nextClose;
+          }
+          searchIndex = nextClose + closeTag.length;
+        }
+      }
+
+      if (contentEndIndex !== -1) {
+        const subListContent = cellXml.substring(contentStartIndex, contentEndIndex);
+
+        // Extract paraPrIDRef and styleIDRef from existing paragraph if available
+        const existingPMatch = subListContent.match(/<(?:hp|hs|hc):p[^>]*paraPrIDRef="([^"]*)"[^>]*styleIDRef="([^"]*)"/);
+        const paraPrIDRef = existingPMatch?.[1] || '0';
+        const styleIDRef = existingPMatch?.[2] || '0';
+
+        // Generate multiple paragraphs
+        const paragraphs = lines.map((line, index) => {
+          const escapedLine = this.escapeXml(line);
+          const paraId = Math.floor(Math.random() * 2147483647);
+          return `<${prefix}:p id="${paraId}" paraPrIDRef="${paraPrIDRef}" styleIDRef="${styleIDRef}" pageBreak="0" columnBreak="0" merged="0"><${prefix}:run${charAttr}><${prefix}:t>${escapedLine}</${prefix}:t></${prefix}:run><${prefix}:linesegarray><${prefix}:lineseg textpos="0" vertpos="0" vertsize="1000" textheight="1000" baseline="850" spacing="600" horzpos="0" horzsize="0" flags="0"/></${prefix}:linesegarray></${prefix}:p>`;
+        }).join('');
+
+        return cellXml.substring(0, contentStartIndex) + paragraphs + cellXml.substring(contentEndIndex);
+      }
+    }
+
+    // If no subList found, try to find just paragraphs and replace
+    // Use balanced matching for paragraphs too, since they can contain nested tables
+    const pStartMatch = cellXml.match(/<(hp|hs|hc):p[^>]*>/);
+    if (pStartMatch) {
+      const prefix = pStartMatch[1];
+      const firstPStart = cellXml.indexOf(pStartMatch[0]);
+
+      // Extract attributes from the first paragraph
+      const attrMatch = pStartMatch[0].match(/<(?:hp|hs|hc):p([^>]*)>/);
+      const existingAttrs = attrMatch?.[1] || ' id="0" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0"';
+
+      // Find the end of the last top-level paragraph using balanced matching
+      const openTag = `<${prefix}:p`;
+      const closeTag = `</${prefix}:p>`;
+      let depth = 0;
+      let searchIndex = firstPStart;
+      let lastParagraphEnd = -1;
+
+      // Process all top-level paragraphs
+      while (searchIndex < cellXml.length) {
+        const nextOpen = cellXml.indexOf(openTag, searchIndex);
+        const nextClose = cellXml.indexOf(closeTag, searchIndex);
+
+        // If we're at depth 0 and there's no more opening tag, we're done
+        if (depth === 0 && (nextOpen === -1 || (nextClose !== -1 && nextClose < nextOpen && cellXml.indexOf(openTag, searchIndex) === -1))) {
+          break;
+        }
+
+        if (nextOpen !== -1 && (nextClose === -1 || nextOpen < nextClose)) {
+          // Found opening tag
+          depth++;
+          searchIndex = nextOpen + openTag.length;
+        } else if (nextClose !== -1) {
+          // Found closing tag
+          depth--;
+          searchIndex = nextClose + closeTag.length;
+          if (depth === 0) {
+            lastParagraphEnd = searchIndex;
+            // Check if there's another paragraph at top level
+            const remainingXml = cellXml.substring(searchIndex);
+            const nextPMatch = remainingXml.match(/^\s*<(hp|hs|hc):p[^>]*>/);
+            if (!nextPMatch) {
+              // No more top-level paragraphs
+              break;
+            }
+          }
+        } else {
+          // No more tags found
+          break;
+        }
+      }
+
+      if (lastParagraphEnd !== -1) {
+        // Generate multiple paragraphs
+        const paragraphs = lines.map((line, index) => {
+          const escapedLine = this.escapeXml(line);
+          let attrs = existingAttrs;
+          if (index > 0) {
+            const newId = Math.floor(Math.random() * 2147483647);
+            attrs = attrs.replace(/id="[^"]*"/, `id="${newId}"`);
+          }
+          return `<${prefix}:p${attrs}><${prefix}:run${charAttr}><${prefix}:t>${escapedLine}</${prefix}:t></${prefix}:run><${prefix}:linesegarray><${prefix}:lineseg textpos="0" vertpos="0" vertsize="1000" textheight="1000" baseline="850" spacing="600" horzpos="0" horzsize="0" flags="0"/></${prefix}:linesegarray></${prefix}:p>`;
+        }).join('');
+
+        return cellXml.substring(0, firstPStart) + paragraphs + cellXml.substring(lastParagraphEnd);
+      }
+    }
+
+    // Fallback: return unchanged
+    return cellXml;
   }
 
   /**
