@@ -3075,26 +3075,42 @@ export class HwpxParser {
     const imageId = binaryRefMatch[1];
     const existingImage = content.images.get(imageId);
 
-    const image: HwpxImage = {
+    // Use existing image from BinData if available, or create new
+    const image: HwpxImage = existingImage ? {
+      ...existingImage,
+      id: existingImage.id || generateId(),
+      width: existingImage.width || 100,
+      height: existingImage.height || 100,
+    } : {
       id: generateId(),
       binaryId: imageId,
       width: 100,
       height: 100,
-      data: existingImage?.data,
-      mimeType: existingImage?.mimeType,
     };
 
+    // Try to get size from various tags (in order of priority)
+    // 1. hp:sz - standard size
+    // 2. hp:curSz - current display size
+    // 3. hp:orgSz - original size (fallback)
     const szMatch = xml.match(/<hp:sz\s+width="(\d+)"[^>]*height="(\d+)"/);
     if (szMatch) {
       image.width = parseInt(szMatch[1]) / 100;
       image.height = parseInt(szMatch[2]) / 100;
     }
 
+    const curSzMatch = xml.match(/<hp:curSz\s+width="(\d+)"[^>]*height="(\d+)"/);
+    if (curSzMatch) {
+      // curSz takes priority over sz if both exist
+      image.width = parseInt(curSzMatch[1]) / 100;
+      image.height = parseInt(curSzMatch[2]) / 100;
+    }
+
     const orgSzMatch = xml.match(/<hp:orgSz\s+width="(\d+)"[^>]*height="(\d+)"/);
     if (orgSzMatch) {
       image.orgWidth = parseInt(orgSzMatch[1]) / 100;
       image.orgHeight = parseInt(orgSzMatch[2]) / 100;
-      if (!szMatch) {
+      // Use orgSz as fallback if neither sz nor curSz found
+      if (!szMatch && !curSzMatch) {
         image.width = image.orgWidth;
         image.height = image.orgHeight;
       }
@@ -3248,6 +3264,10 @@ export class HwpxParser {
     if (shapeCommentMatch) {
       image.shapeComment = shapeCommentMatch[1];
     }
+
+    // Update content.images with parsed width/height
+    // This ensures getImages() returns correct dimensions
+    content.images.set(imageId, image);
 
     return image;
   }

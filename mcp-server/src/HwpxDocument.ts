@@ -117,21 +117,91 @@ export class HwpxDocument {
 
     // Add minimal required files for a valid HWPX document
     zip.file('mimetype', 'application/hwp+zip');
-    zip.file('Contents/header.xml', `<?xml version="1.0" encoding="UTF-8"?>
-<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head">
-  <hh:title>${title || 'Untitled'}</hh:title>
-  <hh:creator>${creator || 'Unknown'}</hh:creator>
-  <hh:createdDate>${now}</hh:createdDate>
-  <hh:modifiedDate>${now}</hh:modifiedDate>
+
+    // version.xml - required for HWPX format (한컴 형식)
+    zip.file('version.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes" ?><hv:HCFVersion xmlns:hv="http://www.hancom.co.kr/hwpml/2011/version" tagetApplication="WORDPROCESSOR" major="5" minor="1" micro="1" buildNumber="0" os="1" xmlVersion="1.5" application="Hancom Office Hangul" appVersion="14, 0, 0, 0 WIN32LEWindows_10"/>`);
+
+    // META-INF/container.xml - required for package structure
+    zip.file('META-INF/container.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes" ?><ocf:container xmlns:ocf="urn:oasis:names:tc:opendocument:xmlns:container" xmlns:hpf="http://www.hancom.co.kr/schema/2011/hpf"><ocf:rootfiles><ocf:rootfile full-path="Contents/content.hpf" media-type="application/hwpml-package+xml"/></ocf:rootfiles></ocf:container>`);
+
+    // META-INF/manifest.xml - empty but required
+    zip.file('META-INF/manifest.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes" ?><odf:manifest xmlns:odf="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0"/>`);
+
+    // settings.xml - application settings
+    zip.file('settings.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes" ?><ha:HWPApplicationSetting xmlns:ha="http://www.hancom.co.kr/hwpml/2011/app" xmlns:config="urn:oasis:names:tc:opendocument:xmlns:config:1.0"><ha:CaretPosition listIDRef="0" paraIDRef="0" pos="0"/></ha:HWPApplicationSetting>`);
+
+    // Contents/content.hpf - package manifest with all namespaces
+    zip.file('Contents/content.hpf', `<?xml version="1.0" encoding="UTF-8" standalone="yes" ?><opf:package xmlns:ha="http://www.hancom.co.kr/hwpml/2011/app" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph" xmlns:hp10="http://www.hancom.co.kr/hwpml/2016/paragraph" xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core" xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head" xmlns:hhs="http://www.hancom.co.kr/hwpml/2011/history" xmlns:hm="http://www.hancom.co.kr/hwpml/2011/master-page" xmlns:hpf="http://www.hancom.co.kr/schema/2011/hpf" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:opf="http://www.idpf.org/2007/opf/" xmlns:ooxmlchart="http://www.hancom.co.kr/hwpml/2016/ooxmlchart" xmlns:hwpunitchar="http://www.hancom.co.kr/hwpml/2016/HwpUnitChar" xmlns:epub="http://www.idpf.org/2007/ops" xmlns:config="urn:oasis:names:tc:opendocument:xmlns:config:1.0" version="" unique-identifier="" id=""><opf:metadata><opf:title>${title || 'Untitled'}</opf:title><opf:language>ko</opf:language><opf:meta name="creator" content="text">${creator || 'Unknown'}</opf:meta><opf:meta name="CreatedDate" content="text">${now}</opf:meta><opf:meta name="ModifiedDate" content="text">${now}</opf:meta></opf:metadata><opf:manifest><opf:item id="header" href="Contents/header.xml" media-type="application/xml"/><opf:item id="section0" href="Contents/section0.xml" media-type="application/xml"/><opf:item id="settings" href="settings.xml" media-type="application/xml"/></opf:manifest><opf:spine><opf:itemref idref="header" linear="yes"/><opf:itemref idref="section0" linear="yes"/></opf:spine></opf:package>`);
+
+    // Contents/header.xml with all namespaces
+    zip.file('Contents/header.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes" ?><hh:head xmlns:ha="http://www.hancom.co.kr/hwpml/2011/app" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph" xmlns:hp10="http://www.hancom.co.kr/hwpml/2016/paragraph" xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core" xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head" xmlns:hhs="http://www.hancom.co.kr/hwpml/2011/history" xmlns:hm="http://www.hancom.co.kr/hwpml/2011/master-page" xmlns:hpf="http://www.hancom.co.kr/schema/2011/hpf" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:opf="http://www.idpf.org/2007/opf/" xmlns:ooxmlchart="http://www.hancom.co.kr/hwpml/2016/ooxmlchart" xmlns:hwpunitchar="http://www.hancom.co.kr/hwpml/2016/HwpUnitChar" xmlns:epub="http://www.idpf.org/2007/ops" xmlns:config="urn:oasis:names:tc:opendocument:xmlns:config:1.0" version="1.1" secCnt="1">
+  <hh:beginNum page="1" footnote="1" endnote="1" pic="1" tbl="1" equation="1"/>
+  <hh:refList>
+    <hh:fontfaces itemCnt="1">
+      <hh:fontface lang="HANGUL" fontCnt="1">
+        <hh:font id="0" face="함초롬바탕" type="TTF"/>
+      </hh:fontface>
+    </hh:fontfaces>
+    <hh:borderFills itemCnt="1">
+      <hh:borderFill id="1" threeD="0" shadow="0" centerLine="NONE" breakCellSeparateLine="0">
+        <hh:slash type="NONE"/>
+        <hh:backSlash type="NONE"/>
+        <hh:leftBorder type="NONE" width="0.1mm" color="#000000"/>
+        <hh:rightBorder type="NONE" width="0.1mm" color="#000000"/>
+        <hh:topBorder type="NONE" width="0.1mm" color="#000000"/>
+        <hh:bottomBorder type="NONE" width="0.1mm" color="#000000"/>
+        <hh:diagonal type="NONE" width="0.1mm" color="#000000"/>
+      </hh:borderFill>
+    </hh:borderFills>
+    <hh:charProperties itemCnt="1">
+      <hh:charPr id="0" height="1000" textColor="#000000" shadeColor="none" useFontSpace="0" useKerning="0" symMark="NONE" borderFillIDRef="1">
+        <hh:fontRef hangul="0" latin="0" hanja="0" japanese="0" other="0" symbol="0" user="0"/>
+        <hh:ratio hangul="100" latin="100" hanja="100" japanese="100" other="100" symbol="100" user="100"/>
+        <hh:spacing hangul="0" latin="0" hanja="0" japanese="0" other="0" symbol="0" user="0"/>
+        <hh:relSz hangul="100" latin="100" hanja="100" japanese="100" other="100" symbol="100" user="100"/>
+        <hh:offset hangul="0" latin="0" hanja="0" japanese="0" other="0" symbol="0" user="0"/>
+        <hh:italic/>
+        <hh:bold/>
+        <hh:underline type="NONE" shape="SOLID" color="#000000"/>
+        <hh:strikeout type="NONE" shape="SOLID" color="#000000"/>
+        <hh:outline type="NONE"/>
+        <hh:shadow type="NONE" color="#B2B2B2" offsetX="10" offsetY="10"/>
+        <hh:emboss/>
+        <hh:engrave/>
+        <hh:supscript/>
+        <hh:subscript/>
+      </hh:charPr>
+    </hh:charProperties>
+    <hh:tabProperties itemCnt="1">
+      <hh:tabPr id="0" autoTabLeft="0" autoTabRight="0"/>
+    </hh:tabProperties>
+    <hh:numberings itemCnt="0"/>
+    <hh:bullets itemCnt="0"/>
+    <hh:paraProperties itemCnt="1">
+      <hh:paraPr id="0" tabPrIDRef="0" condense="0" fontLineHeight="0" snapToGrid="1" suppressLineNumbers="0" checked="0">
+        <hh:align horizontal="JUSTIFY" vertical="BASELINE"/>
+        <hh:heading type="NONE" idRef="0" level="0"/>
+        <hh:breakSetting breakLatinWord="KEEP_WORD" breakNonLatinWord="KEEP_WORD" widowOrphan="0" keepWithNext="0" keepLines="0" pageBreakBefore="0" lineWrap="BREAK"/>
+        <hh:autoSpacing eAsianEng="0" eAsianNum="0"/>
+      </hh:paraPr>
+    </hh:paraProperties>
+    <hh:styles itemCnt="1">
+      <hh:style id="0" type="PARA" name="바탕글" engName="Body" paraPrIDRef="0" charPrIDRef="0" nextStyleIDRef="0" langId="1042" lockForm="0"/>
+    </hh:styles>
+    <hh:memoProperties itemCnt="0"/>
+  </hh:refList>
+  <hh:compatibleDocument targetProgram="HWP201X"/>
+  <hh:docOption>
+    <hh:linkinfo path="" pageInherit="0" footnoteInherit="0"/>
+  </hh:docOption>
+  <hh:trackChangeConfig flags="0"/>
 </hh:head>`);
-    zip.file('Contents/section0.xml', `<?xml version="1.0" encoding="UTF-8"?>
-<hp:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">
-  <hp:p>
-    <hp:run>
-      <hp:t></hp:t>
-    </hp:run>
-  </hp:p>
-</hp:sec>`);
+
+    // Contents/section0.xml with all namespaces
+    zip.file('Contents/section0.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes" ?><hs:sec xmlns:ha="http://www.hancom.co.kr/hwpml/2011/app" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph" xmlns:hp10="http://www.hancom.co.kr/hwpml/2016/paragraph" xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core" xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head" xmlns:hhs="http://www.hancom.co.kr/hwpml/2011/history" xmlns:hm="http://www.hancom.co.kr/hwpml/2011/master-page" xmlns:hpf="http://www.hancom.co.kr/schema/2011/hpf" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:opf="http://www.idpf.org/2007/opf/" xmlns:ooxmlchart="http://www.hancom.co.kr/hwpml/2016/ooxmlchart" xmlns:hwpunitchar="http://www.hancom.co.kr/hwpml/2016/HwpUnitChar" xmlns:epub="http://www.idpf.org/2007/ops" xmlns:config="urn:oasis:names:tc:opendocument:xmlns:config:1.0"><hp:p id="0" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="0"><hp:secPr id="" textDirection="HORIZONTAL" spaceColumns="1134" tabStop="8000" tabStopVal="4000" tabStopUnit="HWPUNIT" outlineShapeIDRef="1" memoShapeIDRef="0" textVerticalWidthHead="0" masterPageCnt="0"><hp:grid lineGrid="0" charGrid="0" wongoji="0"/><hp:startNum pageStartsOn="BOTH" page="0" pic="0" tbl="0" equation="0"/><hp:visibility hideFirstHeader="0" hideFirstFooter="0" hideFirstMasterPage="0" border="SHOW_ALL" fill="SHOW_ALL" hideFirstPageNum="0" hideFirstEmptyLine="0" showLineNumber="0"/><hp:pagePr landscape="NARROWER" width="59528" height="84188" gutterType="LEFT_ONLY"><hp:pageMar header="4252" footer="4252" left="8504" right="8504" top="5668" bottom="4252" gutter="0"/></hp:pagePr><hp:footNotePr><hp:autoNumFormat type="DIGIT"/><hp:noteLine length="-1" type="SOLID" width="0.12mm" color="#000000"/><hp:noteSpacing aboveLine="850" belowLine="567" betweenNotes="283"/><hp:numbering type="CONTINUOUS" newNum="1"/><hp:placement place="EACH_COLUMN" beneathText="0"/></hp:footNotePr><hp:endNotePr><hp:autoNumFormat type="DIGIT"/><hp:noteLine length="14692" type="SOLID" width="0.12mm" color="#000000"/><hp:noteSpacing aboveLine="850" belowLine="567" betweenNotes="0"/><hp:numbering type="CONTINUOUS" newNum="1"/><hp:placement place="END_OF_DOCUMENT" beneathText="0"/></hp:endNotePr></hp:secPr><hp:t></hp:t></hp:run></hp:p></hs:sec>`);
+
+    // Create empty BinData folder
+    zip.folder('BinData');
 
     return new HwpxDocument(id, 'new-document.hwpx', zip, content, 'hwpx');
   }
@@ -1786,60 +1856,85 @@ export class HwpxDocument {
 
       let xml = await file.async('string');
 
-      // Find all tables in this section
-      const tables = this.findAllTables(xml);
+      // Group inserts by parentTableIndex to handle multiple inserts to same table correctly
+      const insertsByTable = new Map<number, Array<{ row: number; col: number; nestedRows: number; nestedCols: number; data: string[][] }>>();
+      for (const insert of inserts) {
+        const tableInserts = insertsByTable.get(insert.parentTableIndex) || [];
+        tableInserts.push({
+          row: insert.row,
+          col: insert.col,
+          nestedRows: insert.nestedRows,
+          nestedCols: insert.nestedCols,
+          data: insert.data
+        });
+        insertsByTable.set(insert.parentTableIndex, tableInserts);
+      }
 
-      // Process inserts in reverse order to avoid index shifting
-      const sortedInserts = [...inserts].sort((a, b) => b.parentTableIndex - a.parentTableIndex);
+      // Process tables in descending order of index to avoid position shifting between tables
+      const sortedTableIndices = [...insertsByTable.keys()].sort((a, b) => b - a);
 
-      for (const insert of sortedInserts) {
-        if (insert.parentTableIndex >= tables.length) continue;
+      for (const tableIndex of sortedTableIndices) {
+        const tableInserts = insertsByTable.get(tableIndex)!;
 
-        // Count tags before insertion for validation
+        // Re-find tables for each table we process (positions may have shifted)
+        const currentTables = this.findAllTables(xml);
+        if (tableIndex >= currentTables.length) continue;
+
+        const tableData = currentTables[tableIndex];
+        let tableXml = tableData.xml;
+
+        // Count tags before all insertions for this table
         const beforeTblOpen = (xml.match(/<(?:hp|hs|hc):tbl/g) || []).length;
         const beforeTblClose = (xml.match(/<\/(?:hp|hs|hc):tbl>/g) || []).length;
 
-        const tableData = tables[insert.parentTableIndex];
-        const tableXml = tableData.xml;
+        // Sort inserts by row (desc), then col (desc) to avoid position shifting within table
+        tableInserts.sort((a, b) => {
+          if (a.row !== b.row) return b.row - a.row;
+          return b.col - a.col;
+        });
 
-        // Find the target cell in the table
-        const rows = this.findAllElementsWithDepth(tableXml, 'tr');
-        if (insert.row >= rows.length) continue;
+        // Process all inserts for this table, re-finding elements after each modification
+        for (const insert of tableInserts) {
+          // Re-find rows in current tableXml (positions change after each insert)
+          const rows = this.findAllElementsWithDepth(tableXml, 'tr');
+          if (insert.row >= rows.length) continue;
 
-        const rowXml = rows[insert.row].xml;
-        const cells = this.findAllElementsWithDepth(rowXml, 'tc');
-        if (insert.col >= cells.length) continue;
+          const rowXml = rows[insert.row].xml;
+          const cells = this.findAllElementsWithDepth(rowXml, 'tc');
+          if (insert.col >= cells.length) continue;
 
-        const cellXml = cells[insert.col].xml;
+          const cellXml = cells[insert.col].xml;
 
-        // Generate nested table XML
-        const nestedTableXml = this.generateNestedTableXml(insert.nestedRows, insert.nestedCols, insert.data);
+          // Generate nested table XML
+          const nestedTableXml = this.generateNestedTableXml(insert.nestedRows, insert.nestedCols, insert.data);
 
-        // Insert nested table into cell
-        const updatedCellXml = this.insertNestedTableIntoCell(cellXml, nestedTableXml);
+          // Insert nested table into cell
+          const updatedCellXml = this.insertNestedTableIntoCell(cellXml, nestedTableXml);
 
-        // Update the row with the new cell
-        const updatedRowXml = rowXml.substring(0, cells[insert.col].startIndex) +
-          updatedCellXml +
-          rowXml.substring(cells[insert.col].endIndex);
+          // Update the row with the new cell
+          const updatedRowXml = rowXml.substring(0, cells[insert.col].startIndex) +
+            updatedCellXml +
+            rowXml.substring(cells[insert.col].endIndex);
 
-        // Update the table with the new row
-        const updatedTableXml = tableXml.substring(0, rows[insert.row].startIndex) +
-          updatedRowXml +
-          tableXml.substring(rows[insert.row].endIndex);
+          // Update the table with the new row
+          tableXml = tableXml.substring(0, rows[insert.row].startIndex) +
+            updatedRowXml +
+            tableXml.substring(rows[insert.row].endIndex);
+        }
 
-        // Update the section XML
+        // Apply all inserts for this table to the main XML at once
         xml = xml.substring(0, tableData.startIndex) +
-          updatedTableXml +
+          tableXml +
           xml.substring(tableData.endIndex);
 
-        // Validate XML integrity after insertion
+        // Validate XML integrity: should have +N for both open and close tags
+        const expectedIncrease = tableInserts.length;
         const afterTblOpen = (xml.match(/<(?:hp|hs|hc):tbl/g) || []).length;
         const afterTblClose = (xml.match(/<\/(?:hp|hs|hc):tbl>/g) || []).length;
 
-        if (afterTblOpen !== beforeTblOpen + 1 || afterTblClose !== beforeTblClose + 1) {
-          console.error(`[HwpxDocument] XML corruption detected in nested table insertion! tbl tags: ${beforeTblOpen}→${afterTblOpen} open, ${beforeTblClose}→${afterTblClose} close`);
-          throw new Error(`Nested table insertion failed: XML tag imbalance detected (expected +1 for open and close tags)`);
+        if (afterTblOpen !== beforeTblOpen + expectedIncrease || afterTblClose !== beforeTblClose + expectedIncrease) {
+          console.error(`[HwpxDocument] XML corruption detected in nested table insertion! tbl tags: ${beforeTblOpen}→${afterTblOpen} open (expected +${expectedIncrease}), ${beforeTblClose}→${afterTblClose} close (expected +${expectedIncrease})`);
+          throw new Error(`Nested table insertion failed: XML tag imbalance detected (expected +${expectedIncrease} for open and close tags)`);
         }
       }
 
@@ -3237,6 +3332,11 @@ export class HwpxDocument {
     // Generate hp:pic XML tag
     const picXml = this.generateImagePicXml(picId, instId, zOrder, imageId, hwpWidth, hwpHeight);
 
+    // Wrap pic in a paragraph structure (required by HWPML)
+    // Image must be inside <hp:p><hp:run>...</hp:run></hp:p>
+    const paraId = Math.floor(Math.random() * 2000000000);
+    const fullParagraphXml = `<hp:p id="${paraId}" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="0">${picXml}<hp:t/></hp:run><hp:linesegarray><hp:lineseg textpos="0" vertpos="0" vertsize="1600" textheight="1600" baseline="1360" spacing="960" horzpos="0" horzsize="0" flags="393216"/></hp:linesegarray></hp:p>`;
+
     // Find insertion point - after the specified paragraph
     // Find all paragraphs
     const paraRegex = /<hp:p[^>]*>[\s\S]*?<\/hp:p>/g;
@@ -3249,20 +3349,23 @@ export class HwpxDocument {
     // Insert after the specified paragraph (or at the beginning if -1)
     let insertPos: number;
     if (afterElementIndex < 0 || paragraphs.length === 0) {
-      // Insert at the beginning of section (after <hs:sec ...>)
-      const secStartMatch = sectionXml.match(/<hs:sec[^>]*>/);
+      // Insert at the beginning of section (after <hs:sec ...> or <hp:sec ...>)
+      const secStartMatch = sectionXml.match(/<(?:hs|hp):sec[^>]*>/);
       insertPos = secStartMatch ? secStartMatch.index! + secStartMatch[0].length : 0;
     } else if (afterElementIndex >= paragraphs.length) {
-      // Insert at the end (before </hs:sec>)
-      const secEndMatch = sectionXml.lastIndexOf('</hs:sec>');
+      // Insert at the end (before </hs:sec> or </hp:sec>)
+      let secEndMatch = sectionXml.lastIndexOf('</hs:sec>');
+      if (secEndMatch === -1) {
+        secEndMatch = sectionXml.lastIndexOf('</hp:sec>');
+      }
       insertPos = secEndMatch !== -1 ? secEndMatch : sectionXml.length;
     } else {
       // Insert after the specified paragraph
       insertPos = paragraphs[afterElementIndex].end;
     }
 
-    // Insert the image XML
-    sectionXml = sectionXml.substring(0, insertPos) + '\n' + picXml + sectionXml.substring(insertPos);
+    // Insert the image paragraph XML
+    sectionXml = sectionXml.substring(0, insertPos) + fullParagraphXml + sectionXml.substring(insertPos);
 
     this._zip.file(sectionPath, sectionXml);
   }
@@ -3305,5 +3408,510 @@ export class HwpxDocument {
   <hp:outMargin left="0" right="0" top="0" bottom="0"/>
   <hp:shapeComment>Inserted by HWPX MCP</hp:shapeComment>
 </hp:pic>`;
+  }
+
+  // ============================================================
+  // XML Analysis and Repair Tools
+  // ============================================================
+
+  /**
+   * Analyze XML for issues like tag imbalance, malformed elements, etc.
+   * @param sectionIndex Section to analyze (optional, all sections if not specified)
+   * @returns Detailed analysis report
+   */
+  public async analyzeXml(sectionIndex?: number): Promise<{
+    hasIssues: boolean;
+    sections: Array<{
+      sectionIndex: number;
+      issues: Array<{
+        type: 'tag_imbalance' | 'malformed_tag' | 'unclosed_tag' | 'orphan_close_tag' | 'nesting_error';
+        severity: 'error' | 'warning';
+        message: string;
+        position?: number;
+        context?: string;
+        suggestedFix?: string;
+      }>;
+      tagCounts: Record<string, { open: number; close: number; balance: number }>;
+    }>;
+    summary: string;
+  }> {
+    if (!this._zip) {
+      return { hasIssues: true, sections: [], summary: 'Document not loaded' };
+    }
+
+    const result: Awaited<ReturnType<typeof this.analyzeXml>> = {
+      hasIssues: false,
+      sections: [],
+      summary: ''
+    };
+
+    // Get sections to analyze
+    const sectionsToAnalyze = sectionIndex !== undefined
+      ? [sectionIndex]
+      : await this.getAvailableSections();
+
+    for (const secIdx of sectionsToAnalyze) {
+      const sectionPath = `Contents/section${secIdx}.xml`;
+      const file = this._zip.file(sectionPath);
+      if (!file) continue;
+
+      const xml = await file.async('string');
+      const sectionResult = this.analyzeXmlContent(xml, secIdx);
+
+      if (sectionResult.issues.length > 0) {
+        result.hasIssues = true;
+      }
+      result.sections.push(sectionResult);
+    }
+
+    // Generate summary
+    const totalIssues = result.sections.reduce((sum, s) => sum + s.issues.length, 0);
+    const errors = result.sections.reduce((sum, s) => sum + s.issues.filter(i => i.severity === 'error').length, 0);
+    const warnings = result.sections.reduce((sum, s) => sum + s.issues.filter(i => i.severity === 'warning').length, 0);
+
+    result.summary = totalIssues === 0
+      ? 'No XML issues detected'
+      : `Found ${totalIssues} issue(s): ${errors} error(s), ${warnings} warning(s)`;
+
+    return result;
+  }
+
+  /**
+   * Analyze XML content for issues
+   */
+  private analyzeXmlContent(xml: string, sectionIndex: number): {
+    sectionIndex: number;
+    issues: Array<{
+      type: 'tag_imbalance' | 'malformed_tag' | 'unclosed_tag' | 'orphan_close_tag' | 'nesting_error';
+      severity: 'error' | 'warning';
+      message: string;
+      position?: number;
+      context?: string;
+      suggestedFix?: string;
+    }>;
+    tagCounts: Record<string, { open: number; close: number; balance: number }>;
+  } {
+    const issues: Array<{
+      type: 'tag_imbalance' | 'malformed_tag' | 'unclosed_tag' | 'orphan_close_tag' | 'nesting_error';
+      severity: 'error' | 'warning';
+      message: string;
+      position?: number;
+      context?: string;
+      suggestedFix?: string;
+    }> = [];
+
+    const tagCounts: Record<string, { open: number; close: number; balance: number }> = {};
+
+    // List of important HWPX tags to check
+    const tagsToCheck = [
+      'hp:p', 'hp:run', 'hp:t', 'hp:tbl', 'hp:tr', 'hp:tc', 'hp:subList',
+      'hp:pic', 'hp:container', 'hp:sec', 'hp:colPr', 'hp:paraPr',
+      'hs:tbl', 'hs:tr', 'hs:tc', 'hc:tbl', 'hc:tr', 'hc:tc'
+    ];
+
+    // Count open and close tags
+    for (const tag of tagsToCheck) {
+      const openRegex = new RegExp(`<${tag.replace(/([.?*+^$[\]\\(){}|-])/g, '\\$1')}(?:\\s|>|\\/)`, 'g');
+      const closeRegex = new RegExp(`</${tag.replace(/([.?*+^$[\]\\(){}|-])/g, '\\$1')}>`, 'g');
+      const selfCloseRegex = new RegExp(`<${tag.replace(/([.?*+^$[\]\\(){}|-])/g, '\\$1')}[^>]*/\\s*>`, 'g');
+
+      const openMatches = xml.match(openRegex) || [];
+      const closeMatches = xml.match(closeRegex) || [];
+      const selfCloseMatches = xml.match(selfCloseRegex) || [];
+
+      // Self-closing tags count as both open and close
+      const openCount = openMatches.length;
+      const closeCount = closeMatches.length + selfCloseMatches.length;
+      const balance = openCount - closeCount;
+
+      tagCounts[tag] = { open: openCount, close: closeCount, balance };
+
+      if (balance !== 0) {
+        issues.push({
+          type: (balance > 0 ? 'unclosed_tag' : 'orphan_close_tag') as 'unclosed_tag' | 'orphan_close_tag',
+          severity: 'error' as const,
+          message: `Tag imbalance for <${tag}>: ${openCount} open, ${closeCount} close (balance: ${balance > 0 ? '+' : ''}${balance})`,
+          suggestedFix: balance > 0
+            ? `Add ${balance} closing </${tag}> tag(s)`
+            : `Remove ${Math.abs(balance)} orphan </${tag}> tag(s)`
+        });
+      }
+    }
+
+    // Find specific problem locations for tbl tags (most common issue)
+    const tblIssues = this.findTblTagIssues(xml);
+    for (const tblIssue of tblIssues) {
+      issues.push({
+        ...tblIssue,
+        severity: 'error'
+      });
+    }
+
+    // Check for common nesting errors
+    const nestingIssues = this.checkNestingErrors(xml);
+    issues.push(...nestingIssues);
+
+    return { sectionIndex, issues, tagCounts };
+  }
+
+  /**
+   * Find specific issues with tbl (table) tags
+   */
+  private findTblTagIssues(xml: string): Array<{
+    type: 'tag_imbalance' | 'orphan_close_tag' | 'unclosed_tag';
+    message: string;
+    position: number;
+    context: string;
+    suggestedFix?: string;
+  }> {
+    const issues: Array<{
+      type: 'tag_imbalance' | 'orphan_close_tag' | 'unclosed_tag';
+      message: string;
+      position: number;
+      context: string;
+      suggestedFix?: string;
+    }> = [];
+
+    // Track table tag positions
+    const tblOpenRegex = /<(?:hp|hs|hc):tbl[^>]*>/g;
+    const tblCloseRegex = /<\/(?:hp|hs|hc):tbl>/g;
+
+    interface TagPosition {
+      type: 'open' | 'close';
+      position: number;
+      tag: string;
+    }
+
+    const allPositions: TagPosition[] = [];
+
+    let match;
+    while ((match = tblOpenRegex.exec(xml)) !== null) {
+      allPositions.push({ type: 'open', position: match.index, tag: match[0] });
+    }
+    while ((match = tblCloseRegex.exec(xml)) !== null) {
+      allPositions.push({ type: 'close', position: match.index, tag: match[0] });
+    }
+
+    // Sort by position
+    allPositions.sort((a, b) => a.position - b.position);
+
+    // Track nesting depth
+    let depth = 0;
+    for (const pos of allPositions) {
+      if (pos.type === 'open') {
+        depth++;
+      } else {
+        depth--;
+        if (depth < 0) {
+          // Found orphan closing tag
+          const contextStart = Math.max(0, pos.position - 50);
+          const contextEnd = Math.min(xml.length, pos.position + 50);
+          issues.push({
+            type: 'orphan_close_tag',
+            message: `Orphan closing table tag at position ${pos.position}`,
+            position: pos.position,
+            context: xml.substring(contextStart, contextEnd).replace(/\n/g, ' '),
+            suggestedFix: `Remove the orphan ${pos.tag} tag or add matching opening tag before it`
+          });
+          depth = 0; // Reset to continue checking
+        }
+      }
+    }
+
+    if (depth > 0) {
+      // Unclosed tables
+      issues.push({
+        type: 'unclosed_tag',
+        message: `${depth} unclosed table tag(s) found`,
+        position: xml.length,
+        context: 'End of document',
+        suggestedFix: `Add ${depth} closing </hp:tbl> tag(s)`
+      });
+    }
+
+    return issues;
+  }
+
+  /**
+   * Check for common nesting errors
+   */
+  private checkNestingErrors(xml: string): Array<{
+    type: 'nesting_error';
+    severity: 'warning';
+    message: string;
+    position?: number;
+    context?: string;
+  }> {
+    const issues: Array<{
+      type: 'nesting_error';
+      severity: 'warning';
+      message: string;
+      position?: number;
+      context?: string;
+    }> = [];
+
+    // Check for tc outside of tr
+    const tcOutsideTr = /<(?:hp|hs|hc):tc[^>]*>(?:(?!<(?:hp|hs|hc):tr[^>]*>).)*?<\/(?:hp|hs|hc):tc>/gs;
+    // This is simplified - a full check would need proper nesting validation
+
+    // Check for tr outside of tbl
+    const trPattern = /<(?:hp|hs|hc):tr[^>]*>/g;
+    const tblPattern = /<(?:hp|hs|hc):tbl[^>]*>/g;
+
+    // Simple check: count if tr appears without preceding tbl
+    let match;
+    let lastTblPos = -1;
+    let lastTblClosePos = -1;
+
+    const tblClosePattern = /<\/(?:hp|hs|hc):tbl>/g;
+
+    while ((match = tblPattern.exec(xml)) !== null) {
+      lastTblPos = match.index;
+    }
+
+    tblPattern.lastIndex = 0;
+
+    // More sophisticated nesting check would go here
+    // For now, we rely on tag counting
+
+    return issues;
+  }
+
+  /**
+   * Attempt to repair XML issues in a section
+   * @param sectionIndex Section to repair
+   * @param options Repair options
+   * @returns Repair result
+   */
+  public async repairXml(
+    sectionIndex: number,
+    options: {
+      removeOrphanCloseTags?: boolean;
+      addMissingCloseTags?: boolean;
+      fixTableStructure?: boolean;
+      backup?: boolean;
+    } = {}
+  ): Promise<{
+    success: boolean;
+    message: string;
+    repairsApplied: string[];
+    originalXml?: string;
+  }> {
+    if (!this._zip) {
+      return { success: false, message: 'Document not loaded', repairsApplied: [] };
+    }
+
+    const sectionPath = `Contents/section${sectionIndex}.xml`;
+    const file = this._zip.file(sectionPath);
+    if (!file) {
+      return { success: false, message: `Section ${sectionIndex} not found`, repairsApplied: [] };
+    }
+
+    const originalXml = await file.async('string');
+    let xml = originalXml;
+    const repairsApplied: string[] = [];
+
+    // Analyze current issues
+    const analysis = this.analyzeXmlContent(xml, sectionIndex);
+    if (analysis.issues.length === 0) {
+      return { success: true, message: 'No issues to repair', repairsApplied: [] };
+    }
+
+    const opts = {
+      removeOrphanCloseTags: options.removeOrphanCloseTags ?? true,
+      addMissingCloseTags: options.addMissingCloseTags ?? true,
+      fixTableStructure: options.fixTableStructure ?? true,
+      backup: options.backup ?? true
+    };
+
+    // Repair orphan close tags
+    if (opts.removeOrphanCloseTags) {
+      const result = this.removeOrphanCloseTags(xml);
+      if (result.modified) {
+        xml = result.xml;
+        repairsApplied.push(...result.repairs);
+      }
+    }
+
+    // Fix table structure
+    if (opts.fixTableStructure) {
+      const result = this.fixTableStructure(xml);
+      if (result.modified) {
+        xml = result.xml;
+        repairsApplied.push(...result.repairs);
+      }
+    }
+
+    // Validate after repairs
+    const afterAnalysis = this.analyzeXmlContent(xml, sectionIndex);
+    const remainingErrors = afterAnalysis.issues.filter(i => i.severity === 'error');
+
+    if (remainingErrors.length > 0) {
+      // Don't save if errors remain
+      return {
+        success: false,
+        message: `Repair incomplete: ${remainingErrors.length} error(s) remain`,
+        repairsApplied,
+        originalXml: opts.backup ? originalXml : undefined
+      };
+    }
+
+    // Save repaired XML
+    this._zip.file(sectionPath, xml);
+    this._isDirty = true;
+
+    return {
+      success: true,
+      message: `Repaired ${repairsApplied.length} issue(s)`,
+      repairsApplied,
+      originalXml: opts.backup ? originalXml : undefined
+    };
+  }
+
+  /**
+   * Remove orphan closing tags
+   */
+  private removeOrphanCloseTags(xml: string): { xml: string; modified: boolean; repairs: string[] } {
+    const repairs: string[] = [];
+    let modified = false;
+
+    // Find and track all table tags
+    const allTags: Array<{ type: 'open' | 'close'; pos: number; tag: string; prefix: string }> = [];
+
+    const openRegex = /<(hp|hs|hc):tbl[^>]*>/g;
+    const closeRegex = /<\/(hp|hs|hc):tbl>/g;
+
+    let match;
+    while ((match = openRegex.exec(xml)) !== null) {
+      allTags.push({ type: 'open', pos: match.index, tag: match[0], prefix: match[1] });
+    }
+    while ((match = closeRegex.exec(xml)) !== null) {
+      allTags.push({ type: 'close', pos: match.index, tag: match[0], prefix: match[1] });
+    }
+
+    allTags.sort((a, b) => a.pos - b.pos);
+
+    // Find orphan close tags
+    const orphanPositions: number[] = [];
+    let depth = 0;
+
+    for (const tag of allTags) {
+      if (tag.type === 'open') {
+        depth++;
+      } else {
+        depth--;
+        if (depth < 0) {
+          orphanPositions.push(tag.pos);
+          depth = 0;
+        }
+      }
+    }
+
+    // Remove orphan tags in reverse order to maintain positions
+    if (orphanPositions.length > 0) {
+      orphanPositions.sort((a, b) => b - a);
+      for (const pos of orphanPositions) {
+        const closeTagMatch = xml.substring(pos).match(/^<\/(?:hp|hs|hc):tbl>/);
+        if (closeTagMatch) {
+          xml = xml.substring(0, pos) + xml.substring(pos + closeTagMatch[0].length);
+          repairs.push(`Removed orphan closing tag at position ${pos}`);
+          modified = true;
+        }
+      }
+    }
+
+    return { xml, modified, repairs };
+  }
+
+  /**
+   * Fix table structure issues
+   */
+  private fixTableStructure(xml: string): { xml: string; modified: boolean; repairs: string[] } {
+    const repairs: string[] = [];
+    let modified = false;
+
+    // Find tables and check their structure
+    const tables = this.findAllTables(xml);
+
+    for (let i = tables.length - 1; i >= 0; i--) {
+      const table = tables[i];
+      const tableXml = table.xml;
+
+      // Check for incomplete table (missing rows/cells)
+      const hasRows = /<(?:hp|hs|hc):tr/.test(tableXml);
+      const hasCells = /<(?:hp|hs|hc):tc/.test(tableXml);
+
+      if (!hasRows && !hasCells) {
+        // Empty table structure - this might be intentional, skip
+        continue;
+      }
+
+      // Check row/cell balance
+      const trOpen = (tableXml.match(/<(?:hp|hs|hc):tr/g) || []).length;
+      const trClose = (tableXml.match(/<\/(?:hp|hs|hc):tr>/g) || []).length;
+
+      if (trOpen !== trClose) {
+        // Row imbalance - complex repair needed
+        repairs.push(`Table at position ${table.startIndex} has row imbalance: ${trOpen} open, ${trClose} close`);
+      }
+
+      const tcOpen = (tableXml.match(/<(?:hp|hs|hc):tc/g) || []).length;
+      const tcClose = (tableXml.match(/<\/(?:hp|hs|hc):tc>/g) || []).length;
+
+      if (tcOpen !== tcClose) {
+        repairs.push(`Table at position ${table.startIndex} has cell imbalance: ${tcOpen} open, ${tcClose} close`);
+      }
+    }
+
+    return { xml, modified, repairs };
+  }
+
+  /**
+   * Get raw XML of a section for manual inspection/editing
+   */
+  public async getRawSectionXml(sectionIndex: number): Promise<string | null> {
+    if (!this._zip) return null;
+
+    const sectionPath = `Contents/section${sectionIndex}.xml`;
+    const file = this._zip.file(sectionPath);
+    if (!file) return null;
+
+    return file.async('string');
+  }
+
+  /**
+   * Set raw XML of a section (use with caution)
+   */
+  public async setRawSectionXml(sectionIndex: number, xml: string, validate: boolean = true): Promise<{
+    success: boolean;
+    message: string;
+    issues?: Array<{ type: string; message: string }>;
+  }> {
+    if (!this._zip) {
+      return { success: false, message: 'Document not loaded' };
+    }
+
+    // Validate XML if requested
+    if (validate) {
+      const analysis = this.analyzeXmlContent(xml, sectionIndex);
+      const errors = analysis.issues.filter(i => i.severity === 'error');
+
+      if (errors.length > 0) {
+        return {
+          success: false,
+          message: `XML validation failed: ${errors.length} error(s)`,
+          issues: errors.map(e => ({ type: e.type, message: e.message }))
+        };
+      }
+    }
+
+    const sectionPath = `Contents/section${sectionIndex}.xml`;
+    this._zip.file(sectionPath, xml);
+    this._isDirty = true;
+
+    // Note: Internal state is not automatically updated.
+    // Save and reopen the document to see changes in other tools.
+
+    return { success: true, message: 'Section XML updated successfully. Save and reopen to refresh internal state.' };
   }
 }
