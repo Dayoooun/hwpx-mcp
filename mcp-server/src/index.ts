@@ -474,19 +474,31 @@ const tools = [
   },
   {
     name: 'find_insert_position_after_header',
-    description: 'Find the right insertion position after a paragraph containing specific header text. Returns section_index and insert_after value ready to use in insert_image/render_mermaid.',
+    description: `Find the right insertion position after text. Searches both independent paragraphs AND table cell contents by default.
+
+IMPORTANT - Check 'found_in' in the result:
+- If found_in='paragraph': Use insert_image with section_index and insert_after to insert AFTER the paragraph
+- If found_in='table_cell': The text is INSIDE a table cell. Use insert_image_in_cell with table_info (table_index, row, col) to insert the image INSIDE that cell. Do NOT use insert_image as it will place the image OUTSIDE the table.`,
     inputSchema: {
       type: 'object',
       properties: {
         doc_id: { type: 'string', description: 'Document ID' },
         header_text: { type: 'string', description: 'Header/title text to search for' },
+        search_in: {
+          type: 'string',
+          enum: ['paragraphs', 'table_cells', 'all'],
+          description: 'Where to search: "paragraphs" (independent paragraphs only), "table_cells" (table cell contents only), "all" (both, default). Many Korean documents have content inside table cells, so "all" is recommended.'
+        },
       },
       required: ['doc_id', 'header_text'],
     },
   },
   {
     name: 'find_insert_position_after_table',
-    description: 'Find the right insertion position after a specific table. Returns section_index and insert_after value ready to use in insert_image/render_mermaid.',
+    description: `Find the right insertion position AFTER a specific table (OUTSIDE the table).
+
+Returns section_index and insert_after value for use with insert_image/render_mermaid.
+NOTE: This inserts AFTER the table, not inside it. To insert an image INSIDE a table cell, use insert_image_in_cell directly.`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -978,7 +990,11 @@ const tools = [
   // === Images ===
   {
     name: 'insert_image',
-    description: 'Insert an image into the document (HWPX only). Supports preserving original aspect ratio and precise positioning. Use after_table or after_header for easier positioning instead of after_index.',
+    description: `Insert an image as an independent element in the document (HWPX only). The image is placed OUTSIDE of tables, between paragraphs or after tables.
+
+Use after_table or after_header for easier positioning. IMPORTANT: after_header searches table cells too, but always inserts OUTSIDE the table.
+
+To insert an image INSIDE a table cell, use insert_image_in_cell instead.`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -1033,7 +1049,10 @@ const tools = [
   },
   {
     name: 'render_mermaid',
-    description: 'Render a Mermaid diagram and insert it as an image (HWPX only). Uses mermaid.ink API. Use after_table or after_header for easier positioning.',
+    description: `Render a Mermaid diagram and insert it as an independent element OUTSIDE tables (HWPX only). Uses mermaid.ink API.
+
+Use after_table or after_header for easier positioning. IMPORTANT: This always inserts OUTSIDE tables.
+To insert a Mermaid diagram INSIDE a table cell, use render_mermaid_in_cell instead.`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -1058,6 +1077,53 @@ const tools = [
         text_wrap: { type: 'string', enum: ['top_and_bottom', 'square', 'tight', 'behind_text', 'in_front_of_text', 'none'], description: 'Text wrap mode. Default: top_and_bottom.' },
       },
       required: ['doc_id', 'mermaid_code'],
+    },
+  },
+  {
+    name: 'insert_image_in_cell',
+    description: `Insert an image INSIDE a specific table cell (HWPX only). The image appears inline within the cell content.
+
+Use this when:
+- You want the image to be part of a table cell's content
+- find_insert_position_after_header returned found_in='table_cell' - use the table_info (table_index, row, col) from that result
+
+Use get_table_map to find the global table_index if you don't already have it.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        doc_id: { type: 'string', description: 'Document ID' },
+        table_index: { type: 'number', description: 'Global table index (0-based). Get from get_table_map.' },
+        row: { type: 'number', description: 'Row index (0-based)' },
+        col: { type: 'number', description: 'Column index (0-based)' },
+        image_path: { type: 'string', description: 'Path to the image file' },
+        width: { type: 'number', description: 'Image width in points (optional, default: 200)' },
+        height: { type: 'number', description: 'Image height in points (optional, default: 150)' },
+        preserve_aspect_ratio: { type: 'boolean', description: 'If true, maintains original image aspect ratio. Default: false.' },
+      },
+      required: ['doc_id', 'table_index', 'row', 'col', 'image_path'],
+    },
+  },
+  {
+    name: 'render_mermaid_in_cell',
+    description: `Render a Mermaid diagram and insert it INSIDE a specific table cell (HWPX only). Uses mermaid.ink API.
+
+Use this when you want the diagram to appear inside a table cell.
+Use get_table_map to find the global table_index, or use table_info from find_insert_position_after_header if found_in='table_cell'.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        doc_id: { type: 'string', description: 'Document ID' },
+        mermaid_code: { type: 'string', description: 'Mermaid diagram code (e.g., "graph TD; A-->B;")' },
+        table_index: { type: 'number', description: 'Global table index (0-based). Get from get_table_map.' },
+        row: { type: 'number', description: 'Row index (0-based)' },
+        col: { type: 'number', description: 'Column index (0-based)' },
+        width: { type: 'number', description: 'Image width in points (optional)' },
+        height: { type: 'number', description: 'Image height in points (optional)' },
+        theme: { type: 'string', enum: ['default', 'dark', 'forest', 'neutral'], description: 'Diagram theme (default: default)' },
+        background_color: { type: 'string', description: 'Background color (e.g., "#ffffff" or "transparent")' },
+        preserve_aspect_ratio: { type: 'boolean', description: 'If true, maintains original image aspect ratio. Default: true.' },
+      },
+      required: ['doc_id', 'mermaid_code', 'table_index', 'row', 'col'],
     },
   },
 
@@ -1919,11 +1985,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (!doc) return error('Document not found');
         const headerText = args?.header_text as string;
         if (!headerText) return error('header_text is required');
-        const result = doc.findInsertPositionAfterHeader(headerText);
-        if (!result) return error(`Header "${headerText}" not found`);
+        const searchIn = (args?.search_in as 'paragraphs' | 'table_cells' | 'all') || 'all';
+        const result = doc.findInsertPositionAfterHeader(headerText, searchIn);
+        if (!result) return error(`Text "${headerText}" not found in ${searchIn === 'all' ? 'paragraphs or table cells' : searchIn}`);
         return success({
           ...result,
-          usage_hint: `Use section_index=${result.section_index} and after_index=${result.insert_after} in insert_image/render_mermaid`,
+          usage_hint: result.found_in === 'table_cell'
+            ? `Found in table cell. Use section_index=${result.section_index} and after_index=${result.insert_after} to insert AFTER this table, or use insert_image_in_cell with table_index=${result.table_info?.table_index}, row=${result.table_info?.row}, col=${result.table_info?.col} to insert INSIDE this cell.`
+            : `Use section_index=${result.section_index} and after_index=${result.insert_after} in insert_image/render_mermaid`,
         });
       }
 
@@ -2594,6 +2663,152 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           });
         }
         return error(result.error || 'Failed to render Mermaid diagram');
+      }
+
+      case 'insert_image_in_cell': {
+        const doc = getDoc(args?.doc_id as string);
+        if (!doc) return error('Document not found');
+        if (doc.format === 'hwp') return error('HWP files are read-only');
+
+        const imagePath = args?.image_path as string;
+        if (!fs.existsSync(imagePath)) return error('Image file not found');
+
+        const globalTblIdx = args?.table_index as number;
+        const rowIdx = args?.row as number;
+        const colIdx = args?.col as number;
+
+        // Convert global table index to section and local index
+        const tableLocation = doc.convertGlobalToLocalTableIndex(globalTblIdx);
+        if (!tableLocation) {
+          return error(`Table with global index ${globalTblIdx} not found. Use get_table_map to find valid table indices.`);
+        }
+
+        const { section_index: secIdx, local_index: localTblIdx } = tableLocation;
+
+        const imageData = fs.readFileSync(imagePath);
+        const ext = path.extname(imagePath).toLowerCase();
+        const mimeTypes: Record<string, string> = {
+          '.png': 'image/png',
+          '.jpg': 'image/jpeg',
+          '.jpeg': 'image/jpeg',
+          '.gif': 'image/gif',
+          '.bmp': 'image/bmp',
+        };
+
+        const result = doc.insertImageInCell(
+          secIdx,
+          localTblIdx,
+          rowIdx,
+          colIdx,
+          {
+            data: imageData.toString('base64'),
+            mimeType: mimeTypes[ext] || 'image/png',
+            width: args?.width as number | undefined,
+            height: args?.height as number | undefined,
+            preserveAspectRatio: args?.preserve_aspect_ratio as boolean | undefined,
+          }
+        );
+
+        if (!result) return error('Failed to insert image in cell. Check row/col indices.');
+
+        // Get cell content for context using getTableCell
+        const cellInfo = doc.getTableCell(secIdx, localTblIdx, rowIdx, colIdx);
+        const cellText = cellInfo?.text?.substring(0, 30) || '';
+
+        return success({
+          message: `Image inserted in cell [${rowIdx}, ${colIdx}] of table ${globalTblIdx} (section ${secIdx}, local index ${localTblIdx})`,
+          id: result.id,
+          actualWidth: result.actualWidth,
+          actualHeight: result.actualHeight,
+          cell_content: cellText || '(empty cell)',
+        });
+      }
+
+      case 'render_mermaid_in_cell': {
+        const doc = getDoc(args?.doc_id as string);
+        if (!doc) return error('Document not found');
+        if (doc.format === 'hwp') return error('HWP files are read-only');
+
+        const mermaidCode = args?.mermaid_code as string;
+        if (!mermaidCode) return error('Mermaid code is required');
+
+        const globalTblIdx = args?.table_index as number;
+        const rowIdx = args?.row as number;
+        const colIdx = args?.col as number;
+
+        // Convert global table index to section and local index
+        const tableLocation = doc.convertGlobalToLocalTableIndex(globalTblIdx);
+        if (!tableLocation) {
+          return error(`Table with global index ${globalTblIdx} not found. Use get_table_map to find valid table indices.`);
+        }
+
+        const { section_index: secIdx, local_index: localTblIdx } = tableLocation;
+
+        // Fetch Mermaid diagram from mermaid.ink API using pako compression (same as renderMermaidToImage)
+        const pako = await import('pako');
+        const theme = args?.theme as string || 'default';
+        const bgColor = args?.background_color as string;
+
+        const stateObject = {
+          code: mermaidCode,
+          mermaid: { theme: theme },
+          autoSync: true,
+          updateDiagram: true
+        };
+
+        const jsonString = JSON.stringify(stateObject);
+        const compressed = pako.deflate(jsonString, { level: 9 });
+        const base64Code = Buffer.from(compressed)
+          .toString('base64')
+          .replace(/\+/g, '-')
+          .replace(/\//g, '_');
+
+        let url = `https://mermaid.ink/img/pako:${base64Code}?type=png`;
+        if (bgColor) {
+          const bgColorClean = bgColor.replace(/^#/, '');
+          url += `&bgColor=${bgColorClean}`;
+        }
+
+        try {
+          const response = await fetch(url);
+
+          if (!response.ok) {
+            return error(`Failed to render Mermaid diagram: ${response.statusText}`);
+          }
+
+          const imageBuffer = Buffer.from(await response.arrayBuffer());
+
+          const result = doc.insertImageInCell(
+            secIdx,
+            localTblIdx,
+            rowIdx,
+            colIdx,
+            {
+              data: imageBuffer.toString('base64'),
+              mimeType: 'image/png',
+              width: args?.width as number | undefined,
+              height: args?.height as number | undefined,
+              preserveAspectRatio: args?.preserve_aspect_ratio !== false, // default true for Mermaid
+            }
+          );
+
+          if (!result) return error('Failed to insert Mermaid diagram in cell. Check row/col indices.');
+
+          // Get cell content for context using getTableCell
+          const cellInfo = doc.getTableCell(secIdx, localTblIdx, rowIdx, colIdx);
+          const cellText = cellInfo?.text?.substring(0, 30) || '';
+
+          return success({
+            message: `Mermaid diagram inserted in cell [${rowIdx}, ${colIdx}] of table ${globalTblIdx} (section ${secIdx}, local index ${localTblIdx})`,
+            image_id: result.id,
+            actualWidth: result.actualWidth,
+            actualHeight: result.actualHeight,
+            cell_content: cellText || '(empty cell)',
+          });
+        } catch (err: unknown) {
+          const errorMessage = err instanceof Error ? err.message : String(err);
+          return error(`Failed to fetch Mermaid diagram: ${errorMessage}`);
+        }
       }
 
       // === Drawing Objects ===
