@@ -4893,25 +4893,21 @@ export class HwpxDocument {
     // Find all top-level elements (paragraphs and tables) in order
     const elements: Array<{ type: 'paragraph' | 'table'; start: number; end: number }> = [];
 
-    // Find paragraphs - but only top-level ones (not inside tables)
-    // We need to track table regions to exclude paragraphs inside them
-    const tableRegex = /<hp:tbl[^>]*>[\s\S]*?<\/hp:tbl>/g;
+    // Use balanced bracket matching to find tables correctly (handles nested tables)
+    const tables = this.findAllTables(sectionXml);
     const tableRegions: Array<{ start: number; end: number }> = [];
-    let tableMatch;
-    while ((tableMatch = tableRegex.exec(sectionXml)) !== null) {
-      tableRegions.push({ start: tableMatch.index, end: tableMatch.index + tableMatch[0].length });
-      elements.push({ type: 'table', start: tableMatch.index, end: tableMatch.index + tableMatch[0].length });
+    for (const table of tables) {
+      tableRegions.push({ start: table.startIndex, end: table.endIndex });
+      elements.push({ type: 'table', start: table.startIndex, end: table.endIndex });
     }
 
-    // Find paragraphs that are NOT inside tables
-    const paraRegex = /<hp:p[^>]*>[\s\S]*?<\/hp:p>/g;
-    let paraMatch;
-    while ((paraMatch = paraRegex.exec(sectionXml)) !== null) {
-      const paraStart = paraMatch.index;
-      // Check if this paragraph is inside any table
-      const isInsideTable = tableRegions.some(t => paraStart >= t.start && paraStart < t.end);
+    // Use balanced bracket matching to find paragraphs correctly (handles nested structures)
+    const paragraphs = this.findAllElementsWithDepth(sectionXml, 'p');
+    for (const para of paragraphs) {
+      // Check if this paragraph is inside any table (exclude table-internal paragraphs)
+      const isInsideTable = tableRegions.some(t => para.startIndex >= t.start && para.startIndex < t.end);
       if (!isInsideTable) {
-        elements.push({ type: 'paragraph', start: paraMatch.index, end: paraMatch.index + paraMatch[0].length });
+        elements.push({ type: 'paragraph', start: para.startIndex, end: para.endIndex });
       }
     }
 
