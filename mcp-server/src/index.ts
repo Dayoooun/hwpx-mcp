@@ -7,7 +7,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import * as fs from 'fs';
 import * as path from 'path';
-import { HwpxDocument } from './HwpxDocument';
+import { HwpxDocument, ImagePositionOptions } from './HwpxDocument';
 
 // Version marker for debugging
 const MCP_VERSION = 'v2-fixed-xml-replacement';
@@ -843,7 +843,7 @@ const tools = [
   // === Images ===
   {
     name: 'insert_image',
-    description: 'Insert an image into the document (HWPX only). Supports preserving original aspect ratio.',
+    description: 'Insert an image into the document (HWPX only). Supports preserving original aspect ratio and precise positioning.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -853,7 +853,15 @@ const tools = [
         image_path: { type: 'string', description: 'Path to the image file' },
         width: { type: 'number', description: 'Image width in points (optional). If only width is specified with preserve_aspect_ratio=true, height is auto-calculated.' },
         height: { type: 'number', description: 'Image height in points (optional). If only height is specified with preserve_aspect_ratio=true, width is auto-calculated.' },
-        preserve_aspect_ratio: { type: 'boolean', description: 'If true, maintains original image aspect ratio. When only width or height is specified, the other dimension is auto-calculated. Default: false.' },
+        preserve_aspect_ratio: { type: 'boolean', description: 'If true, maintains original image aspect ratio. Default: false.' },
+        position_type: { type: 'string', enum: ['inline', 'floating'], description: 'Position type: "inline" (flows with text like a character) or "floating" (positioned relative to anchor). Default: floating.' },
+        vert_rel_to: { type: 'string', enum: ['para', 'paper'], description: 'Vertical reference point: "para" (paragraph) or "paper" (page). Default: para.' },
+        horz_rel_to: { type: 'string', enum: ['column', 'para', 'paper'], description: 'Horizontal reference point: "column", "para" (paragraph), or "paper" (page). Default: column.' },
+        vert_align: { type: 'string', enum: ['top', 'center', 'bottom'], description: 'Vertical alignment. Default: top.' },
+        horz_align: { type: 'string', enum: ['left', 'center', 'right'], description: 'Horizontal alignment. Default: left.' },
+        vert_offset: { type: 'number', description: 'Vertical offset from anchor in points. Default: 0.' },
+        horz_offset: { type: 'number', description: 'Horizontal offset from anchor in points. Default: 0.' },
+        text_wrap: { type: 'string', enum: ['top_and_bottom', 'square', 'tight', 'behind_text', 'in_front_of_text', 'none'], description: 'Text wrap mode. Default: top_and_bottom.' },
       },
       required: ['doc_id', 'section_index', 'after_index', 'image_path'],
     },
@@ -901,6 +909,14 @@ const tools = [
         theme: { type: 'string', enum: ['default', 'dark', 'forest', 'neutral'], description: 'Diagram theme (default: default)' },
         background_color: { type: 'string', description: 'Background color (e.g., "#ffffff" or "transparent")' },
         preserve_aspect_ratio: { type: 'boolean', description: 'If true, maintains original image aspect ratio. Default: true for Mermaid diagrams.' },
+        position_type: { type: 'string', enum: ['inline', 'floating'], description: 'Position type: "inline" (flows with text) or "floating" (positioned relative to anchor). Default: floating.' },
+        vert_rel_to: { type: 'string', enum: ['para', 'paper'], description: 'Vertical reference point: "para" (paragraph) or "paper" (page). Default: para.' },
+        horz_rel_to: { type: 'string', enum: ['column', 'para', 'paper'], description: 'Horizontal reference point: "column", "para" (paragraph), or "paper" (page). Default: column.' },
+        vert_align: { type: 'string', enum: ['top', 'center', 'bottom'], description: 'Vertical alignment. Default: top.' },
+        horz_align: { type: 'string', enum: ['left', 'center', 'right'], description: 'Horizontal alignment. Default: left.' },
+        vert_offset: { type: 'number', description: 'Vertical offset from anchor in points. Default: 0.' },
+        horz_offset: { type: 'number', description: 'Horizontal offset from anchor in points. Default: 0.' },
+        text_wrap: { type: 'string', enum: ['top_and_bottom', 'square', 'tight', 'behind_text', 'in_front_of_text', 'none'], description: 'Text wrap mode. Default: top_and_bottom.' },
       },
       required: ['doc_id', 'mermaid_code', 'after_index'],
     },
@@ -2146,6 +2162,22 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
         const preserveAspectRatio = args?.preserve_aspect_ratio as boolean | undefined;
 
+        // Build position options from args
+        const position: ImagePositionOptions | undefined = (
+          args?.position_type || args?.vert_rel_to || args?.horz_rel_to ||
+          args?.vert_align || args?.horz_align || args?.vert_offset !== undefined ||
+          args?.horz_offset !== undefined || args?.text_wrap
+        ) ? {
+          positionType: args?.position_type as 'inline' | 'floating' | undefined,
+          vertRelTo: args?.vert_rel_to as 'para' | 'paper' | undefined,
+          horzRelTo: args?.horz_rel_to as 'column' | 'para' | 'paper' | undefined,
+          vertAlign: args?.vert_align as 'top' | 'center' | 'bottom' | undefined,
+          horzAlign: args?.horz_align as 'left' | 'center' | 'right' | undefined,
+          vertOffset: args?.vert_offset as number | undefined,
+          horzOffset: args?.horz_offset as number | undefined,
+          textWrap: args?.text_wrap as 'top_and_bottom' | 'square' | 'tight' | 'behind_text' | 'in_front_of_text' | 'none' | undefined,
+        } : undefined;
+
         const result = doc.insertImage(
           args?.section_index as number,
           args?.after_index as number,
@@ -2155,6 +2187,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             width: args?.width as number | undefined,
             height: args?.height as number | undefined,
             preserveAspectRatio,
+            position,
           }
         );
         if (!result) return error('Failed to insert image');
@@ -2212,12 +2245,29 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const sectionIndex = (args?.section_index as number) ?? 0;
         const afterIndex = args?.after_index as number;
 
+        // Build position options from args
+        const positionOptions: ImagePositionOptions | undefined = (
+          args?.position_type || args?.vert_rel_to || args?.horz_rel_to ||
+          args?.vert_align || args?.horz_align || args?.vert_offset !== undefined ||
+          args?.horz_offset !== undefined || args?.text_wrap
+        ) ? {
+          positionType: args?.position_type as 'inline' | 'floating' | undefined,
+          vertRelTo: args?.vert_rel_to as 'para' | 'paper' | undefined,
+          horzRelTo: args?.horz_rel_to as 'column' | 'para' | 'paper' | undefined,
+          vertAlign: args?.vert_align as 'top' | 'center' | 'bottom' | undefined,
+          horzAlign: args?.horz_align as 'left' | 'center' | 'right' | undefined,
+          vertOffset: args?.vert_offset as number | undefined,
+          horzOffset: args?.horz_offset as number | undefined,
+          textWrap: args?.text_wrap as 'top_and_bottom' | 'square' | 'tight' | 'behind_text' | 'in_front_of_text' | 'none' | undefined,
+        } : undefined;
+
         const result = await doc.renderMermaidToImage(mermaidCode, sectionIndex, afterIndex, {
           width: args?.width as number | undefined,
           height: args?.height as number | undefined,
           theme: args?.theme as 'default' | 'dark' | 'forest' | 'neutral' | undefined,
           backgroundColor: args?.background_color as string | undefined,
           preserveAspectRatio: args?.preserve_aspect_ratio as boolean | undefined,
+          position: positionOptions,
         });
 
         if (result.success) {

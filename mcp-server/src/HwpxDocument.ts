@@ -32,6 +32,26 @@ type DocumentFormat = 'hwpx' | 'hwp';
 
 const MAX_UNDO_STACK_SIZE = 50;
 
+// Image positioning options
+export interface ImagePositionOptions {
+  /** Position type: 'inline' (flows with text like a character) or 'floating' (positioned relative to anchor) */
+  positionType?: 'inline' | 'floating';
+  /** Vertical reference point: 'para' (paragraph), 'paper' (page) */
+  vertRelTo?: 'para' | 'paper';
+  /** Horizontal reference point: 'column', 'para' (paragraph), 'paper' (page) */
+  horzRelTo?: 'column' | 'para' | 'paper';
+  /** Vertical alignment: 'top', 'center', 'bottom' */
+  vertAlign?: 'top' | 'center' | 'bottom';
+  /** Horizontal alignment: 'left', 'center', 'right' */
+  horzAlign?: 'left' | 'center' | 'right';
+  /** Vertical offset from anchor in points */
+  vertOffset?: number;
+  /** Horizontal offset from anchor in points */
+  horzOffset?: number;
+  /** Text wrap mode */
+  textWrap?: 'top_and_bottom' | 'square' | 'tight' | 'behind_text' | 'in_front_of_text' | 'none';
+}
+
 export class HwpxDocument {
   private _id: string;
   private _path: string;
@@ -46,7 +66,17 @@ export class HwpxDocument {
   private _pendingDirectTextUpdates: Array<{ oldText: string; newText: string }> = [];
   private _pendingTableCellUpdates: Array<{ sectionIndex: number; tableIndex: number; tableId: string; row: number; col: number; text: string; charShapeId?: number }> = [];
   private _pendingNestedTableInserts: Array<{ sectionIndex: number; parentTableIndex: number; row: number; col: number; nestedRows: number; nestedCols: number; data: string[][] }> = [];
-  private _pendingImageInserts: Array<{ sectionIndex: number; afterElementIndex: number; imageId: string; binaryId: string; data: string; mimeType: string; width: number; height: number }> = [];
+  private _pendingImageInserts: Array<{
+    sectionIndex: number;
+    afterElementIndex: number;
+    imageId: string;
+    binaryId: string;
+    data: string;
+    mimeType: string;
+    width: number;
+    height: number;
+    position?: ImagePositionOptions;
+  }> = [];
 
   private constructor(id: string, path: string, zip: JSZip | null, content: HwpxContent, format: DocumentFormat) {
     this._id = id;
@@ -1297,6 +1327,7 @@ export class HwpxDocument {
    *     When only width is specified, height is auto-calculated.
    *     When only height is specified, width is auto-calculated.
    *     When neither is specified, uses original dimensions (scaled to fit if too large).
+   *   - position: Positioning options for the image (inline/floating, alignment, offset, text wrap)
    * @returns Object with image ID or null on failure
    */
   insertImage(
@@ -1308,6 +1339,7 @@ export class HwpxDocument {
       width?: number;
       height?: number;
       preserveAspectRatio?: boolean;
+      position?: ImagePositionOptions;
     }
   ): { id: string; actualWidth: number; actualHeight: number } | null {
     const section = this._content.sections[sectionIndex];
@@ -1401,6 +1433,7 @@ export class HwpxDocument {
       mimeType: imageData.mimeType,
       width: finalWidth,
       height: finalHeight,
+      position: imageData.position,
     });
 
     this._isDirty = true;
@@ -3195,6 +3228,7 @@ export class HwpxDocument {
    *   - preserveAspectRatio: If true, maintains original image aspect ratio (default: true)
    *     When only width is specified, height is auto-calculated.
    *     When only height is specified, width is auto-calculated.
+   *   - position: Positioning options for the rendered diagram
    * @returns Object with image ID and actual dimensions, or error
    */
   public async renderMermaidToImage(
@@ -3207,6 +3241,7 @@ export class HwpxDocument {
       theme?: 'default' | 'dark' | 'forest' | 'neutral';
       backgroundColor?: string;
       preserveAspectRatio?: boolean;
+      position?: ImagePositionOptions;
     }
   ): Promise<{ success: boolean; imageId?: string; actualWidth?: number; actualHeight?: number; error?: string }> {
     if (!this._zip) {
@@ -3258,13 +3293,14 @@ export class HwpxDocument {
       // preserveAspectRatio defaults to true for Mermaid diagrams
       const preserveAspectRatio = options?.preserveAspectRatio !== false;
 
-      // Insert image using existing method with preserveAspectRatio support
+      // Insert image using existing method with preserveAspectRatio and position support
       const result = this.insertImage(sectionIndex, afterElementIndex, {
         data: imageBase64,
         mimeType: 'image/png',
         width: options?.width,
         height: options?.height,
         preserveAspectRatio,
+        position: options?.position,
       });
 
       if (result) {
@@ -3333,7 +3369,8 @@ export class HwpxDocument {
         insert.afterElementIndex,
         insert.imageId,
         insert.width,
-        insert.height
+        insert.height,
+        insert.position
       );
     }
   }
@@ -3476,7 +3513,8 @@ export class HwpxDocument {
     afterElementIndex: number,
     imageId: string,
     width: number,
-    height: number
+    height: number,
+    position?: ImagePositionOptions
   ): Promise<void> {
     if (!this._zip) return;
 
@@ -3496,7 +3534,7 @@ export class HwpxDocument {
     const zOrder = Math.floor(Math.random() * 100);
 
     // Generate hp:pic XML tag
-    const picXml = this.generateImagePicXml(picId, instId, zOrder, imageId, hwpWidth, hwpHeight);
+    const picXml = this.generateImagePicXml(picId, instId, zOrder, imageId, hwpWidth, hwpHeight, position);
 
     // Wrap pic in a paragraph structure (required by HWPML)
     // Image must be inside <hp:p><hp:run>...</hp:run></hp:p>
@@ -3537,7 +3575,7 @@ export class HwpxDocument {
   }
 
   /**
-   * Generate hp:pic XML tag for image
+   * Generate hp:pic XML tag for image with positioning options
    */
   private generateImagePicXml(
     picId: number,
@@ -3545,9 +3583,53 @@ export class HwpxDocument {
     zOrder: number,
     binaryItemId: string,
     width: number,
-    height: number
+    height: number,
+    position?: ImagePositionOptions
   ): string {
-    return `<hp:pic id="${picId}" zOrder="${zOrder}" numberingType="PICTURE" textWrap="TOP_AND_BOTTOM" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" href="" groupLevel="0" instid="${instId}" reverse="0">
+    // Map position options to HWPML values
+    const textWrapMap: Record<string, string> = {
+      'top_and_bottom': 'TOP_AND_BOTTOM',
+      'square': 'SQUARE',
+      'tight': 'TIGHT',
+      'behind_text': 'BEHIND_TEXT',
+      'in_front_of_text': 'IN_FRONT_OF_TEXT',
+      'none': 'NONE',
+    };
+
+    const vertRelToMap: Record<string, string> = {
+      'para': 'PARA',
+      'paper': 'PAPER',
+    };
+
+    const horzRelToMap: Record<string, string> = {
+      'column': 'COLUMN',
+      'para': 'PARA',
+      'paper': 'PAPER',
+    };
+
+    const vertAlignMap: Record<string, string> = {
+      'top': 'TOP',
+      'center': 'CENTER',
+      'bottom': 'BOTTOM',
+    };
+
+    const horzAlignMap: Record<string, string> = {
+      'left': 'LEFT',
+      'center': 'CENTER',
+      'right': 'RIGHT',
+    };
+
+    // Use provided options or defaults
+    const textWrap = textWrapMap[position?.textWrap || 'top_and_bottom'] || 'TOP_AND_BOTTOM';
+    const treatAsChar = position?.positionType === 'inline' ? '1' : '0';
+    const vertRelTo = vertRelToMap[position?.vertRelTo || 'para'] || 'PARA';
+    const horzRelTo = horzRelToMap[position?.horzRelTo || 'column'] || 'COLUMN';
+    const vertAlign = vertAlignMap[position?.vertAlign || 'top'] || 'TOP';
+    const horzAlign = horzAlignMap[position?.horzAlign || 'left'] || 'LEFT';
+    const vertOffset = Math.round((position?.vertOffset || 0) * 100); // pt to hwpunit
+    const horzOffset = Math.round((position?.horzOffset || 0) * 100); // pt to hwpunit
+
+    return `<hp:pic id="${picId}" zOrder="${zOrder}" numberingType="PICTURE" textWrap="${textWrap}" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" href="" groupLevel="0" instid="${instId}" reverse="0">
   <hp:offset x="0" y="0"/>
   <hp:orgSz width="${width}" height="${height}"/>
   <hp:curSz width="${width}" height="${height}"/>
@@ -3570,7 +3652,7 @@ export class HwpxDocument {
   <hp:imgDim dimwidth="${width}" dimheight="${height}"/>
   <hp:effects/>
   <hp:sz width="${width}" widthRelTo="ABSOLUTE" height="${height}" heightRelTo="ABSOLUTE" protect="0"/>
-  <hp:pos treatAsChar="0" affectLSpacing="0" flowWithText="1" allowOverlap="0" holdAnchorAndSO="0" vertRelTo="PARA" horzRelTo="COLUMN" vertAlign="TOP" horzAlign="LEFT" vertOffset="0" horzOffset="0"/>
+  <hp:pos treatAsChar="${treatAsChar}" affectLSpacing="0" flowWithText="1" allowOverlap="0" holdAnchorAndSO="0" vertRelTo="${vertRelTo}" horzRelTo="${horzRelTo}" vertAlign="${vertAlign}" horzAlign="${horzAlign}" vertOffset="${vertOffset}" horzOffset="${horzOffset}"/>
   <hp:outMargin left="0" right="0" top="0" bottom="0"/>
   <hp:shapeComment>Inserted by HWPX MCP</hp:shapeComment>
 </hp:pic>`;
