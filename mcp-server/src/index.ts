@@ -362,6 +362,76 @@ const tools = [
     },
   },
   {
+    name: 'get_table_map',
+    description: 'Get table map with headers - maps table indices to their header paragraphs. Returns table info including header text from preceding paragraph, size, empty status, and first row preview.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        doc_id: { type: 'string', description: 'Document ID' },
+      },
+      required: ['doc_id'],
+    },
+  },
+  {
+    name: 'find_empty_tables',
+    description: 'Find tables that are empty or contain only placeholder text (dashes, bullets, numbers only)',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        doc_id: { type: 'string', description: 'Document ID' },
+      },
+      required: ['doc_id'],
+    },
+  },
+  {
+    name: 'get_tables_by_section',
+    description: 'Get all tables within a specific section',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        doc_id: { type: 'string', description: 'Document ID' },
+        section_index: { type: 'number', description: 'Section index (0-based)' },
+      },
+      required: ['doc_id', 'section_index'],
+    },
+  },
+  {
+    name: 'find_table_by_header',
+    description: 'Find tables by their header text (partial match, case-insensitive)',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        doc_id: { type: 'string', description: 'Document ID' },
+        search_text: { type: 'string', description: 'Text to search for in table headers' },
+      },
+      required: ['doc_id', 'search_text'],
+    },
+  },
+  {
+    name: 'get_tables_summary',
+    description: 'Get summary of multiple tables by index range. Returns compact info: header, size, empty status, and content preview.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        doc_id: { type: 'string', description: 'Document ID' },
+        start_index: { type: 'number', description: 'Start table index (0-based, default: 0)' },
+        end_index: { type: 'number', description: 'End table index (inclusive, default: last table)' },
+      },
+      required: ['doc_id'],
+    },
+  },
+  {
+    name: 'get_document_outline',
+    description: 'Get document outline - hierarchical structure showing sections, headings, and tables with their positions',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        doc_id: { type: 'string', description: 'Document ID' },
+      },
+      required: ['doc_id'],
+    },
+  },
+  {
     name: 'get_table',
     description: 'Get a specific table with full data',
     inputSchema: {
@@ -1697,6 +1767,48 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const doc = getDoc(args?.doc_id as string);
         if (!doc) return error('Document not found');
         return success({ tables: doc.getTables() });
+      }
+
+      case 'get_table_map': {
+        const doc = getDoc(args?.doc_id as string);
+        if (!doc) return error('Document not found');
+        return success({ table_map: doc.getTableMap() });
+      }
+
+      case 'find_empty_tables': {
+        const doc = getDoc(args?.doc_id as string);
+        if (!doc) return error('Document not found');
+        return success({ empty_tables: doc.findEmptyTables() });
+      }
+
+      case 'get_tables_by_section': {
+        const doc = getDoc(args?.doc_id as string);
+        if (!doc) return error('Document not found');
+        const sectionIndex = args?.section_index as number;
+        if (typeof sectionIndex !== 'number') return error('section_index is required');
+        return success({ tables: doc.getTablesBySection(sectionIndex) });
+      }
+
+      case 'find_table_by_header': {
+        const doc = getDoc(args?.doc_id as string);
+        if (!doc) return error('Document not found');
+        const searchText = args?.search_text as string;
+        if (!searchText) return error('search_text is required');
+        return success({ tables: doc.findTableByHeader(searchText) });
+      }
+
+      case 'get_tables_summary': {
+        const doc = getDoc(args?.doc_id as string);
+        if (!doc) return error('Document not found');
+        const startIndex = args?.start_index as number | undefined;
+        const endIndex = args?.end_index as number | undefined;
+        return success({ tables: doc.getTablesSummary(startIndex, endIndex) });
+      }
+
+      case 'get_document_outline': {
+        const doc = getDoc(args?.doc_id as string);
+        if (!doc) return error('Document not found');
+        return success({ outline: doc.getDocumentOutline() });
       }
 
       case 'get_table': {

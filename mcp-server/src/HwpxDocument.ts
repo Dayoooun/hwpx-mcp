@@ -507,6 +507,281 @@ export class HwpxDocument {
     return tables;
   }
 
+  /**
+   * Get table map with headers - maps table indices to their header paragraphs
+   * Returns array of table info including the header text from the preceding paragraph
+   */
+  getTableMap(): Array<{
+    table_index: number;
+    section_index: number;
+    header: string;
+    rows: number;
+    cols: number;
+    is_empty: boolean;
+    first_row_preview: string[];
+  }> {
+    const result: Array<{
+      table_index: number;
+      section_index: number;
+      header: string;
+      rows: number;
+      cols: number;
+      is_empty: boolean;
+      first_row_preview: string[];
+    }> = [];
+
+    let globalTableIndex = 0;
+
+    this._content.sections.forEach((section, sectionIndex) => {
+      let lastParagraphText = '';
+
+      section.elements.forEach((element, _elementIndex) => {
+        if (element.type === 'paragraph') {
+          // Store the paragraph text as potential header
+          const para = element.data as HwpxParagraph;
+          const text = para.runs.map(r => r.text).join('').trim();
+          if (text) {
+            lastParagraphText = text;
+          }
+        } else if (element.type === 'table') {
+          const table = element.data as HwpxTable;
+          const rows = table.rows.length;
+          const cols = table.rows[0]?.cells.length || 0;
+
+          // Check if table is empty (no meaningful content)
+          const isEmpty = this.isTableEmpty(table);
+
+          // Get first row preview
+          const firstRowPreview = table.rows[0]?.cells.map(cell => {
+            const text = cell.paragraphs.map(p => p.runs.map(r => r.text).join('')).join(' ').trim();
+            return text.substring(0, 50) + (text.length > 50 ? '...' : '');
+          }) || [];
+
+          result.push({
+            table_index: globalTableIndex,
+            section_index: sectionIndex,
+            header: lastParagraphText,
+            rows,
+            cols,
+            is_empty: isEmpty,
+            first_row_preview: firstRowPreview,
+          });
+
+          globalTableIndex++;
+          // Don't reset lastParagraphText here - next table might reuse same header if consecutive
+        }
+      });
+    });
+
+    return result;
+  }
+
+  /**
+   * Check if a table is empty or contains only placeholder text
+   */
+  private isTableEmpty(table: HwpxTable): boolean {
+    const placeholderPatterns = [
+      /^\s*$/,                    // Empty or whitespace only
+      /^[\-\s]+$/,                // Dashes and spaces only
+      /^[0-9\.\s]+$/,             // Numbers and dots only (like "1." "2.")
+      /^[\(\)\[\]\s]+$/,          // Brackets only
+      /^(※|○|●|□|■|\*|\-)+\s*$/,  // Bullet markers only
+    ];
+
+    for (const row of table.rows) {
+      for (const cell of row.cells) {
+        const cellText = cell.paragraphs.map(p => p.runs.map(r => r.text).join('')).join('').trim();
+        // If cell has meaningful content (not matching placeholder patterns)
+        if (cellText && !placeholderPatterns.some(pattern => pattern.test(cellText))) {
+          return false;
+        }
+      }
+    }
+    return true;
+  }
+
+  /**
+   * Find tables that are empty or contain only placeholders
+   */
+  findEmptyTables(): Array<{
+    table_index: number;
+    section_index: number;
+    header: string;
+    rows: number;
+    cols: number;
+  }> {
+    const tableMap = this.getTableMap();
+    return tableMap.filter(t => t.is_empty).map(t => ({
+      table_index: t.table_index,
+      section_index: t.section_index,
+      header: t.header,
+      rows: t.rows,
+      cols: t.cols,
+    }));
+  }
+
+  /**
+   * Get tables within a specific section
+   */
+  getTablesBySection(sectionIndex: number): Array<{
+    table_index: number;
+    local_index: number;
+    header: string;
+    rows: number;
+    cols: number;
+    is_empty: boolean;
+  }> {
+    const tableMap = this.getTableMap();
+    let localIndex = 0;
+    return tableMap
+      .filter(t => t.section_index === sectionIndex)
+      .map(t => ({
+        table_index: t.table_index,
+        local_index: localIndex++,
+        header: t.header,
+        rows: t.rows,
+        cols: t.cols,
+        is_empty: t.is_empty,
+      }));
+  }
+
+  /**
+   * Find tables by header text (partial match, case-insensitive)
+   */
+  findTableByHeader(searchText: string): Array<{
+    table_index: number;
+    section_index: number;
+    header: string;
+    rows: number;
+    cols: number;
+    is_empty: boolean;
+    first_row_preview: string[];
+  }> {
+    const tableMap = this.getTableMap();
+    const lowerSearch = searchText.toLowerCase();
+    return tableMap.filter(t => t.header.toLowerCase().includes(lowerSearch));
+  }
+
+  /**
+   * Get summary of multiple tables by index range
+   */
+  getTablesSummary(startIndex?: number, endIndex?: number): Array<{
+    table_index: number;
+    section_index: number;
+    header: string;
+    size: string;
+    is_empty: boolean;
+    content_preview: string;
+  }> {
+    const tableMap = this.getTableMap();
+    const start = startIndex ?? 0;
+    const end = endIndex ?? tableMap.length - 1;
+
+    return tableMap
+      .filter(t => t.table_index >= start && t.table_index <= end)
+      .map(t => ({
+        table_index: t.table_index,
+        section_index: t.section_index,
+        header: t.header.substring(0, 100) + (t.header.length > 100 ? '...' : ''),
+        size: `${t.rows}x${t.cols}`,
+        is_empty: t.is_empty,
+        content_preview: t.first_row_preview.slice(0, 3).join(' | '),
+      }));
+  }
+
+  /**
+   * Get document outline - hierarchical structure showing headers and their associated tables
+   */
+  getDocumentOutline(): Array<{
+    type: 'section' | 'heading' | 'table' | 'paragraph';
+    level: number;
+    text: string;
+    section_index: number;
+    table_index?: number;
+    element_index: number;
+  }> {
+    const outline: Array<{
+      type: 'section' | 'heading' | 'table' | 'paragraph';
+      level: number;
+      text: string;
+      section_index: number;
+      table_index?: number;
+      element_index: number;
+    }> = [];
+
+    // Patterns to detect heading-like paragraphs
+    const headingPatterns = [
+      /^[0-9]+\.\s+/,                           // "1. Title"
+      /^\([0-9]+\)\s*/,                         // "(1) Title"
+      /^[가-힣]\.\s*/,                          // "가. Title"
+      /^\([가-힣]\)\s*/,                        // "(가) Title"
+      /^[IVX]+\.\s*/,                           // "I. Title" (Roman numerals)
+      /^제\s*[0-9]+\s*(장|절|조|항)/,           // "제1장", "제2절" etc.
+      /^[①②③④⑤⑥⑦⑧⑨⑩]\s*/,                // Circled numbers
+      /^[■□◆◇●○▶▷]\s*/,                       // Bullet markers as headers
+    ];
+
+    const getHeadingLevel = (text: string): number => {
+      // Deeper nesting = higher level number
+      if (/^제\s*[0-9]+\s*장/.test(text)) return 1;
+      if (/^제\s*[0-9]+\s*절/.test(text)) return 2;
+      if (/^[0-9]+\.\s+/.test(text)) return 2;
+      if (/^\([0-9]+\)\s*/.test(text)) return 3;
+      if (/^[가-힣]\.\s*/.test(text)) return 3;
+      if (/^\([가-힣]\)\s*/.test(text)) return 4;
+      if (/^[①②③④⑤⑥⑦⑧⑨⑩]\s*/.test(text)) return 4;
+      return 5; // Default level for unrecognized patterns
+    };
+
+    let globalTableIndex = 0;
+
+    this._content.sections.forEach((section, sectionIndex) => {
+      // Add section marker
+      outline.push({
+        type: 'section',
+        level: 0,
+        text: `Section ${sectionIndex + 1}`,
+        section_index: sectionIndex,
+        element_index: -1,
+      });
+
+      section.elements.forEach((element, elementIndex) => {
+        if (element.type === 'paragraph') {
+          const para = element.data as HwpxParagraph;
+          const text = para.runs.map(r => r.text).join('').trim();
+
+          if (text && headingPatterns.some(p => p.test(text))) {
+            outline.push({
+              type: 'heading',
+              level: getHeadingLevel(text),
+              text: text.substring(0, 100) + (text.length > 100 ? '...' : ''),
+              section_index: sectionIndex,
+              element_index: elementIndex,
+            });
+          }
+        } else if (element.type === 'table') {
+          const table = element.data as HwpxTable;
+          const rows = table.rows.length;
+          const cols = table.rows[0]?.cells.length || 0;
+          const isEmpty = this.isTableEmpty(table);
+
+          outline.push({
+            type: 'table',
+            level: 5,
+            text: `Table ${globalTableIndex} (${rows}x${cols})${isEmpty ? ' [empty]' : ''}`,
+            section_index: sectionIndex,
+            table_index: globalTableIndex,
+            element_index: elementIndex,
+          });
+
+          globalTableIndex++;
+        }
+      });
+    });
+
+    return outline;
+  }
+
   getTable(sectionIndex: number, tableIndex: number): { rows: number; cols: number; data: any[][] } | null {
     const table = this.findTable(sectionIndex, tableIndex);
     if (!table) return null;
