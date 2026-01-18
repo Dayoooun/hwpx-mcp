@@ -77,6 +77,28 @@ export class HwpxDocument {
     height: number;
     position?: ImagePositionOptions;
   }> = [];
+  private _pendingCellImageInserts: Array<{
+    sectionIndex: number;
+    tableIndex: number;
+    row: number;
+    col: number;
+    imageId: string;
+    binaryId: string;
+    data: string;
+    mimeType: string;
+    width: number;   // display width in points
+    height: number;  // display height in points
+    orgWidth: number;  // original image width in pixels
+    orgHeight: number; // original image height in pixels
+  }> = [];
+  private _pendingTableInserts: Array<{
+    sectionIndex: number;
+    afterElementIndex: number;
+    rows: number;
+    cols: number;
+    width: number;
+    cellWidth: number;
+  }> = [];
 
   private constructor(id: string, path: string, zip: JSZip | null, content: HwpxContent, format: DocumentFormat) {
     this._id = id;
@@ -690,6 +712,32 @@ export class HwpxDocument {
   }
 
   /**
+   * Convert global table index to section and local index
+   * @param globalTableIndex - Global table index (0-based across all sections)
+   * @returns Object with section_index and local_index, or null if not found
+   */
+  convertGlobalToLocalTableIndex(globalTableIndex: number): { section_index: number; local_index: number } | null {
+    let currentGlobalIndex = 0;
+
+    for (let sectionIndex = 0; sectionIndex < this._content.sections.length; sectionIndex++) {
+      const section = this._content.sections[sectionIndex];
+      let localIndex = 0;
+
+      for (const element of section.elements) {
+        if (element.type === 'table') {
+          if (currentGlobalIndex === globalTableIndex) {
+            return { section_index: sectionIndex, local_index: localIndex };
+          }
+          currentGlobalIndex++;
+          localIndex++;
+        }
+      }
+    }
+
+    return null;
+  }
+
+  /**
    * Get document outline - hierarchical structure showing headers and their associated tables
    */
   getDocumentOutline(): Array<{
@@ -970,40 +1018,146 @@ export class HwpxDocument {
    * Returns position right after the found paragraph (good for inserting content under a header)
    * @param headerText - Text to search for in paragraph headers
    */
-  findInsertPositionAfterHeader(headerText: string): {
+  /**
+   * Find insertion position after header/text.
+   * @param headerText - Text to search for
+   * @param searchIn - Where to search: 'paragraphs', 'table_cells', or 'all' (default)
+   */
+  findInsertPositionAfterHeader(
+    headerText: string,
+    searchIn: 'paragraphs' | 'table_cells' | 'all' = 'all'
+  ): {
     section_index: number;
     element_index: number;
     insert_after: number;
     header_found: string;
+    found_in: 'paragraph' | 'table_cell';
+    table_info?: { table_index: number; row: number; col: number };
     next_element: { type: string; text: string } | null;
   } | null {
-    const matches = this.findParagraphByText(headerText);
-    if (matches.length === 0) return null;
+    // Search in paragraphs first (if enabled)
+    if (searchIn === 'paragraphs' || searchIn === 'all') {
+      const matches = this.findParagraphByText(headerText);
+      if (matches.length > 0) {
+        const match = matches[0];
+        const section = this._content.sections[match.section_index];
+        const nextElem = section.elements[match.element_index + 1];
 
-    const match = matches[0]; // Take first match
-    const section = this._content.sections[match.section_index];
-    const nextElem = section.elements[match.element_index + 1];
+        let nextElementInfo: { type: string; text: string } | null = null;
+        if (nextElem) {
+          if (nextElem.type === 'paragraph') {
+            const text = (nextElem.data as HwpxParagraph).runs.map(r => r.text).join('');
+            nextElementInfo = { type: 'paragraph', text: text.substring(0, 80) };
+          } else if (nextElem.type === 'table') {
+            const table = nextElem.data as HwpxTable;
+            nextElementInfo = { type: 'table', text: `${table.rows.length}x${table.rows[0]?.cells.length || 0}` };
+          } else {
+            nextElementInfo = { type: nextElem.type, text: '' };
+          }
+        }
 
-    let nextElementInfo: { type: string; text: string } | null = null;
-    if (nextElem) {
-      if (nextElem.type === 'paragraph') {
-        const text = (nextElem.data as HwpxParagraph).runs.map(r => r.text).join('');
-        nextElementInfo = { type: 'paragraph', text: text.substring(0, 80) };
-      } else if (nextElem.type === 'table') {
-        const table = nextElem.data as HwpxTable;
-        nextElementInfo = { type: 'table', text: `${table.rows.length}x${table.rows[0]?.cells.length || 0}` };
-      } else {
-        nextElementInfo = { type: nextElem.type, text: '' };
+        return {
+          section_index: match.section_index,
+          element_index: match.element_index,
+          insert_after: match.element_index,
+          header_found: match.text,
+          found_in: 'paragraph',
+          next_element: nextElementInfo,
+        };
       }
     }
 
-    return {
-      section_index: match.section_index,
-      element_index: match.element_index,
-      insert_after: match.element_index, // Insert after the header paragraph
-      header_found: match.text,
-      next_element: nextElementInfo,
-    };
+    // Search in table cells (if enabled)
+    if (searchIn === 'table_cells' || searchIn === 'all') {
+      const cellMatch = this.findTextInTableCells(headerText);
+      if (cellMatch) {
+        const section = this._content.sections[cellMatch.section_index];
+        const nextElem = section.elements[cellMatch.element_index + 1];
+
+        let nextElementInfo: { type: string; text: string } | null = null;
+        if (nextElem) {
+          if (nextElem.type === 'paragraph') {
+            const text = (nextElem.data as HwpxParagraph).runs.map(r => r.text).join('');
+            nextElementInfo = { type: 'paragraph', text: text.substring(0, 80) };
+          } else if (nextElem.type === 'table') {
+            const table = nextElem.data as HwpxTable;
+            nextElementInfo = { type: 'table', text: `${table.rows.length}x${table.rows[0]?.cells.length || 0}` };
+          } else {
+            nextElementInfo = { type: nextElem.type, text: '' };
+          }
+        }
+
+        return {
+          section_index: cellMatch.section_index,
+          element_index: cellMatch.element_index,
+          insert_after: cellMatch.element_index, // Insert after the table containing the text
+          header_found: cellMatch.text,
+          found_in: 'table_cell',
+          table_info: {
+            table_index: cellMatch.table_index,
+            row: cellMatch.row,
+            col: cellMatch.col,
+          },
+          next_element: nextElementInfo,
+        };
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Find text in table cells
+   * @param searchText - Text to search for (partial match)
+   */
+  private findTextInTableCells(searchText: string): {
+    section_index: number;
+    element_index: number;
+    table_index: number;
+    row: number;
+    col: number;
+    text: string;
+  } | null {
+    const normalizedSearch = searchText.toLowerCase().trim();
+    let globalTableIndex = 0;
+
+    for (let si = 0; si < this._content.sections.length; si++) {
+      const section = this._content.sections[si];
+
+      for (let ei = 0; ei < section.elements.length; ei++) {
+        const elem = section.elements[ei];
+
+        if (elem.type === 'table') {
+          const table = elem.data as HwpxTable;
+
+          for (let ri = 0; ri < table.rows.length; ri++) {
+            const row = table.rows[ri];
+
+            for (let ci = 0; ci < row.cells.length; ci++) {
+              const cell = row.cells[ci];
+              const cellText = cell.paragraphs
+                .map(p => p.runs.map(r => r.text).join(''))
+                .join('\n');
+
+              if (cellText.toLowerCase().includes(normalizedSearch)) {
+                return {
+                  section_index: si,
+                  element_index: ei,
+                  table_index: globalTableIndex,
+                  row: ri,
+                  col: ci,
+                  text: cellText.substring(0, 100),
+                };
+              }
+            }
+          }
+
+          globalTableIndex++;
+        }
+      }
+    }
+
+    return null;
   }
 
   /**
@@ -1545,6 +1699,16 @@ export class HwpxDocument {
       }
     }
 
+    // Add to pending table inserts for XML generation
+    this._pendingTableInserts.push({
+      sectionIndex,
+      afterElementIndex,
+      rows,
+      cols,
+      width: defaultWidth,
+      cellWidth,
+    });
+
     this._isDirty = true;
     return { tableIndex };
   }
@@ -1972,6 +2136,124 @@ export class HwpxDocument {
       width: finalWidth,
       height: finalHeight,
       position: imageData.position,
+    });
+
+    this._isDirty = true;
+    return { id: imageId, actualWidth: finalWidth, actualHeight: finalHeight };
+  }
+
+  /**
+   * Insert an image inside a table cell
+   * @param sectionIndex - Section containing the table
+   * @param tableIndex - Table index (local to section)
+   * @param row - Row index (0-based)
+   * @param col - Column index (0-based)
+   * @param imageData - Image data including base64, mimeType, and optional dimensions
+   * @returns Object with image ID and actual dimensions, or null on failure
+   */
+  insertImageInCell(
+    sectionIndex: number,
+    tableIndex: number,
+    row: number,
+    col: number,
+    imageData: {
+      data: string;
+      mimeType: string;
+      width?: number;
+      height?: number;
+      preserveAspectRatio?: boolean;
+    }
+  ): { id: string; actualWidth: number; actualHeight: number } | null {
+    const table = this.findTable(sectionIndex, tableIndex);
+    if (!table) return null;
+
+    const cell = table.rows[row]?.cells[col];
+    if (!cell) return null;
+
+    this.saveState();
+
+    // Calculate final dimensions (similar logic to insertImage)
+    let finalWidth = imageData.width ?? 200;  // Default smaller for cells
+    let finalHeight = imageData.height ?? 150;
+
+    if (imageData.preserveAspectRatio) {
+      const originalDims = this.getImageDimensionsFromBase64(imageData.data, imageData.mimeType);
+
+      if (originalDims) {
+        const aspectRatio = originalDims.width / originalDims.height;
+
+        if (imageData.width !== undefined && imageData.height === undefined) {
+          finalWidth = imageData.width;
+          finalHeight = Math.round(imageData.width / aspectRatio);
+        } else if (imageData.height !== undefined && imageData.width === undefined) {
+          finalHeight = imageData.height;
+          finalWidth = Math.round(imageData.height * aspectRatio);
+        } else if (imageData.width === undefined && imageData.height === undefined) {
+          // Use original dimensions, cap at 300pt for cells
+          const maxSize = 300;
+          const originalWidthPt = originalDims.width * 0.75;
+          const originalHeightPt = originalDims.height * 0.75;
+
+          if (originalWidthPt > maxSize || originalHeightPt > maxSize) {
+            const scale = Math.min(maxSize / originalWidthPt, maxSize / originalHeightPt);
+            finalWidth = Math.round(originalWidthPt * scale);
+            finalHeight = Math.round(originalHeightPt * scale);
+          } else {
+            finalWidth = Math.round(originalWidthPt);
+            finalHeight = Math.round(originalHeightPt);
+          }
+        } else {
+          finalWidth = imageData.width!;
+          finalHeight = Math.round(imageData.width! / aspectRatio);
+        }
+      }
+    }
+
+    // Generate image ID
+    const existingImageIds = this.getExistingImageIds();
+    let nextNum = 1;
+    while (existingImageIds.has(`image${nextNum}`)) {
+      nextNum++;
+    }
+    const imageId = `image${nextNum}`;
+    const binaryId = imageId;
+
+    const newImage: HwpxImage = {
+      id: imageId,
+      binaryId,
+      width: finalWidth,
+      height: finalHeight,
+      data: imageData.data,
+      mimeType: imageData.mimeType,
+    };
+
+    // Store image in the images map
+    this._content.images.set(imageId, newImage);
+
+    // Store binary data
+    this._content.binData.set(binaryId, {
+      id: binaryId,
+      encoding: 'Base64',
+      data: imageData.data,
+    });
+
+    // Get original image dimensions from binary data
+    const orgDimensions = this.getImageDimensions(imageData.data, imageData.mimeType);
+
+    // Add to pending cell image inserts
+    this._pendingCellImageInserts.push({
+      sectionIndex,
+      tableIndex,
+      row,
+      col,
+      imageId,
+      binaryId,
+      data: imageData.data,
+      mimeType: imageData.mimeType,
+      width: finalWidth,
+      height: finalHeight,
+      orgWidth: orgDimensions.width,
+      orgHeight: orgDimensions.height,
     });
 
     this._isDirty = true;
@@ -2423,7 +2705,13 @@ export class HwpxDocument {
   private async syncContentToZip(): Promise<void> {
     if (!this._zip) return;
 
-    // Apply table cell updates first (preserves original XML structure)
+    // Apply table inserts FIRST (other operations depend on tables existing in XML)
+    if (this._pendingTableInserts && this._pendingTableInserts.length > 0) {
+      await this.applyTableInsertsToXml();
+      this._pendingTableInserts = [];
+    }
+
+    // Apply table cell updates (preserves original XML structure)
     if (this._pendingTableCellUpdates && this._pendingTableCellUpdates.length > 0) {
       await this.applyTableCellUpdatesToXml();
       this._pendingTableCellUpdates = [];
@@ -2433,6 +2721,12 @@ export class HwpxDocument {
     if (this._pendingNestedTableInserts && this._pendingNestedTableInserts.length > 0) {
       await this.applyNestedTableInsertsToXml();
       this._pendingNestedTableInserts = [];
+    }
+
+    // Apply cell image inserts
+    if (this._pendingCellImageInserts && this._pendingCellImageInserts.length > 0) {
+      await this.applyCellImageInsertsToXml();
+      this._pendingCellImageInserts = [];
     }
 
     // Apply direct text updates (from updateParagraphText)
@@ -2463,6 +2757,173 @@ export class HwpxDocument {
     await this.syncMetadataToZip();
 
     this._isDirty = false;
+  }
+
+  /**
+   * Apply table inserts to XML.
+   * Inserts new tables into the section XML.
+   */
+  private async applyTableInsertsToXml(): Promise<void> {
+    if (!this._zip) return;
+
+    // Group inserts by section
+    const insertsBySection = new Map<number, Array<{
+      afterElementIndex: number;
+      rows: number;
+      cols: number;
+      width: number;
+      cellWidth: number;
+    }>>();
+
+    for (const insert of this._pendingTableInserts) {
+      const sectionInserts = insertsBySection.get(insert.sectionIndex) || [];
+      sectionInserts.push({
+        afterElementIndex: insert.afterElementIndex,
+        rows: insert.rows,
+        cols: insert.cols,
+        width: insert.width,
+        cellWidth: insert.cellWidth,
+      });
+      insertsBySection.set(insert.sectionIndex, sectionInserts);
+    }
+
+    // Process each section
+    for (const [sectionIndex, inserts] of insertsBySection) {
+      const sectionPath = `Contents/section${sectionIndex}.xml`;
+      const file = this._zip.file(sectionPath);
+      if (!file) continue;
+
+      let xml = await file.async('string');
+
+      // Get maximum id and instid for generating new ones
+      const idMatches = xml.matchAll(/id="(\d+)"/g);
+      let maxId = 0;
+      for (const m of idMatches) {
+        maxId = Math.max(maxId, parseInt(m[1], 10));
+      }
+
+      // Sort inserts by afterElementIndex in descending order to avoid index shifting
+      const sortedInserts = [...inserts].sort((a, b) => b.afterElementIndex - a.afterElementIndex);
+
+      for (const insert of sortedInserts) {
+        // Generate unique IDs
+        maxId++;
+        const tableId = maxId;
+
+        // Calculate row height based on standard settings
+        const rowHeight = 1000; // Default row height in hwpunit
+        const tableHeight = rowHeight * insert.rows;
+
+        // Build table XML
+        let tableXml = `<hp:tbl id="${tableId}" zOrder="0" numberingType="TABLE" textWrap="TOP_AND_BOTTOM" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" pageBreak="CELL" repeatHeader="0" rowCnt="${insert.rows}" colCnt="${insert.cols}" cellSpacing="0" borderFillIDRef="1" noAdjust="0">`;
+        tableXml += `<hp:sz width="${insert.width}" widthRelTo="ABSOLUTE" height="${tableHeight}" heightRelTo="ABSOLUTE" protect="0"/>`;
+        tableXml += `<hp:pos treatAsChar="1" affectLSpacing="0" flowWithText="1" allowOverlap="0" holdAnchorAndSO="0" vertRelTo="PARA" horzRelTo="PARA" vertAlign="TOP" horzAlign="LEFT" vertOffset="0" horzOffset="0"/>`;
+        tableXml += `<hp:outMargin left="141" right="141" top="141" bottom="141"/>`;
+        tableXml += `<hp:inMargin left="0" right="0" top="0" bottom="0"/>`;
+
+        // Generate rows
+        for (let r = 0; r < insert.rows; r++) {
+          tableXml += `<hp:tr>`;
+          for (let c = 0; c < insert.cols; c++) {
+            maxId++;
+            const cellParaId = maxId;
+            tableXml += `<hp:tc name="" header="0" hasMargin="0" protect="0" editable="0" dirty="0" borderFillIDRef="1">`;
+            tableXml += `<hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="CENTER" linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="0">`;
+            tableXml += `<hp:p id="${cellParaId}" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0">`;
+            tableXml += `<hp:run charPrIDRef="0"><hp:t></hp:t></hp:run>`;
+            tableXml += `</hp:p>`;
+            tableXml += `</hp:subList>`;
+            tableXml += `<hp:cellAddr colAddr="${c}" rowAddr="${r}"/>`;
+            tableXml += `<hp:cellSpan colSpan="1" rowSpan="1"/>`;
+            tableXml += `<hp:cellSz width="${insert.cellWidth}" height="${rowHeight}"/>`;
+            tableXml += `<hp:cellMargin left="141" right="141" top="141" bottom="141"/>`;
+            tableXml += `</hp:tc>`;
+          }
+          tableXml += `</hp:tr>`;
+        }
+        tableXml += `</hp:tbl>`;
+
+        // Find the position to insert the table
+        // We need to insert after a paragraph element
+        // Find all <hp:p> elements at the root level (not inside tables)
+        const paragraphMatches = [...xml.matchAll(/<hp:p\s[^>]*>.*?<\/hp:p>/gs)];
+
+        // Filter to find only top-level paragraphs (not inside <hp:tbl> or <hp:subList>)
+        // For simplicity, insert after the first paragraph if afterElementIndex is 0
+        // or find the appropriate position
+
+        let insertPosition = -1;
+        let elementCount = -1;
+        let searchPos = 0;
+
+        // Find paragraphs and tables at root level
+        while (searchPos < xml.length) {
+          // Look for next <hp:p or <hp:tbl
+          const nextP = xml.indexOf('<hp:p ', searchPos);
+          const nextTbl = xml.indexOf('<hp:tbl ', searchPos);
+
+          let nextPos = -1;
+          let isTable = false;
+
+          if (nextP !== -1 && (nextTbl === -1 || nextP < nextTbl)) {
+            nextPos = nextP;
+            isTable = false;
+          } else if (nextTbl !== -1) {
+            nextPos = nextTbl;
+            isTable = true;
+          }
+
+          if (nextPos === -1) break;
+
+          // Check if this is inside a subList (nested)
+          const beforeText = xml.substring(Math.max(0, nextPos - 500), nextPos);
+          const subListOpen = beforeText.lastIndexOf('<hp:subList');
+          const subListClose = beforeText.lastIndexOf('</hp:subList>');
+          const isNested = subListOpen > subListClose;
+
+          if (!isNested) {
+            elementCount++;
+
+            // Find the end of this element
+            let endPos;
+            if (isTable) {
+              const tblEnd = xml.indexOf('</hp:tbl>', nextPos);
+              endPos = tblEnd + '</hp:tbl>'.length;
+            } else {
+              const pEnd = xml.indexOf('</hp:p>', nextPos);
+              endPos = pEnd + '</hp:p>'.length;
+            }
+
+            if (elementCount === insert.afterElementIndex) {
+              insertPosition = endPos;
+              break;
+            }
+
+            searchPos = endPos;
+          } else {
+            searchPos = nextPos + 10;
+          }
+        }
+
+        // If position not found, insert at end of section (before </hs:sec>)
+        if (insertPosition === -1) {
+          const secEnd = xml.lastIndexOf('</hs:sec>');
+          if (secEnd !== -1) {
+            insertPosition = secEnd;
+          }
+        }
+
+        if (insertPosition !== -1) {
+          // Wrap table in a paragraph for proper positioning
+          const wrapperXml = `<hp:p id="${maxId + 1}" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="0">${tableXml}<hp:t></hp:t></hp:run></hp:p>`;
+          maxId++;
+
+          xml = xml.substring(0, insertPosition) + wrapperXml + xml.substring(insertPosition);
+        }
+      }
+
+      this._zip.file(sectionPath, xml);
+    }
   }
 
   /**
@@ -3145,6 +3606,165 @@ export class HwpxDocument {
   }
 
   /**
+   * Apply cell image inserts to XML
+   * Inserts an image inside a table cell
+   */
+  private async applyCellImageInsertsToXml(): Promise<void> {
+    if (!this._zip) return;
+
+    // Group inserts by section
+    const insertsBySection = new Map<number, Array<{
+      tableIndex: number;
+      row: number;
+      col: number;
+      imageId: string;
+      binaryId: string;
+      width: number;
+      height: number;
+      orgWidth: number;
+      orgHeight: number;
+    }>>();
+
+    for (const insert of this._pendingCellImageInserts) {
+      const sectionInserts = insertsBySection.get(insert.sectionIndex) || [];
+      sectionInserts.push({
+        tableIndex: insert.tableIndex,
+        row: insert.row,
+        col: insert.col,
+        imageId: insert.imageId,
+        binaryId: insert.binaryId,
+        width: insert.width,
+        height: insert.height,
+        orgWidth: insert.orgWidth,
+        orgHeight: insert.orgHeight,
+      });
+      insertsBySection.set(insert.sectionIndex, sectionInserts);
+    }
+
+    // Process each section
+    for (const [sectionIndex, inserts] of insertsBySection) {
+      const sectionPath = `Contents/section${sectionIndex}.xml`;
+      const file = this._zip.file(sectionPath);
+      if (!file) continue;
+
+      let xml = await file.async('string');
+
+      // Get maximum instid and picid for generating new ones
+      const instIdMatches = xml.matchAll(/instid="(\d+)"/g);
+      const picIdMatches = xml.matchAll(/hp:pic id="(\d+)"/g);
+      let maxInstId = 0;
+      let maxPicId = 0;
+      for (const m of instIdMatches) {
+        maxInstId = Math.max(maxInstId, parseInt(m[1], 10));
+      }
+      for (const m of picIdMatches) {
+        maxPicId = Math.max(maxPicId, parseInt(m[1], 10));
+      }
+
+      // Process inserts in reverse order (by table index, then by row/col)
+      const sortedInserts = [...inserts].sort((a, b) => {
+        if (a.tableIndex !== b.tableIndex) return b.tableIndex - a.tableIndex;
+        if (a.row !== b.row) return b.row - a.row;
+        return b.col - a.col;
+      });
+
+      for (const insert of sortedInserts) {
+        const tables = this.findAllTables(xml);
+        const tableData = tables[insert.tableIndex];
+        if (!tableData) continue;
+
+        let tableXml = tableData.xml;
+
+        // Find the target cell
+        const rows = this.findAllElementsWithDepth(tableXml, 'tr');
+        const targetRow = rows[insert.row];
+        if (!targetRow) continue;
+
+        const cells = this.findAllElementsWithDepth(targetRow.xml, 'tc');
+        const targetCell = cells[insert.col];
+        if (!targetCell) continue;
+
+        // Find the first <hp:p> in the cell and insert the image inside it
+        const paragraphMatch = targetCell.xml.match(/<hp:p[^>]*>/);
+        if (!paragraphMatch) continue;
+
+        const paragraphStartIndex = targetCell.xml.indexOf(paragraphMatch[0]);
+        const paragraphTagEnd = paragraphStartIndex + paragraphMatch[0].length;
+
+        // Generate image XML - use same size for orgSz/curSz (rollback to simpler approach)
+        maxPicId++;
+        maxInstId++;
+
+        const hwpWidth = Math.round(insert.width * 100);
+        const hwpHeight = Math.round(insert.height * 100);
+
+        // For cell images: use textWrap="TOP_AND_BOTTOM" with treatAsChar="0" for proper display in 한글
+        // IMPORTANT: curSz must be 0,0 for 한글 to display the image correctly
+        // IMPORTANT: Image must be wrapped in <hp:run> with <hp:t/> after it
+        const picXml = `<hp:run charPrIDRef="0"><hp:pic id="${maxPicId}" zOrder="0" numberingType="PICTURE" textWrap="TOP_AND_BOTTOM" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" href="" groupLevel="0" instid="${maxInstId}" reverse="0">
+  <hp:offset x="0" y="0"/>
+  <hp:orgSz width="${hwpWidth}" height="${hwpHeight}"/>
+  <hp:curSz width="0" height="0"/>
+  <hp:flip horizontal="0" vertical="0"/>
+  <hp:rotationInfo angle="0" centerX="${Math.round(hwpWidth / 2)}" centerY="${Math.round(hwpHeight / 2)}" rotateimage="1"/>
+  <hp:renderingInfo>
+    <hc:transMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/>
+    <hc:scaMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/>
+    <hc:rotMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/>
+  </hp:renderingInfo>
+  <hc:img binaryItemIDRef="${insert.imageId}" bright="0" contrast="0" effect="REAL_PIC" alpha="0"/>
+  <hp:imgRect>
+    <hc:pt0 x="0" y="0"/>
+    <hc:pt1 x="${hwpWidth}" y="0"/>
+    <hc:pt2 x="${hwpWidth}" y="${hwpHeight}"/>
+    <hc:pt3 x="0" y="${hwpHeight}"/>
+  </hp:imgRect>
+  <hp:imgClip left="0" right="${hwpWidth}" top="0" bottom="${hwpHeight}"/>
+  <hp:inMargin left="0" right="0" top="0" bottom="0"/>
+  <hp:imgDim dimwidth="${hwpWidth}" dimheight="${hwpHeight}"/>
+  <hp:effects/>
+  <hp:sz width="${hwpWidth}" widthRelTo="ABSOLUTE" height="${hwpHeight}" heightRelTo="ABSOLUTE" protect="0"/>
+  <hp:pos treatAsChar="0" affectLSpacing="0" flowWithText="1" allowOverlap="0" holdAnchorAndSO="0" vertRelTo="PARA" horzRelTo="COLUMN" vertAlign="TOP" horzAlign="LEFT" vertOffset="0" horzOffset="0"/>
+  <hp:outMargin left="0" right="0" top="0" bottom="0"/>
+  <hp:shapeComment>Inserted in cell by HWPX MCP</hp:shapeComment>
+</hp:pic><hp:t/></hp:run>`;
+
+        // Insert the image right after the <hp:p> opening tag
+        const updatedCellContent =
+          targetCell.xml.substring(0, paragraphTagEnd) +
+          picXml +
+          targetCell.xml.substring(paragraphTagEnd);
+
+        // Calculate position of cell in table XML
+        const cellStartInTable = targetRow.startIndex + targetCell.startIndex;
+        const cellEndInTable = targetRow.startIndex + targetCell.endIndex;
+
+        // Build updated table XML
+        const updatedTableXml =
+          tableXml.substring(0, cellStartInTable) +
+          updatedCellContent +
+          tableXml.substring(cellEndInTable);
+
+        // Update the main XML
+        xml = xml.substring(0, tableData.startIndex) + updatedTableXml + xml.substring(tableData.endIndex);
+      }
+
+      this._zip.file(sectionPath, xml);
+    }
+
+    // Add binary data to ZIP
+    for (const insert of this._pendingCellImageInserts) {
+      const binaryData = Buffer.from(insert.data, 'base64');
+      const ext = insert.mimeType.split('/')[1] || 'png';
+      const binDataPath = `BinData/${insert.imageId}.${ext}`;
+      this._zip.file(binDataPath, binaryData);
+
+      // Update content.hpf to include the new binary item
+      await this.addImageToContentHpf(insert.imageId, binDataPath, insert.mimeType);
+    }
+  }
+
+  /**
    * Apply direct text updates (exact match replacement)
    */
   private async applyDirectTextUpdatesToXml(): Promise<void> {
@@ -3653,6 +4273,53 @@ export class HwpxDocument {
   }
 
   /**
+   * Get image dimensions from base64 encoded data
+   * Returns width and height in pixels
+   */
+  private getImageDimensions(base64Data: string, mimeType: string): { width: number; height: number } {
+    const buffer = Buffer.from(base64Data, 'base64');
+
+    if (mimeType === 'image/png') {
+      // PNG: width at bytes 16-19, height at bytes 20-23 (big endian)
+      if (buffer.length >= 24 && buffer[0] === 0x89 && buffer[1] === 0x50) {
+        const width = buffer.readUInt32BE(16);
+        const height = buffer.readUInt32BE(20);
+        return { width, height };
+      }
+    } else if (mimeType === 'image/jpeg' || mimeType === 'image/jpg') {
+      // JPEG: find SOF0/SOF2 marker (0xFF 0xC0 or 0xFF 0xC2)
+      let i = 0;
+      while (i < buffer.length - 9) {
+        if (buffer[i] === 0xFF) {
+          const marker = buffer[i + 1];
+          if (marker === 0xC0 || marker === 0xC2) {
+            // Height at i+5, Width at i+7 (big endian, 2 bytes each)
+            const height = buffer.readUInt16BE(i + 5);
+            const width = buffer.readUInt16BE(i + 7);
+            return { width, height };
+          } else if (marker !== 0x00 && marker !== 0xFF) {
+            // Skip to next marker
+            const len = buffer.readUInt16BE(i + 2);
+            i += 2 + len;
+            continue;
+          }
+        }
+        i++;
+      }
+    } else if (mimeType === 'image/bmp') {
+      // BMP: width at bytes 18-21, height at bytes 22-25 (little endian)
+      if (buffer.length >= 26 && buffer[0] === 0x42 && buffer[1] === 0x4D) {
+        const width = buffer.readUInt32LE(18);
+        const height = Math.abs(buffer.readInt32LE(22)); // height can be negative
+        return { width, height };
+      }
+    }
+
+    // Default: assume 100x100 if can't detect
+    return { width: 100, height: 100 };
+  }
+
+  /**
    * Get raw XML content of a section.
    * Useful for AI-based document manipulation.
    */
@@ -4079,22 +4746,42 @@ export class HwpxDocument {
     const paraId = Math.floor(Math.random() * 2000000000);
     const fullParagraphXml = `<hp:p id="${paraId}" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="0">${picXml}<hp:t/></hp:run><hp:linesegarray><hp:lineseg textpos="0" vertpos="0" vertsize="1600" textheight="1600" baseline="1360" spacing="960" horzpos="0" horzsize="0" flags="393216"/></hp:linesegarray></hp:p>`;
 
-    // Find insertion point - after the specified paragraph
-    // Find all paragraphs
-    const paraRegex = /<hp:p[^>]*>[\s\S]*?<\/hp:p>/g;
-    const paragraphs: Array<{ start: number; end: number }> = [];
-    let match;
-    while ((match = paraRegex.exec(sectionXml)) !== null) {
-      paragraphs.push({ start: match.index, end: match.index + match[0].length });
+    // Find insertion point - after the specified element (paragraph or table)
+    // Find all top-level elements (paragraphs and tables) in order
+    const elements: Array<{ type: 'paragraph' | 'table'; start: number; end: number }> = [];
+
+    // Find paragraphs - but only top-level ones (not inside tables)
+    // We need to track table regions to exclude paragraphs inside them
+    const tableRegex = /<hp:tbl[^>]*>[\s\S]*?<\/hp:tbl>/g;
+    const tableRegions: Array<{ start: number; end: number }> = [];
+    let tableMatch;
+    while ((tableMatch = tableRegex.exec(sectionXml)) !== null) {
+      tableRegions.push({ start: tableMatch.index, end: tableMatch.index + tableMatch[0].length });
+      elements.push({ type: 'table', start: tableMatch.index, end: tableMatch.index + tableMatch[0].length });
     }
 
-    // Insert after the specified paragraph (or at the beginning if -1)
+    // Find paragraphs that are NOT inside tables
+    const paraRegex = /<hp:p[^>]*>[\s\S]*?<\/hp:p>/g;
+    let paraMatch;
+    while ((paraMatch = paraRegex.exec(sectionXml)) !== null) {
+      const paraStart = paraMatch.index;
+      // Check if this paragraph is inside any table
+      const isInsideTable = tableRegions.some(t => paraStart >= t.start && paraStart < t.end);
+      if (!isInsideTable) {
+        elements.push({ type: 'paragraph', start: paraMatch.index, end: paraMatch.index + paraMatch[0].length });
+      }
+    }
+
+    // Sort elements by start position
+    elements.sort((a, b) => a.start - b.start);
+
+    // Insert after the specified element (or at the beginning if -1)
     let insertPos: number;
-    if (afterElementIndex < 0 || paragraphs.length === 0) {
+    if (afterElementIndex < 0 || elements.length === 0) {
       // Insert at the beginning of section (after <hs:sec ...> or <hp:sec ...>)
       const secStartMatch = sectionXml.match(/<(?:hs|hp):sec[^>]*>/);
       insertPos = secStartMatch ? secStartMatch.index! + secStartMatch[0].length : 0;
-    } else if (afterElementIndex >= paragraphs.length) {
+    } else if (afterElementIndex >= elements.length) {
       // Insert at the end (before </hs:sec> or </hp:sec>)
       let secEndMatch = sectionXml.lastIndexOf('</hs:sec>');
       if (secEndMatch === -1) {
@@ -4102,8 +4789,8 @@ export class HwpxDocument {
       }
       insertPos = secEndMatch !== -1 ? secEndMatch : sectionXml.length;
     } else {
-      // Insert after the specified paragraph
-      insertPos = paragraphs[afterElementIndex].end;
+      // Insert after the specified element (paragraph or table)
+      insertPos = elements[afterElementIndex].end;
     }
 
     // Insert the image paragraph XML
@@ -4167,10 +4854,11 @@ export class HwpxDocument {
     const vertOffset = Math.round((position?.vertOffset || 0) * 100); // pt to hwpunit
     const horzOffset = Math.round((position?.horzOffset || 0) * 100); // pt to hwpunit
 
+    // IMPORTANT: curSz must be 0,0 for 한글 to display the image correctly
     return `<hp:pic id="${picId}" zOrder="${zOrder}" numberingType="PICTURE" textWrap="${textWrap}" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" href="" groupLevel="0" instid="${instId}" reverse="0">
   <hp:offset x="0" y="0"/>
   <hp:orgSz width="${width}" height="${height}"/>
-  <hp:curSz width="${width}" height="${height}"/>
+  <hp:curSz width="0" height="0"/>
   <hp:flip horizontal="0" vertical="0"/>
   <hp:rotationInfo angle="0" centerX="${Math.round(width / 2)}" centerY="${Math.round(height / 2)}" rotateimage="1"/>
   <hp:renderingInfo>
