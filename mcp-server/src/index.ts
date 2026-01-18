@@ -843,7 +843,7 @@ const tools = [
   // === Images ===
   {
     name: 'insert_image',
-    description: 'Insert an image into the document (HWPX only)',
+    description: 'Insert an image into the document (HWPX only). Supports preserving original aspect ratio.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -851,8 +851,9 @@ const tools = [
         section_index: { type: 'number', description: 'Section index' },
         after_index: { type: 'number', description: 'Insert after this element index (-1 for beginning)' },
         image_path: { type: 'string', description: 'Path to the image file' },
-        width: { type: 'number', description: 'Image width (optional)' },
-        height: { type: 'number', description: 'Image height (optional)' },
+        width: { type: 'number', description: 'Image width in points (optional). If only width is specified with preserve_aspect_ratio=true, height is auto-calculated.' },
+        height: { type: 'number', description: 'Image height in points (optional). If only height is specified with preserve_aspect_ratio=true, width is auto-calculated.' },
+        preserve_aspect_ratio: { type: 'boolean', description: 'If true, maintains original image aspect ratio. When only width or height is specified, the other dimension is auto-calculated. Default: false.' },
       },
       required: ['doc_id', 'section_index', 'after_index', 'image_path'],
     },
@@ -887,7 +888,7 @@ const tools = [
   },
   {
     name: 'render_mermaid',
-    description: 'Render a Mermaid diagram and insert it as an image (HWPX only). Uses mermaid.ink API. Supports flowcharts, sequence diagrams, class diagrams, etc.',
+    description: 'Render a Mermaid diagram and insert it as an image (HWPX only). Uses mermaid.ink API. Supports flowcharts, sequence diagrams, class diagrams, etc. By default, preserves the original aspect ratio.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -895,10 +896,11 @@ const tools = [
         mermaid_code: { type: 'string', description: 'Mermaid diagram code (e.g., "graph TD; A-->B;")' },
         section_index: { type: 'number', description: 'Section index (default 0)' },
         after_index: { type: 'number', description: 'Insert after this element index (-1 for beginning)' },
-        width: { type: 'number', description: 'Image width in points (default 400)' },
-        height: { type: 'number', description: 'Image height in points (default 300)' },
+        width: { type: 'number', description: 'Image width in points (optional). If specified with preserve_aspect_ratio=true, height is auto-calculated.' },
+        height: { type: 'number', description: 'Image height in points (optional). If specified with preserve_aspect_ratio=true, width is auto-calculated.' },
         theme: { type: 'string', enum: ['default', 'dark', 'forest', 'neutral'], description: 'Diagram theme (default: default)' },
         background_color: { type: 'string', description: 'Background color (e.g., "#ffffff" or "transparent")' },
+        preserve_aspect_ratio: { type: 'boolean', description: 'If true, maintains original image aspect ratio. Default: true for Mermaid diagrams.' },
       },
       required: ['doc_id', 'mermaid_code', 'after_index'],
     },
@@ -1184,6 +1186,61 @@ const tools = [
         title: { type: 'string', description: 'Document title (optional)' },
         creator: { type: 'string', description: 'Document author (optional)' },
       },
+    },
+  },
+
+  // === XML Analysis and Repair ===
+  {
+    name: 'analyze_xml',
+    description: 'Analyze document XML for issues like tag imbalance, malformed elements, etc. Useful for diagnosing save failures.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        doc_id: { type: 'string', description: 'Document ID' },
+        section_index: { type: 'number', description: 'Section index to analyze (optional, analyzes all sections if not specified)' },
+      },
+      required: ['doc_id'],
+    },
+  },
+  {
+    name: 'repair_xml',
+    description: 'Attempt to repair XML issues in a section. Removes orphan closing tags and fixes table structure.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        doc_id: { type: 'string', description: 'Document ID' },
+        section_index: { type: 'number', description: 'Section index to repair' },
+        remove_orphan_close_tags: { type: 'boolean', description: 'Remove orphan closing tags (default: true)' },
+        fix_table_structure: { type: 'boolean', description: 'Fix table structure issues (default: true)' },
+        backup: { type: 'boolean', description: 'Keep backup of original XML (default: true)' },
+      },
+      required: ['doc_id', 'section_index'],
+    },
+  },
+  {
+    name: 'get_raw_section_xml',
+    description: 'Get the raw XML content of a section for manual inspection or editing.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        doc_id: { type: 'string', description: 'Document ID' },
+        section_index: { type: 'number', description: 'Section index' },
+      },
+      required: ['doc_id', 'section_index'],
+    },
+  },
+  {
+    name: 'set_raw_section_xml',
+    description: 'Set the raw XML content of a section. Use with caution - validates XML structure by default.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        doc_id: { type: 'string', description: 'Document ID' },
+        section_index: { type: 'number', description: 'Section index' },
+        xml: { type: 'string', description: 'New XML content (must be valid HWPML section XML)' },
+        validate: { type: 'boolean', description: 'Validate XML structure before replacing (default: true)' },
+      },
+      required: ['doc_id', 'section_index', 'xml'],
     },
   },
 ];
@@ -2087,18 +2144,26 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           '.bmp': 'image/bmp',
         };
 
+        const preserveAspectRatio = args?.preserve_aspect_ratio as boolean | undefined;
+
         const result = doc.insertImage(
           args?.section_index as number,
           args?.after_index as number,
           {
             data: imageData.toString('base64'),
             mimeType: mimeTypes[ext] || 'image/png',
-            width: args?.width as number || 10000,
-            height: args?.height as number || 10000,
+            width: args?.width as number | undefined,
+            height: args?.height as number | undefined,
+            preserveAspectRatio,
           }
         );
         if (!result) return error('Failed to insert image');
-        return success({ message: 'Image inserted', id: result.id });
+        return success({
+          message: 'Image inserted',
+          id: result.id,
+          actualWidth: result.actualWidth,
+          actualHeight: result.actualHeight
+        });
       }
 
       case 'update_image_size': {
@@ -2152,12 +2217,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           height: args?.height as number | undefined,
           theme: args?.theme as 'default' | 'dark' | 'forest' | 'neutral' | undefined,
           backgroundColor: args?.background_color as string | undefined,
+          preserveAspectRatio: args?.preserve_aspect_ratio as boolean | undefined,
         });
 
         if (result.success) {
           return success({
             message: 'Mermaid diagram rendered and inserted',
             image_id: result.imageId,
+            actualWidth: result.actualWidth,
+            actualHeight: result.actualHeight,
           });
         }
         return error(result.error || 'Failed to render Mermaid diagram');
@@ -2403,6 +2471,92 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           format: 'hwpx',
           message: 'New document created',
         });
+      }
+
+      // === XML Analysis and Repair ===
+      case 'analyze_xml': {
+        const doc = getDoc(args?.doc_id as string);
+        if (!doc) return error('Document not found');
+
+        const sectionIndex = args?.section_index as number | undefined;
+        const result = await doc.analyzeXml(sectionIndex);
+
+        return success({
+          has_issues: result.hasIssues,
+          summary: result.summary,
+          sections: result.sections.map(s => ({
+            section_index: s.sectionIndex,
+            issues: s.issues,
+            tag_counts: s.tagCounts,
+          })),
+        });
+      }
+
+      case 'repair_xml': {
+        const doc = getDoc(args?.doc_id as string);
+        if (!doc) return error('Document not found');
+        if (doc.format === 'hwp') return error('HWP files are read-only');
+
+        const sectionIndex = args?.section_index as number;
+        if (sectionIndex === undefined) return error('section_index is required');
+
+        const result = await doc.repairXml(sectionIndex, {
+          removeOrphanCloseTags: args?.remove_orphan_close_tags as boolean | undefined,
+          fixTableStructure: args?.fix_table_structure as boolean | undefined,
+          backup: args?.backup as boolean | undefined,
+        });
+
+        return success({
+          success: result.success,
+          message: result.message,
+          repairs_applied: result.repairsApplied,
+          has_original_backup: !!result.originalXml,
+        });
+      }
+
+      case 'get_raw_section_xml': {
+        const doc = getDoc(args?.doc_id as string);
+        if (!doc) return error('Document not found');
+
+        const sectionIndex = args?.section_index as number;
+        if (sectionIndex === undefined) return error('section_index is required');
+
+        const xml = await doc.getRawSectionXml(sectionIndex);
+        if (xml === null) return error(`Section ${sectionIndex} not found`);
+
+        return success({
+          section_index: sectionIndex,
+          xml_length: xml.length,
+          xml: xml,
+        });
+      }
+
+      case 'set_raw_section_xml': {
+        const doc = getDoc(args?.doc_id as string);
+        if (!doc) return error('Document not found');
+        if (doc.format === 'hwp') return error('HWP files are read-only');
+
+        const sectionIndex = args?.section_index as number;
+        const xml = args?.xml as string;
+        const validate = args?.validate !== false; // default: true
+
+        if (sectionIndex === undefined) return error('section_index is required');
+        if (!xml) return error('xml is required');
+
+        const result = await doc.setRawSectionXml(sectionIndex, xml, validate);
+
+        if (result.success) {
+          return success({
+            success: true,
+            message: result.message,
+          });
+        } else {
+          return success({
+            success: false,
+            message: result.message,
+            issues: result.issues,
+          });
+        }
       }
 
       default:

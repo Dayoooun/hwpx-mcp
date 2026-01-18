@@ -1285,11 +1285,79 @@ export class HwpxDocument {
   // Image Operations
   // ============================================================
 
-  insertImage(sectionIndex: number, afterElementIndex: number, imageData: { data: string; mimeType: string; width: number; height: number }): { id: string } | null {
+  /**
+   * Insert an image into the document.
+   *
+   * @param sectionIndex Section to insert into
+   * @param afterElementIndex Insert after this element index (-1 for beginning)
+   * @param imageData Image data including base64 data and MIME type
+   *   - width: Target width in points (optional if preserveAspectRatio is true)
+   *   - height: Target height in points (optional if preserveAspectRatio is true)
+   *   - preserveAspectRatio: If true, maintains original image aspect ratio.
+   *     When only width is specified, height is auto-calculated.
+   *     When only height is specified, width is auto-calculated.
+   *     When neither is specified, uses original dimensions (scaled to fit if too large).
+   * @returns Object with image ID or null on failure
+   */
+  insertImage(
+    sectionIndex: number,
+    afterElementIndex: number,
+    imageData: {
+      data: string;
+      mimeType: string;
+      width?: number;
+      height?: number;
+      preserveAspectRatio?: boolean;
+    }
+  ): { id: string; actualWidth: number; actualHeight: number } | null {
     const section = this._content.sections[sectionIndex];
     if (!section) return null;
 
     this.saveState();
+
+    // Calculate final dimensions
+    let finalWidth = imageData.width ?? 400;  // Default 400pt
+    let finalHeight = imageData.height ?? 300; // Default 300pt
+
+    if (imageData.preserveAspectRatio) {
+      // Get original image dimensions
+      const originalDims = this.getImageDimensionsFromBase64(imageData.data, imageData.mimeType);
+
+      if (originalDims) {
+        const aspectRatio = originalDims.width / originalDims.height;
+
+        if (imageData.width !== undefined && imageData.height === undefined) {
+          // Width specified, calculate height
+          finalWidth = imageData.width;
+          finalHeight = Math.round(imageData.width / aspectRatio);
+        } else if (imageData.height !== undefined && imageData.width === undefined) {
+          // Height specified, calculate width
+          finalHeight = imageData.height;
+          finalWidth = Math.round(imageData.height * aspectRatio);
+        } else if (imageData.width === undefined && imageData.height === undefined) {
+          // Neither specified, use original dimensions (convert pixels to points, 1pt = 1.333px)
+          // Cap at reasonable max size (e.g., 500pt)
+          const maxSize = 500;
+          const originalWidthPt = originalDims.width * 0.75; // px to pt
+          const originalHeightPt = originalDims.height * 0.75;
+
+          if (originalWidthPt > maxSize || originalHeightPt > maxSize) {
+            // Scale down to fit within maxSize while preserving aspect ratio
+            const scale = Math.min(maxSize / originalWidthPt, maxSize / originalHeightPt);
+            finalWidth = Math.round(originalWidthPt * scale);
+            finalHeight = Math.round(originalHeightPt * scale);
+          } else {
+            finalWidth = Math.round(originalWidthPt);
+            finalHeight = Math.round(originalHeightPt);
+          }
+        }
+        // If both width and height are specified with preserveAspectRatio, use width and recalculate height
+        else {
+          finalWidth = imageData.width!;
+          finalHeight = Math.round(imageData.width! / aspectRatio);
+        }
+      }
+    }
 
     // Generate sequential image ID (image1, image2, ...)
     const existingImageIds = this.getExistingImageIds();
@@ -1303,8 +1371,8 @@ export class HwpxDocument {
     const newImage: HwpxImage = {
       id: imageId,
       binaryId,
-      width: imageData.width,
-      height: imageData.height,
+      width: finalWidth,
+      height: finalHeight,
       data: imageData.data,
       mimeType: imageData.mimeType,
     };
@@ -1331,12 +1399,12 @@ export class HwpxDocument {
       binaryId,
       data: imageData.data,
       mimeType: imageData.mimeType,
-      width: imageData.width,
-      height: imageData.height,
+      width: finalWidth,
+      height: finalHeight,
     });
 
     this._isDirty = true;
-    return { id: imageId };
+    return { id: imageId, actualWidth: finalWidth, actualHeight: finalHeight };
   }
 
   /**
@@ -3122,7 +3190,12 @@ export class HwpxDocument {
    * @param sectionIndex Section to insert into
    * @param afterElementIndex Insert after this element index (-1 for beginning)
    * @param options Optional rendering options
-   * @returns Object with image ID or null on failure
+   *   - width: Target width in points (optional)
+   *   - height: Target height in points (optional)
+   *   - preserveAspectRatio: If true, maintains original image aspect ratio (default: true)
+   *     When only width is specified, height is auto-calculated.
+   *     When only height is specified, width is auto-calculated.
+   * @returns Object with image ID and actual dimensions, or error
    */
   public async renderMermaidToImage(
     mermaidCode: string,
@@ -3133,8 +3206,9 @@ export class HwpxDocument {
       height?: number;
       theme?: 'default' | 'dark' | 'forest' | 'neutral';
       backgroundColor?: string;
+      preserveAspectRatio?: boolean;
     }
-  ): Promise<{ success: boolean; imageId?: string; error?: string }> {
+  ): Promise<{ success: boolean; imageId?: string; actualWidth?: number; actualHeight?: number; error?: string }> {
     if (!this._zip) {
       return { success: false, error: 'Document not loaded or is HWP format' };
     }
@@ -3181,20 +3255,25 @@ export class HwpxDocument {
       const arrayBuffer = await response.arrayBuffer();
       const imageBase64 = Buffer.from(arrayBuffer).toString('base64');
 
-      // Default dimensions (can be overridden)
-      const width = options?.width ?? 400;
-      const height = options?.height ?? 300;
+      // preserveAspectRatio defaults to true for Mermaid diagrams
+      const preserveAspectRatio = options?.preserveAspectRatio !== false;
 
-      // Insert image using existing method
+      // Insert image using existing method with preserveAspectRatio support
       const result = this.insertImage(sectionIndex, afterElementIndex, {
         data: imageBase64,
         mimeType: 'image/png',
-        width,
-        height,
+        width: options?.width,
+        height: options?.height,
+        preserveAspectRatio,
       });
 
       if (result) {
-        return { success: true, imageId: result.id };
+        return {
+          success: true,
+          imageId: result.id,
+          actualWidth: result.actualWidth,
+          actualHeight: result.actualHeight
+        };
       } else {
         return { success: false, error: 'Failed to insert image into document' };
       }
@@ -3272,6 +3351,93 @@ export class HwpxDocument {
       'image/webp': 'webp',
     };
     return mimeToExt[mimeType] || 'png';
+  }
+
+  /**
+   * Extract original image dimensions from base64 encoded image data.
+   * Supports PNG and JPEG formats.
+   * @param base64Data Base64 encoded image data
+   * @param mimeType MIME type of the image
+   * @returns { width, height } or null if unable to parse
+   */
+  private getImageDimensionsFromBase64(base64Data: string, mimeType: string): { width: number; height: number } | null {
+    try {
+      const buffer = Buffer.from(base64Data, 'base64');
+
+      if (mimeType === 'image/png') {
+        // PNG format:
+        // Bytes 0-7: PNG signature (89 50 4E 47 0D 0A 1A 0A)
+        // Bytes 8-11: IHDR chunk length
+        // Bytes 12-15: "IHDR" chunk type
+        // Bytes 16-19: Width (big-endian)
+        // Bytes 20-23: Height (big-endian)
+        if (buffer.length < 24) return null;
+
+        // Verify PNG signature
+        const pngSignature = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+        for (let i = 0; i < 8; i++) {
+          if (buffer[i] !== pngSignature[i]) return null;
+        }
+
+        const width = buffer.readUInt32BE(16);
+        const height = buffer.readUInt32BE(20);
+        return { width, height };
+      }
+
+      if (mimeType === 'image/jpeg' || mimeType === 'image/jpg') {
+        // JPEG format: Find SOF0 (0xFF 0xC0) or SOF2 (0xFF 0xC2) marker
+        // After marker: 2 bytes length, 1 byte precision, 2 bytes height, 2 bytes width
+        if (buffer.length < 2) return null;
+
+        // Verify JPEG signature (starts with 0xFF 0xD8)
+        if (buffer[0] !== 0xFF || buffer[1] !== 0xD8) return null;
+
+        let offset = 2;
+        while (offset < buffer.length - 8) {
+          if (buffer[offset] !== 0xFF) {
+            offset++;
+            continue;
+          }
+
+          const marker = buffer[offset + 1];
+
+          // SOF markers (Start of Frame)
+          if (marker === 0xC0 || marker === 0xC1 || marker === 0xC2) {
+            // Skip marker (2 bytes) and length (2 bytes) and precision (1 byte)
+            const height = buffer.readUInt16BE(offset + 5);
+            const width = buffer.readUInt16BE(offset + 7);
+            return { width, height };
+          }
+
+          // Skip to next marker
+          if (marker === 0xD8 || marker === 0xD9 || (marker >= 0xD0 && marker <= 0xD7)) {
+            // These markers have no length field
+            offset += 2;
+          } else {
+            // Read length and skip
+            const length = buffer.readUInt16BE(offset + 2);
+            offset += 2 + length;
+          }
+        }
+        return null;
+      }
+
+      // GIF format
+      if (mimeType === 'image/gif') {
+        if (buffer.length < 10) return null;
+        // GIF87a or GIF89a signature
+        const sig = buffer.slice(0, 6).toString('ascii');
+        if (sig !== 'GIF87a' && sig !== 'GIF89a') return null;
+
+        const width = buffer.readUInt16LE(6);
+        const height = buffer.readUInt16LE(8);
+        return { width, height };
+      }
+
+      return null;
+    } catch {
+      return null;
+    }
   }
 
   /**
