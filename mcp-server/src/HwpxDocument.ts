@@ -44,6 +44,7 @@ export class HwpxDocument {
   private _pendingTextReplacements: Array<{ oldText: string; newText: string; options: { caseSensitive?: boolean; regex?: boolean; replaceAll?: boolean } }> = [];
   private _pendingDirectTextUpdates: Array<{ oldText: string; newText: string }> = [];
   private _pendingTableCellUpdates: Array<{ sectionIndex: number; tableIndex: number; tableId: string; row: number; col: number; text: string; charShapeId?: number }> = [];
+  private _pendingNestedTableInserts: Array<{ sectionIndex: number; parentTableIndex: number; row: number; col: number; nestedRows: number; nestedCols: number; data: string[][] }> = [];
 
   private constructor(id: string, path: string, zip: JSZip | null, content: HwpxContent, format: DocumentFormat) {
     this._id = id;
@@ -795,6 +796,67 @@ export class HwpxDocument {
     return { tableIndex };
   }
 
+  /**
+   * Insert a nested table inside a table cell.
+   * @param sectionIndex Section index
+   * @param parentTableIndex Parent table index
+   * @param row Row index in parent table
+   * @param col Column index in parent table
+   * @param nestedRows Number of rows in nested table
+   * @param nestedCols Number of columns in nested table
+   * @param options Optional data for cells
+   */
+  insertNestedTable(
+    sectionIndex: number,
+    parentTableIndex: number,
+    row: number,
+    col: number,
+    nestedRows: number,
+    nestedCols: number,
+    options?: { data?: string[][] }
+  ): boolean {
+    const section = this._content.sections[sectionIndex];
+    if (!section) return false;
+    if (nestedRows <= 0 || nestedCols <= 0) return false;
+
+    // Find the parent table
+    let tableCount = 0;
+    let parentTable: HwpxTable | null = null;
+    for (const element of section.elements) {
+      if (element.type === 'table') {
+        if (tableCount === parentTableIndex) {
+          parentTable = element.data as HwpxTable;
+          break;
+        }
+        tableCount++;
+      }
+    }
+
+    if (!parentTable) return false;
+    if (row >= parentTable.rows.length) return false;
+    if (col >= parentTable.rows[row].cells.length) return false;
+
+    this.saveState();
+
+    // Store the nested table insertion request for XML processing
+    if (!this._pendingNestedTableInserts) {
+      this._pendingNestedTableInserts = [];
+    }
+
+    this._pendingNestedTableInserts.push({
+      sectionIndex,
+      parentTableIndex,
+      row,
+      col,
+      nestedRows,
+      nestedCols,
+      data: options?.data || []
+    });
+
+    this._isDirty = true;
+    return true;
+  }
+
   // ============================================================
   // Header/Footer Operations
   // ============================================================
@@ -1503,6 +1565,12 @@ export class HwpxDocument {
       this._pendingTableCellUpdates = [];
     }
 
+    // Apply nested table inserts
+    if (this._pendingNestedTableInserts && this._pendingNestedTableInserts.length > 0) {
+      await this.applyNestedTableInsertsToXml();
+      this._pendingNestedTableInserts = [];
+    }
+
     // Apply direct text updates (from updateParagraphText)
     if (this._pendingDirectTextUpdates && this._pendingDirectTextUpdates.length > 0) {
       await this.applyDirectTextUpdatesToXml();
@@ -1525,6 +1593,187 @@ export class HwpxDocument {
     await this.syncMetadataToZip();
 
     this._isDirty = false;
+  }
+
+  /**
+   * Apply nested table inserts to XML.
+   * Inserts a new table inside a cell of an existing table.
+   */
+  private async applyNestedTableInsertsToXml(): Promise<void> {
+    if (!this._zip) return;
+
+    // Group inserts by section
+    const insertsBySection = new Map<number, Array<{ parentTableIndex: number; row: number; col: number; nestedRows: number; nestedCols: number; data: string[][] }>>();
+    for (const insert of this._pendingNestedTableInserts) {
+      const sectionInserts = insertsBySection.get(insert.sectionIndex) || [];
+      sectionInserts.push({
+        parentTableIndex: insert.parentTableIndex,
+        row: insert.row,
+        col: insert.col,
+        nestedRows: insert.nestedRows,
+        nestedCols: insert.nestedCols,
+        data: insert.data
+      });
+      insertsBySection.set(insert.sectionIndex, sectionInserts);
+    }
+
+    // Process each section
+    for (const [sectionIndex, inserts] of insertsBySection) {
+      const sectionPath = `Contents/section${sectionIndex}.xml`;
+      const file = this._zip.file(sectionPath);
+      if (!file) continue;
+
+      let xml = await file.async('string');
+
+      // Find all tables in this section
+      const tables = this.findAllTables(xml);
+
+      // Process inserts in reverse order to avoid index shifting
+      const sortedInserts = [...inserts].sort((a, b) => b.parentTableIndex - a.parentTableIndex);
+
+      for (const insert of sortedInserts) {
+        if (insert.parentTableIndex >= tables.length) continue;
+
+        const tableData = tables[insert.parentTableIndex];
+        const tableXml = tableData.xml;
+
+        // Find the target cell in the table
+        const rows = this.findAllElementsWithDepth(tableXml, 'tr');
+        if (insert.row >= rows.length) continue;
+
+        const rowXml = rows[insert.row].xml;
+        const cells = this.findAllElementsWithDepth(rowXml, 'tc');
+        if (insert.col >= cells.length) continue;
+
+        const cellXml = cells[insert.col].xml;
+
+        // Generate nested table XML
+        const nestedTableXml = this.generateNestedTableXml(insert.nestedRows, insert.nestedCols, insert.data);
+
+        // Insert nested table into cell
+        const updatedCellXml = this.insertNestedTableIntoCell(cellXml, nestedTableXml);
+
+        // Update the row with the new cell
+        const updatedRowXml = rowXml.substring(0, cells[insert.col].startIndex) +
+          updatedCellXml +
+          rowXml.substring(cells[insert.col].endIndex);
+
+        // Update the table with the new row
+        const updatedTableXml = tableXml.substring(0, rows[insert.row].startIndex) +
+          updatedRowXml +
+          tableXml.substring(rows[insert.row].endIndex);
+
+        // Update the section XML
+        xml = xml.substring(0, tableData.startIndex) +
+          updatedTableXml +
+          xml.substring(tableData.endIndex);
+      }
+
+      this._zip.file(sectionPath, xml);
+    }
+  }
+
+  /**
+   * Generate XML for a nested table.
+   */
+  private generateNestedTableXml(rows: number, cols: number, data: string[][]): string {
+    // Generate unique ID
+    const id = Math.floor(Math.random() * 2000000000) + 100000000;
+    const zOrder = Math.floor(Math.random() * 100);
+
+    // Calculate sizes (in hwpunit, 1 hwpunit = 0.1mm)
+    const cellWidth = 8000; // ~80mm per cell
+    const cellHeight = 1400; // ~14mm per cell
+    const tableWidth = cellWidth * cols;
+    const tableHeight = cellHeight * rows;
+
+    let xml = `<hp:tbl id="${id}" zOrder="${zOrder}" numberingType="TABLE" textWrap="TOP_AND_BOTTOM" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" pageBreak="NONE" repeatHeader="0" rowCnt="${rows}" colCnt="${cols}" cellSpacing="0" borderFillIDRef="7" noAdjust="0">`;
+
+    // Size element
+    xml += `<hp:sz width="${tableWidth}" widthRelTo="ABSOLUTE" height="${tableHeight}" heightRelTo="ABSOLUTE" protect="0"/>`;
+
+    // Position element (treat as character for inline table)
+    xml += `<hp:pos treatAsChar="1" affectLSpacing="0" flowWithText="1" allowOverlap="0" holdAnchorAndSO="0" vertRelTo="PARA" horzRelTo="COLUMN" vertAlign="TOP" horzAlign="LEFT" vertOffset="0" horzOffset="0"/>`;
+
+    // Original position
+    xml += `<hp:outMargin left="0" right="0" top="0" bottom="0"/>`;
+
+    // Inside margin
+    xml += `<hp:inMargin left="0" right="0" top="0" bottom="0"/>`;
+
+    // Cell zone list (column widths)
+    xml += `<hp:cellzoneList>`;
+    for (let c = 0; c < cols; c++) {
+      xml += `<hp:cellzone startRowAddr="0" startColAddr="${c}" endRowAddr="${rows - 1}" endColAddr="${c}" borderFillIDRef="7"/>`;
+    }
+    xml += `</hp:cellzoneList>`;
+
+    // Table rows
+    for (let r = 0; r < rows; r++) {
+      xml += `<hp:tr>`;
+      for (let c = 0; c < cols; c++) {
+        const cellText = (data[r] && data[r][c]) ? this.escapeXml(data[r][c]) : '';
+
+        xml += `<hp:tc name="" header="0" hasMargin="0" protect="0" editable="0" dirty="0" borderFillIDRef="7">`;
+        xml += `<hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="CENTER" linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="0">`;
+        xml += `<hp:p id="0" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0">`;
+        xml += `<hp:run charPrIDRef="0">`;
+        xml += `<hp:t>${cellText}</hp:t>`;
+        xml += `</hp:run>`;
+        xml += `<hp:linesegarray><hp:lineseg textpos="0" vertpos="0" vertsize="1000" textheight="1000" baseline="850" spacing="600" horzpos="0" horzsize="0" flags="0"/></hp:linesegarray>`;
+        xml += `</hp:p>`;
+        xml += `</hp:subList>`;
+        xml += `<hp:cellAddr colAddr="${c}" rowAddr="${r}"/>`;
+        xml += `<hp:cellSpan colSpan="1" rowSpan="1"/>`;
+        xml += `<hp:cellSz width="${cellWidth}" height="${cellHeight}"/>`;
+        xml += `<hp:cellMargin left="141" right="141" top="141" bottom="141"/>`;
+        xml += `</hp:tc>`;
+      }
+      xml += `</hp:tr>`;
+    }
+
+    xml += `</hp:tbl>`;
+    return xml;
+  }
+
+  /**
+   * Insert a nested table XML into a cell XML.
+   * Finds the last <hp:p> in the cell and inserts the table inside a run.
+   */
+  private insertNestedTableIntoCell(cellXml: string, nestedTableXml: string): string {
+    // Find the subList in the cell
+    const subListMatch = cellXml.match(/<hp:subList[^>]*>/);
+    if (!subListMatch) {
+      // No subList, try to add to paragraph directly
+      const pMatch = cellXml.match(/<hp:p[^>]*>/);
+      if (pMatch) {
+        const insertPos = cellXml.indexOf(pMatch[0]) + pMatch[0].length;
+        const runXml = `<hp:run charPrIDRef="0"><hp:t> </hp:t>${nestedTableXml}<hp:t/></hp:run>`;
+        return cellXml.substring(0, insertPos) + runXml + cellXml.substring(insertPos);
+      }
+      return cellXml;
+    }
+
+    // Find the last </hp:p> before </hp:subList>
+    const subListEnd = cellXml.lastIndexOf('</hp:subList>');
+    if (subListEnd === -1) return cellXml;
+
+    // Find the last </hp:p> before subList end
+    const lastPEnd = cellXml.lastIndexOf('</hp:p>', subListEnd);
+    if (lastPEnd === -1) return cellXml;
+
+    // Find the corresponding <hp:p> tag
+    let pStart = cellXml.lastIndexOf('<hp:p', lastPEnd);
+    if (pStart === -1) return cellXml;
+
+    // Find the end of the opening <hp:p ...> tag
+    const pTagEnd = cellXml.indexOf('>', pStart) + 1;
+
+    // Create new run with nested table
+    const runXml = `<hp:run charPrIDRef="0"><hp:t> </hp:t>${nestedTableXml}<hp:t/></hp:run>`;
+
+    // Insert after the opening <hp:p> tag
+    return cellXml.substring(0, pTagEnd) + runXml + cellXml.substring(pTagEnd);
   }
 
   /**

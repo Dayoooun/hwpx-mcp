@@ -306,6 +306,7 @@ export interface BorderFillStyle {
 // 4.3.4 Character Shape Info
 export interface CharShape {
   id: number;
+  tagName?: 'charShape' | 'charPr';  // Original XML tag name (default: charPr)
   height?: number;          // Font size in hwpunit (1000 = 10pt)
   textColor?: string;       // RGB-Color
   shadeColor?: string;      // RGB-Color

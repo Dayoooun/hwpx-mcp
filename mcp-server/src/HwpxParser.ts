@@ -105,6 +105,8 @@ export class HwpxParser {
       this.parseStyles(headerXml);
       this.parseMemoShapes(headerXml);
       content.compatibleDocument = this.parseCompatibleDocument(headerXml);
+      // Assign parsed styles to content
+      content.styles = this.styles;
     }
 
     await this.parseImages(zip, content);
@@ -386,13 +388,14 @@ export class HwpxParser {
   }
 
   private static parseCharShapes(xml: string): void {
-    const charShapeRegex = /<(?:hh:)?(?:charShape|charPr)[^>]*>([\s\S]*?)<\/(?:hh:)?(?:charShape|charPr)>/gi;
-    const charShapeRegexSelfClosing = /<(?:hh:)?(?:charShape|charPr)[^/>]*\/>/gi;
+    // Capture tag name (charShape or charPr) in group 1, content in group 2
+    const charShapeRegex = /<(?:hh:)?(charShape|charPr)([^>]*)>([\s\S]*?)<\/(?:hh:)?(?:charShape|charPr)>/gi;
+    const charShapeRegexSelfClosing = /<(?:hh:)?(charShape|charPr)([^/>]*)\/>/gi;
     let match;
     let shapeId = 0;
 
-    const parseCharShape = (shapeContent: string) => {
-      const charShape: CharShape = { id: shapeId };
+    const parseCharShape = (shapeContent: string, tagName: 'charShape' | 'charPr') => {
+      const charShape: CharShape = { id: shapeId, tagName };
 
       const idMatch = shapeContent.match(/\bid="(\d+)"/);
       if (idMatch) {
@@ -501,80 +504,125 @@ export class HwpxParser {
         }
       }
 
-      // Parse spacing element (can be attribute or element)
-      const charSpacingAttrMatch = shapeContent.match(/spacing="(-?\d+)"/);
-      const charSpacingElemMatch = shapeContent.match(/<(?:hh:)?spacing[^>]*hangul="(-?\d+)"[^>]*latin="(-?\d+)"[^>]*hanja="(-?\d+)"[^>]*japanese="(-?\d+)"[^>]*other="(-?\d+)"[^>]*symbol="(-?\d+)"[^>]*user="(-?\d+)"/i);
-      if (charSpacingElemMatch) {
+      // Parse spacing element - extract each attribute separately (order-independent)
+      const spacingElemMatch = shapeContent.match(/<(?:hh:)?spacing([^>]*)\/?>/i);
+      if (spacingElemMatch) {
+        const spacingAttrs = spacingElemMatch[1];
+        const hangulMatch = spacingAttrs.match(/hangul="(-?\d+)"/);
+        const latinMatch = spacingAttrs.match(/latin="(-?\d+)"/);
+        const hanjaMatch = spacingAttrs.match(/hanja="(-?\d+)"/);
+        const japaneseMatch = spacingAttrs.match(/japanese="(-?\d+)"/);
+        const otherMatch = spacingAttrs.match(/other="(-?\d+)"/);
+        const symbolMatch = spacingAttrs.match(/symbol="(-?\d+)"/);
+        const userMatch = spacingAttrs.match(/user="(-?\d+)"/);
+
         charShape.charSpacing = {
-          hangul: parseInt(charSpacingElemMatch[1]),
-          latin: parseInt(charSpacingElemMatch[2]),
-          hanja: parseInt(charSpacingElemMatch[3]),
-          japanese: parseInt(charSpacingElemMatch[4]),
-          other: parseInt(charSpacingElemMatch[5]),
-          symbol: parseInt(charSpacingElemMatch[6]),
-          user: parseInt(charSpacingElemMatch[7])
+          hangul: hangulMatch ? parseInt(hangulMatch[1]) : 0,
+          latin: latinMatch ? parseInt(latinMatch[1]) : 0,
+          hanja: hanjaMatch ? parseInt(hanjaMatch[1]) : 0,
+          japanese: japaneseMatch ? parseInt(japaneseMatch[1]) : 0,
+          other: otherMatch ? parseInt(otherMatch[1]) : 0,
+          symbol: symbolMatch ? parseInt(symbolMatch[1]) : 0,
+          user: userMatch ? parseInt(userMatch[1]) : 0
         };
-      } else if (charSpacingAttrMatch) {
-        const spacingValue = parseInt(charSpacingAttrMatch[1]);
-        charShape.charSpacing = {
-          hangul: spacingValue, latin: spacingValue, hanja: spacingValue,
-          japanese: spacingValue, other: spacingValue, symbol: spacingValue, user: spacingValue
-        };
+      } else {
+        // Fallback: simple spacing attribute
+        const charSpacingAttrMatch = shapeContent.match(/spacing="(-?\d+)"/);
+        if (charSpacingAttrMatch) {
+          const spacingValue = parseInt(charSpacingAttrMatch[1]);
+          charShape.charSpacing = {
+            hangul: spacingValue, latin: spacingValue, hanja: spacingValue,
+            japanese: spacingValue, other: spacingValue, symbol: spacingValue, user: spacingValue
+          };
+        }
       }
 
-      // Parse relSz element (can be attribute or element)
-      const relSzAttrMatch = shapeContent.match(/relSz="(\d+)"/);
-      const relSzElemMatch = shapeContent.match(/<(?:hh:)?relSz[^>]*hangul="(\d+)"[^>]*latin="(\d+)"[^>]*hanja="(\d+)"[^>]*japanese="(\d+)"[^>]*other="(\d+)"[^>]*symbol="(\d+)"[^>]*user="(\d+)"/i);
+      // Parse relSz element - extract each attribute separately (order-independent)
+      const relSzElemMatch = shapeContent.match(/<(?:hh:)?relSz([^>]*)\/?>/i);
       if (relSzElemMatch) {
+        const relSzAttrs = relSzElemMatch[1];
+        const hangulMatch = relSzAttrs.match(/hangul="(\d+)"/);
+        const latinMatch = relSzAttrs.match(/latin="(\d+)"/);
+        const hanjaMatch = relSzAttrs.match(/hanja="(\d+)"/);
+        const japaneseMatch = relSzAttrs.match(/japanese="(\d+)"/);
+        const otherMatch = relSzAttrs.match(/other="(\d+)"/);
+        const symbolMatch = relSzAttrs.match(/symbol="(\d+)"/);
+        const userMatch = relSzAttrs.match(/user="(\d+)"/);
+
         charShape.relSize = {
-          hangul: parseInt(relSzElemMatch[1]),
-          latin: parseInt(relSzElemMatch[2]),
-          hanja: parseInt(relSzElemMatch[3]),
-          japanese: parseInt(relSzElemMatch[4]),
-          other: parseInt(relSzElemMatch[5]),
-          symbol: parseInt(relSzElemMatch[6]),
-          user: parseInt(relSzElemMatch[7])
+          hangul: hangulMatch ? parseInt(hangulMatch[1]) : 100,
+          latin: latinMatch ? parseInt(latinMatch[1]) : 100,
+          hanja: hanjaMatch ? parseInt(hanjaMatch[1]) : 100,
+          japanese: japaneseMatch ? parseInt(japaneseMatch[1]) : 100,
+          other: otherMatch ? parseInt(otherMatch[1]) : 100,
+          symbol: symbolMatch ? parseInt(symbolMatch[1]) : 100,
+          user: userMatch ? parseInt(userMatch[1]) : 100
         };
-      } else if (relSzAttrMatch) {
-        const relSzValue = parseInt(relSzAttrMatch[1]);
-        charShape.relSize = {
-          hangul: relSzValue, latin: relSzValue, hanja: relSzValue,
-          japanese: relSzValue, other: relSzValue, symbol: relSzValue, user: relSzValue
-        };
+      } else {
+        // Fallback: simple relSz attribute
+        const relSzAttrMatch = shapeContent.match(/relSz="(\d+)"/);
+        if (relSzAttrMatch) {
+          const relSzValue = parseInt(relSzAttrMatch[1]);
+          charShape.relSize = {
+            hangul: relSzValue, latin: relSzValue, hanja: relSzValue,
+            japanese: relSzValue, other: relSzValue, symbol: relSzValue, user: relSzValue
+          };
+        }
       }
 
-      // Parse offset element (can be attribute or element)
-      const charOffsetAttrMatch = shapeContent.match(/offset="(-?\d+)"/);
-      const charOffsetElemMatch = shapeContent.match(/<(?:hh:)?offset[^>]*hangul="(-?\d+)"[^>]*latin="(-?\d+)"[^>]*hanja="(-?\d+)"[^>]*japanese="(-?\d+)"[^>]*other="(-?\d+)"[^>]*symbol="(-?\d+)"[^>]*user="(-?\d+)"/i);
+      // Parse offset element - extract each attribute separately (order-independent)
+      const charOffsetElemMatch = shapeContent.match(/<(?:hh:)?offset([^>]*)\/?>/i);
       if (charOffsetElemMatch) {
+        const offsetAttrs = charOffsetElemMatch[1];
+        const hangulMatch = offsetAttrs.match(/hangul="(-?\d+)"/);
+        const latinMatch = offsetAttrs.match(/latin="(-?\d+)"/);
+        const hanjaMatch = offsetAttrs.match(/hanja="(-?\d+)"/);
+        const japaneseMatch = offsetAttrs.match(/japanese="(-?\d+)"/);
+        const otherMatch = offsetAttrs.match(/other="(-?\d+)"/);
+        const symbolMatch = offsetAttrs.match(/symbol="(-?\d+)"/);
+        const userMatch = offsetAttrs.match(/user="(-?\d+)"/);
+
         charShape.charOffset = {
-          hangul: parseInt(charOffsetElemMatch[1]),
-          latin: parseInt(charOffsetElemMatch[2]),
-          hanja: parseInt(charOffsetElemMatch[3]),
-          japanese: parseInt(charOffsetElemMatch[4]),
-          other: parseInt(charOffsetElemMatch[5]),
-          symbol: parseInt(charOffsetElemMatch[6]),
-          user: parseInt(charOffsetElemMatch[7])
+          hangul: hangulMatch ? parseInt(hangulMatch[1]) : 0,
+          latin: latinMatch ? parseInt(latinMatch[1]) : 0,
+          hanja: hanjaMatch ? parseInt(hanjaMatch[1]) : 0,
+          japanese: japaneseMatch ? parseInt(japaneseMatch[1]) : 0,
+          other: otherMatch ? parseInt(otherMatch[1]) : 0,
+          symbol: symbolMatch ? parseInt(symbolMatch[1]) : 0,
+          user: userMatch ? parseInt(userMatch[1]) : 0
         };
-      } else if (charOffsetAttrMatch) {
-        const offsetValue = parseInt(charOffsetAttrMatch[1]);
-        charShape.charOffset = {
-          hangul: offsetValue, latin: offsetValue, hanja: offsetValue,
-          japanese: offsetValue, other: offsetValue, symbol: offsetValue, user: offsetValue
-        };
+      } else {
+        // Fallback: simple offset attribute
+        const charOffsetAttrMatch = shapeContent.match(/offset="(-?\d+)"/);
+        if (charOffsetAttrMatch) {
+          const offsetValue = parseInt(charOffsetAttrMatch[1]);
+          charShape.charOffset = {
+            hangul: offsetValue, latin: offsetValue, hanja: offsetValue,
+            japanese: offsetValue, other: offsetValue, symbol: offsetValue, user: offsetValue
+          };
+        }
       }
 
-      // Parse ratio element
-      const ratioElemMatch = shapeContent.match(/<(?:hh:)?ratio[^>]*hangul="(\d+)"[^>]*latin="(\d+)"[^>]*hanja="(\d+)"[^>]*japanese="(\d+)"[^>]*other="(\d+)"[^>]*symbol="(\d+)"[^>]*user="(\d+)"/i);
+      // Parse ratio element - extract each attribute separately (order-independent)
+      const ratioElemMatch = shapeContent.match(/<(?:hh:)?ratio([^>]*)\/?>/i);
       if (ratioElemMatch) {
+        const ratioAttrs = ratioElemMatch[1];
+        const hangulMatch = ratioAttrs.match(/hangul="(\d+)"/);
+        const latinMatch = ratioAttrs.match(/latin="(\d+)"/);
+        const hanjaMatch = ratioAttrs.match(/hanja="(\d+)"/);
+        const japaneseMatch = ratioAttrs.match(/japanese="(\d+)"/);
+        const otherMatch = ratioAttrs.match(/other="(\d+)"/);
+        const symbolMatch = ratioAttrs.match(/symbol="(\d+)"/);
+        const userMatch = ratioAttrs.match(/user="(\d+)"/);
+
         charShape.ratio = {
-          hangul: parseInt(ratioElemMatch[1]),
-          latin: parseInt(ratioElemMatch[2]),
-          hanja: parseInt(ratioElemMatch[3]),
-          japanese: parseInt(ratioElemMatch[4]),
-          other: parseInt(ratioElemMatch[5]),
-          symbol: parseInt(ratioElemMatch[6]),
-          user: parseInt(ratioElemMatch[7])
+          hangul: hangulMatch ? parseInt(hangulMatch[1]) : 100,
+          latin: latinMatch ? parseInt(latinMatch[1]) : 100,
+          hanja: hanjaMatch ? parseInt(hanjaMatch[1]) : 100,
+          japanese: japaneseMatch ? parseInt(japaneseMatch[1]) : 100,
+          other: otherMatch ? parseInt(otherMatch[1]) : 100,
+          symbol: symbolMatch ? parseInt(symbolMatch[1]) : 100,
+          user: userMatch ? parseInt(userMatch[1]) : 100
         };
       }
 
@@ -637,11 +685,15 @@ export class HwpxParser {
     };
 
     while ((match = charShapeRegex.exec(xml)) !== null) {
-      parseCharShape(match[0]);
+      // match[1] = tagName (charShape or charPr), match[0] = full match
+      const tagName = match[1].toLowerCase() as 'charShape' | 'charPr';
+      parseCharShape(match[0], tagName);
     }
 
     while ((match = charShapeRegexSelfClosing.exec(xml)) !== null) {
-      parseCharShape(match[0]);
+      // match[1] = tagName (charShape or charPr), match[0] = full match
+      const tagName = match[1].toLowerCase() as 'charShape' | 'charPr';
+      parseCharShape(match[0], tagName);
     }
   }
 

@@ -85,6 +85,7 @@ npm run build
 | `get_tables` | 테이블 목록 조회 |
 | `get_table` | 특정 테이블 상세 정보 |
 | `update_table_cell` | 테이블 셀 내용 수정 |
+| `insert_nested_table` | 테이블 셀 안에 중첩 테이블 삽입 |
 | `search_text` | 텍스트 검색 |
 | `replace_text` | 텍스트 치환 |
 | `save_document` | 문서 저장 |
@@ -106,6 +107,18 @@ await mcp.update_table_cell({
   text: "수정된 내용"
 })
 
+// 중첩 테이블 삽입 (표 안에 표)
+await mcp.insert_nested_table({
+  doc_id: "...",
+  section_index: 0,
+  parent_table_index: 0,
+  row: 1,
+  col: 2,
+  nested_rows: 2,
+  nested_cols: 2,
+  data: [["A1", "A2"], ["B1", "B2"]]
+})
+
 // 저장
 await mcp.save_document({ doc_id: "..." })
 ```
@@ -124,6 +137,13 @@ await mcp.save_document({ doc_id: "..." })
 ---
 
 ## 📝 Release Notes
+
+### v0.3.0 (Nested Table Support)
+- 🆕 **New Feature**: `insert_nested_table` - 테이블 셀 안에 중첩 테이블 삽입 기능
+  - 부모 테이블의 특정 셀에 새 테이블을 삽입
+  - 초기 데이터 지정 가능 (2D 배열)
+  - HWPX 표준 구조(`treatAsChar`, `hp:subList`) 완벽 준수
+- 🔧 **Improvement**: charSpacing 파싱 개선 (속성 순서 무관하게 처리)
 
 ### v0.2.1 (Critical Fix)
 - 🔥 **Critical Fix**: 같은 행에 여러 셀 동시 수정 시 파일 손상 문제 완전 해결

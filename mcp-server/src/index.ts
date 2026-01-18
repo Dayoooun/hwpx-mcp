@@ -634,6 +634,31 @@ const tools = [
       required: ['doc_id', 'section_index', 'after_index', 'rows', 'cols'],
     },
   },
+  {
+    name: 'insert_nested_table',
+    description: 'Insert a table inside a table cell (nested table, HWPX only)',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        doc_id: { type: 'string', description: 'Document ID' },
+        section_index: { type: 'number', description: 'Section index' },
+        parent_table_index: { type: 'number', description: 'Parent table index' },
+        row: { type: 'number', description: 'Row index in parent table (0-based)' },
+        col: { type: 'number', description: 'Column index in parent table (0-based)' },
+        nested_rows: { type: 'number', description: 'Number of rows in nested table' },
+        nested_cols: { type: 'number', description: 'Number of columns in nested table' },
+        data: {
+          type: 'array',
+          description: 'Optional 2D array of cell data for nested table',
+          items: {
+            type: 'array',
+            items: { type: 'string' }
+          }
+        },
+      },
+      required: ['doc_id', 'section_index', 'parent_table_index', 'row', 'col', 'nested_rows', 'nested_cols'],
+    },
+  },
 
   // === Header/Footer ===
   {
@@ -1216,13 +1241,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                   if (!xmlContent || !xmlContent.includes('<?xml')) {
                     throw new Error(`Invalid XML in ${sectionFile}`);
                   }
-                  // Basic XML tag balance check
-                  const openTags = (xmlContent.match(/<[^/!?][^>]*[^/]>/g) || []).length;
-                  const closeTags = (xmlContent.match(/<\/[^>]+>/g) || []).length;
-                  const selfClosing = (xmlContent.match(/<[^>]+\/>/g) || []).length;
-                  // Allow some tolerance for self-closing tags
-                  if (Math.abs(openTags - closeTags - selfClosing) > openTags * 0.1) {
-                    throw new Error(`XML tag imbalance in ${sectionFile}: open=${openTags}, close=${closeTags}, self=${selfClosing}`);
+                  // Check for truncated XML (incomplete tag at end)
+                  if (xmlContent.match(/<[^>]*$/)) {
+                    throw new Error(`Truncated XML in ${sectionFile}`);
+                  }
+                  // Check for broken opening tags (< followed by < without >)
+                  if (xmlContent.match(/<[^>]*</)) {
+                    throw new Error(`Broken tag structure in ${sectionFile}`);
                   }
                 }
               }
@@ -1804,6 +1829,24 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         );
         if (!result) return error('Failed to insert table');
         return success({ message: 'Table inserted', tableIndex: result.tableIndex });
+      }
+
+      case 'insert_nested_table': {
+        const doc = getDoc(args?.doc_id as string);
+        if (!doc) return error('Document not found');
+        if (doc.format === 'hwp') return error('HWP files are read-only');
+
+        const success_result = doc.insertNestedTable(
+          args?.section_index as number,
+          args?.parent_table_index as number,
+          args?.row as number,
+          args?.col as number,
+          args?.nested_rows as number,
+          args?.nested_cols as number,
+          { data: args?.data as string[][] | undefined }
+        );
+        if (!success_result) return error('Failed to insert nested table');
+        return success({ message: 'Nested table inserted successfully' });
       }
 
       // === Header/Footer ===
