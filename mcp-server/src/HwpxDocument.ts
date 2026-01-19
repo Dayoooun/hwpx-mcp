@@ -99,6 +99,10 @@ export class HwpxDocument {
     width: number;
     cellWidth: number;
   }> = [];
+  private _pendingImageDeletes: Array<{
+    imageId: string;
+    binaryId: string;
+  }> = [];
 
   private constructor(id: string, path: string, zip: JSZip | null, content: HwpxContent, format: DocumentFormat) {
     this._id = id;
@@ -2296,13 +2300,31 @@ export class HwpxDocument {
   }
 
   deleteImage(imageId: string): boolean {
-    const image = this._content.images.get(imageId);
-    if (!image) return false;
+    // Find image by id field (not map key) since getImages() returns image.id
+    let mapKey: string | null = null;
+    let image: HwpxImage | null = null;
+
+    for (const [key, img] of this._content.images.entries()) {
+      if (img.id === imageId) {
+        mapKey = key;
+        image = img;
+        break;
+      }
+    }
+
+    if (!image || !mapKey) return false;
 
     this.saveState();
 
-    // Remove from images map
-    this._content.images.delete(imageId);
+    // Add to pending deletes for XML removal on save
+    // Use binaryId (or mapKey which is binaryItemIDRef) for XML pattern matching
+    this._pendingImageDeletes.push({
+      imageId: imageId,
+      binaryId: image.binaryId || mapKey,
+    });
+
+    // Remove from images map using the correct key
+    this._content.images.delete(mapKey);
 
     // Remove binary data if exists
     if (image.binaryId) {
@@ -2747,16 +2769,178 @@ export class HwpxDocument {
       this._pendingImageInserts = [];
     }
 
+    // Apply image deletes
+    if (this._pendingImageDeletes && this._pendingImageDeletes.length > 0) {
+      await this.applyImageDeletesToZip();
+      this._pendingImageDeletes = [];
+    }
+
     // NOTE: Do NOT call syncCharShapesToZip() here.
     // The current serialization is incomplete and loses critical attributes
     // (textColor, shadeColor, symMark, underline, strikeout, outline, shadow).
     // Original header.xml charPr/charShape elements should be preserved as-is.
     // Only sync charShapes when they are explicitly modified.
 
+    // Remove Fasoo DRM tracking info if present (causes "corrupted file" warning in Hancom Office)
+    await this.removeFasooDrmTracking();
+
     // Sync metadata
     await this.syncMetadataToZip();
 
     this._isDirty = false;
+  }
+
+  /**
+   * Remove Fasoo DRM tracking information from content.hpf.
+   * Fasoo DRM adds tracking IDs to the description metadata which causes
+   * "document corrupted or tampered" warnings when the file is modified externally.
+   */
+  private async removeFasooDrmTracking(): Promise<void> {
+    if (!this._zip) return;
+
+    const hpfPath = 'Contents/content.hpf';
+    const hpfFile = this._zip.file(hpfPath);
+    if (!hpfFile) return;
+
+    let hpf = await hpfFile.async('string');
+
+    // Check if Fasoo_Trace_ID exists in description
+    if (hpf.includes('Fasoo_Trace_ID')) {
+      // Remove the Fasoo tracking data from description metadata
+      hpf = hpf.replace(
+        /<opf:meta name="description" content="text">[^<]*<\/opf:meta>/,
+        '<opf:meta name="description" content="text"></opf:meta>'
+      );
+      this._zip.file(hpfPath, hpf);
+    }
+  }
+
+  /**
+   * Apply pending image deletions to the ZIP.
+   * Removes <hp:pic> elements from section XML and deletes BinData files.
+   */
+  private async applyImageDeletesToZip(): Promise<void> {
+    if (!this._zip) return;
+
+    // Collect all binaryIds to delete
+    // binaryId can be full path like "BinData/image1.png" or just "image1"
+    // We need to extract just the filename without extension for XML matching
+    const binaryIdsToDelete = new Set<string>();
+    const fullPathsToDelete = new Set<string>(); // Keep original paths for BinData deletion
+    for (const del of this._pendingImageDeletes) {
+      fullPathsToDelete.add(del.binaryId);
+      // Extract filename without extension (e.g., "BinData/image1.png" -> "image1")
+      const fileName = del.binaryId.split('/').pop() || del.binaryId;
+      const baseName = fileName.replace(/\.[^.]+$/, '');
+      binaryIdsToDelete.add(baseName);
+    }
+
+    // Process each section to remove <hp:pic> elements
+    for (let sectionIndex = 0; sectionIndex < this._content.sections.length; sectionIndex++) {
+      const sectionPath = `Contents/section${sectionIndex}.xml`;
+      const file = this._zip.file(sectionPath);
+      if (!file) continue;
+
+      let xml = await file.async('string');
+      let modified = false;
+
+      // Remove <hp:pic> elements with matching binaryItemIDRef
+      // Use balanced bracket matching to avoid deleting across multiple <hp:pic> tags
+      for (const binaryId of binaryIdsToDelete) {
+        // Find all <hp:pic> tags and their matching </hp:pic> using balanced matching
+        const picRanges: Array<{ start: number; end: number }> = [];
+        let searchStart = 0;
+
+        while (true) {
+          const picStart = xml.indexOf('<hp:pic', searchStart);
+          if (picStart === -1) break;
+
+          // Find the end of the opening tag
+          const tagEnd = xml.indexOf('>', picStart);
+          if (tagEnd === -1) break;
+
+          // Use balanced bracket matching to find </hp:pic>
+          let depth = 1;
+          let pos = tagEnd + 1;
+          let picEnd = -1;
+
+          while (pos < xml.length && depth > 0) {
+            const nextOpen = xml.indexOf('<hp:pic', pos);
+            const nextClose = xml.indexOf('</hp:pic>', pos);
+
+            if (nextClose === -1) break;
+
+            if (nextOpen !== -1 && nextOpen < nextClose) {
+              depth++;
+              pos = nextOpen + 7; // length of "<hp:pic"
+            } else {
+              depth--;
+              if (depth === 0) {
+                picEnd = nextClose + 9; // length of "</hp:pic>"
+              }
+              pos = nextClose + 9;
+            }
+          }
+
+          if (picEnd !== -1) {
+            picRanges.push({ start: picStart, end: picEnd });
+          }
+          searchStart = picEnd !== -1 ? picEnd : tagEnd + 1;
+        }
+
+        // Check each <hp:pic> range for the binaryItemIDRef and mark for deletion
+        // Process in reverse order to avoid index shifting
+        for (let i = picRanges.length - 1; i >= 0; i--) {
+          const range = picRanges[i];
+          const picContent = xml.substring(range.start, range.end);
+
+          if (picContent.includes(`binaryItemIDRef="${binaryId}"`)) {
+            xml = xml.substring(0, range.start) + xml.substring(range.end);
+            modified = true;
+          }
+        }
+      }
+
+      // Clean up empty runs that may be left behind
+      // <hp:run charPrIDRef="0"><hp:t/></hp:run> or <hp:run charPrIDRef="0"></hp:run>
+      xml = xml.replace(/<hp:run[^>]*>(\s*<hp:t\s*\/>)?\s*<\/hp:run>/g, '');
+
+      // Clean up empty paragraphs that only contained the image
+      // <hp:p ...><hp:linesegarray>...</hp:linesegarray></hp:p>
+      xml = xml.replace(
+        /<hp:p[^>]*>\s*(<hp:linesegarray[^>]*>[\s\S]*?<\/hp:linesegarray>)?\s*<\/hp:p>/g,
+        ''
+      );
+
+      if (modified) {
+        this._zip.file(sectionPath, xml);
+      }
+    }
+
+    // Remove BinData files
+    // First try the full paths we saved (e.g., "BinData/image1.png")
+    for (const fullPath of fullPathsToDelete) {
+      if (this._zip.file(fullPath)) {
+        this._zip.remove(fullPath);
+      }
+    }
+
+    // Also try constructing paths from base names with various extensions
+    for (const binaryId of binaryIdsToDelete) {
+      const extensions = ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'PNG', 'JPG', 'JPEG', 'GIF', 'BMP'];
+      for (const ext of extensions) {
+        const binPath = `BinData/${binaryId}.${ext}`;
+        if (this._zip.file(binPath)) {
+          this._zip.remove(binPath);
+        }
+      }
+
+      // Also try without extension
+      const binPathNoExt = `BinData/${binaryId}`;
+      if (this._zip.file(binPathNoExt)) {
+        this._zip.remove(binPathNoExt);
+      }
+    }
   }
 
   /**
@@ -5124,17 +5308,22 @@ export class HwpxDocument {
 
     // Count open and close tags
     for (const tag of tagsToCheck) {
-      const openRegex = new RegExp(`<${tag.replace(/([.?*+^$[\]\\(){}|-])/g, '\\$1')}(?:\\s|>|\\/)`, 'g');
-      const closeRegex = new RegExp(`</${tag.replace(/([.?*+^$[\]\\(){}|-])/g, '\\$1')}>`, 'g');
-      const selfCloseRegex = new RegExp(`<${tag.replace(/([.?*+^$[\]\\(){}|-])/g, '\\$1')}[^>]*/\\s*>`, 'g');
+      const escapedTag = tag.replace(/([.?*+^$[\]\\(){}|-])/g, '\\$1');
+      // Match exact tag name followed by whitespace, >, or /
+      const openRegex = new RegExp(`<${escapedTag}(?:\\s|>|\\/)`, 'g');
+      const closeRegex = new RegExp(`</${escapedTag}>`, 'g');
+      // Self-closing: exact tag followed by optional attributes and />
+      // Must have space or / immediately after tag name to avoid matching hp:placement for hp:p
+      const selfCloseRegex = new RegExp(`<${escapedTag}(?:\\s[^>]*)?\\/>`, 'g');
 
       const openMatches = xml.match(openRegex) || [];
       const closeMatches = xml.match(closeRegex) || [];
       const selfCloseMatches = xml.match(selfCloseRegex) || [];
 
-      // Self-closing tags count as both open and close
-      const openCount = openMatches.length;
-      const closeCount = closeMatches.length + selfCloseMatches.length;
+      // Self-closing tags should be excluded from open count since they're complete
+      // openMatches includes self-closing tags due to the `\/` in the regex
+      const openCount = openMatches.length - selfCloseMatches.length;
+      const closeCount = closeMatches.length;
       const balance = openCount - closeCount;
 
       tagCounts[tag] = { open: openCount, close: closeCount, balance };
