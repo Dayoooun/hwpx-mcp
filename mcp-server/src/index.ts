@@ -315,6 +315,55 @@ const tools = [
       required: ['doc_id', 'section_index', 'paragraph_index'],
     },
   },
+  {
+    name: 'set_table_cell_hanging_indent',
+    description: 'Set hanging indent on a paragraph inside a table cell (HWPX only). Hanging indent pulls the first line left while indenting the rest of the lines.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        doc_id: { type: 'string', description: 'Document ID' },
+        section_index: { type: 'number', description: 'Section index' },
+        table_index: { type: 'number', description: 'Table index within section' },
+        row: { type: 'number', description: 'Row index (0-based)' },
+        col: { type: 'number', description: 'Column index (0-based)' },
+        paragraph_index: { type: 'number', description: 'Paragraph index within cell (0-based)' },
+        indent_pt: { type: 'number', description: 'Indent amount in points (positive value)' },
+      },
+      required: ['doc_id', 'section_index', 'table_index', 'row', 'col', 'paragraph_index', 'indent_pt'],
+    },
+  },
+  {
+    name: 'get_table_cell_hanging_indent',
+    description: 'Get hanging indent value for a paragraph inside a table cell',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        doc_id: { type: 'string', description: 'Document ID' },
+        section_index: { type: 'number', description: 'Section index' },
+        table_index: { type: 'number', description: 'Table index within section' },
+        row: { type: 'number', description: 'Row index (0-based)' },
+        col: { type: 'number', description: 'Column index (0-based)' },
+        paragraph_index: { type: 'number', description: 'Paragraph index within cell (0-based)' },
+      },
+      required: ['doc_id', 'section_index', 'table_index', 'row', 'col', 'paragraph_index'],
+    },
+  },
+  {
+    name: 'remove_table_cell_hanging_indent',
+    description: 'Remove hanging indent from a paragraph inside a table cell (HWPX only)',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        doc_id: { type: 'string', description: 'Document ID' },
+        section_index: { type: 'number', description: 'Section index' },
+        table_index: { type: 'number', description: 'Table index within section' },
+        row: { type: 'number', description: 'Row index (0-based)' },
+        col: { type: 'number', description: 'Column index (0-based)' },
+        paragraph_index: { type: 'number', description: 'Paragraph index within cell (0-based)' },
+      },
+      required: ['doc_id', 'section_index', 'table_index', 'row', 'col', 'paragraph_index'],
+    },
+  },
 
   // === Search & Replace ===
   {
@@ -2130,6 +2179,55 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         );
         if (!result) return error('Failed to remove hanging indent. Check section/paragraph indices.');
         return success({ message: 'Hanging indent removed' });
+      }
+
+      // === Table Cell Hanging Indent (테이블 셀 내어쓰기) ===
+      case 'set_table_cell_hanging_indent': {
+        const doc = getDoc(args?.doc_id as string);
+        if (!doc) return error('Document not found');
+        if (doc.format === 'hwp') return error('HWP files are read-only');
+
+        const result = doc.setTableCellHangingIndent(
+          args?.section_index as number,
+          args?.table_index as number,
+          args?.row as number,
+          args?.col as number,
+          args?.paragraph_index as number,
+          args?.indent_pt as number
+        );
+        if (!result) return error('Failed to set hanging indent. Check indices and indent value (must be positive).');
+        return success({ message: `Table cell hanging indent set to ${args?.indent_pt}pt` });
+      }
+
+      case 'get_table_cell_hanging_indent': {
+        const doc = getDoc(args?.doc_id as string);
+        if (!doc) return error('Document not found');
+
+        const indent = doc.getTableCellHangingIndent(
+          args?.section_index as number,
+          args?.table_index as number,
+          args?.row as number,
+          args?.col as number,
+          args?.paragraph_index as number
+        );
+        if (indent === null) return error('Invalid indices (section, table, row, col, or paragraph)');
+        return success({ hanging_indent_pt: indent });
+      }
+
+      case 'remove_table_cell_hanging_indent': {
+        const doc = getDoc(args?.doc_id as string);
+        if (!doc) return error('Document not found');
+        if (doc.format === 'hwp') return error('HWP files are read-only');
+
+        const result = doc.removeTableCellHangingIndent(
+          args?.section_index as number,
+          args?.table_index as number,
+          args?.row as number,
+          args?.col as number,
+          args?.paragraph_index as number
+        );
+        if (!result) return error('Failed to remove hanging indent. Check indices.');
+        return success({ message: 'Table cell hanging indent removed' });
       }
 
       // === Search & Replace ===

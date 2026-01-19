@@ -162,6 +162,15 @@ export class HwpxDocument {
     paragraphId: string;
     indentPt: number;  // Positive value in points
   }> = [];
+  private _pendingTableCellHangingIndents: Array<{
+    sectionIndex: number;
+    tableIndex: number;
+    row: number;
+    col: number;
+    paragraphIndex: number;
+    paragraphId: string;
+    indentPt: number;  // Positive value in points
+  }> = [];
 
   private constructor(id: string, path: string, zip: JSZip | null, content: HwpxContent, format: DocumentFormat) {
     this._id = id;
@@ -678,6 +687,174 @@ export class HwpxDocument {
       this._pendingHangingIndents.push({
         sectionIndex,
         elementIndex,
+        paragraphId: paragraph.id,
+        indentPt: 0,  // 0 means remove
+      });
+    }
+
+    this.markModified();
+    return true;
+  }
+
+  // ============================================================
+  // Table Cell Hanging Indent (테이블 셀 내어쓰기)
+  // ============================================================
+
+  /**
+   * Set hanging indent on a paragraph inside a table cell.
+   * @param sectionIndex Section index
+   * @param tableIndex Table index within section
+   * @param row Row index (0-based)
+   * @param col Column index (0-based)
+   * @param paragraphIndex Paragraph index within cell (0-based)
+   * @param indentPt Indent value in points (positive)
+   * @returns true if successful, false otherwise
+   */
+  setTableCellHangingIndent(
+    sectionIndex: number,
+    tableIndex: number,
+    row: number,
+    col: number,
+    paragraphIndex: number,
+    indentPt: number
+  ): boolean {
+    // Validate indent value
+    if (indentPt <= 0) return false;
+
+    const table = this.findTable(sectionIndex, tableIndex);
+    if (!table) return false;
+
+    const cell = table.rows[row]?.cells[col];
+    if (!cell) return false;
+
+    const paragraph = cell.paragraphs[paragraphIndex];
+    if (!paragraph) return false;
+
+    this.saveState();
+
+    // Set paragraph style with hanging indent
+    paragraph.paraStyle = {
+      ...paragraph.paraStyle,
+      firstLineIndent: -indentPt,
+      marginLeft: indentPt,
+    };
+
+    // Track for XML update during save (update existing entry if present)
+    const existingIdx = this._pendingTableCellHangingIndents.findIndex(
+      p => p.sectionIndex === sectionIndex &&
+           p.tableIndex === tableIndex &&
+           p.row === row &&
+           p.col === col &&
+           p.paragraphIndex === paragraphIndex
+    );
+    if (existingIdx >= 0) {
+      this._pendingTableCellHangingIndents[existingIdx].indentPt = indentPt;
+    } else {
+      this._pendingTableCellHangingIndents.push({
+        sectionIndex,
+        tableIndex,
+        row,
+        col,
+        paragraphIndex,
+        paragraphId: paragraph.id,
+        indentPt,
+      });
+    }
+
+    this.markModified();
+    return true;
+  }
+
+  /**
+   * Get hanging indent value for a paragraph inside a table cell.
+   * @param sectionIndex Section index
+   * @param tableIndex Table index within section
+   * @param row Row index (0-based)
+   * @param col Column index (0-based)
+   * @param paragraphIndex Paragraph index within cell (0-based)
+   * @returns Indent value in points, 0 if no hanging indent, null if invalid indices
+   */
+  getTableCellHangingIndent(
+    sectionIndex: number,
+    tableIndex: number,
+    row: number,
+    col: number,
+    paragraphIndex: number
+  ): number | null {
+    const table = this.findTable(sectionIndex, tableIndex);
+    if (!table) return null;
+
+    const cell = table.rows[row]?.cells[col];
+    if (!cell) return null;
+
+    const paragraph = cell.paragraphs[paragraphIndex];
+    if (!paragraph) return null;
+
+    const style = paragraph.paraStyle;
+    if (!style) return 0;
+
+    // Hanging indent: firstLineIndent is negative and marginLeft is positive
+    const firstLineIndent = style.firstLineIndent || 0;
+    const marginLeft = style.marginLeft || 0;
+
+    if (firstLineIndent < 0 && marginLeft > 0) {
+      return marginLeft;
+    }
+
+    return 0;
+  }
+
+  /**
+   * Remove hanging indent from a paragraph inside a table cell.
+   * @param sectionIndex Section index
+   * @param tableIndex Table index within section
+   * @param row Row index (0-based)
+   * @param col Column index (0-based)
+   * @param paragraphIndex Paragraph index within cell (0-based)
+   * @returns true if successful, false otherwise
+   */
+  removeTableCellHangingIndent(
+    sectionIndex: number,
+    tableIndex: number,
+    row: number,
+    col: number,
+    paragraphIndex: number
+  ): boolean {
+    const table = this.findTable(sectionIndex, tableIndex);
+    if (!table) return false;
+
+    const cell = table.rows[row]?.cells[col];
+    if (!cell) return false;
+
+    const paragraph = cell.paragraphs[paragraphIndex];
+    if (!paragraph) return false;
+
+    this.saveState();
+
+    // Reset indent values
+    paragraph.paraStyle = {
+      ...paragraph.paraStyle,
+      firstLineIndent: 0,
+      marginLeft: 0,
+    };
+
+    // Track for XML update (update existing entry if present)
+    const existingIdx = this._pendingTableCellHangingIndents.findIndex(
+      p => p.sectionIndex === sectionIndex &&
+           p.tableIndex === tableIndex &&
+           p.row === row &&
+           p.col === col &&
+           p.paragraphIndex === paragraphIndex
+    );
+    if (existingIdx >= 0) {
+      this._pendingTableCellHangingIndents[existingIdx].indentPt = 0;  // 0 means remove
+    } else {
+      this._pendingTableCellHangingIndents.push({
+        sectionIndex,
+        tableIndex,
+        row,
+        col,
+        paragraphIndex,
         paragraphId: paragraph.id,
         indentPt: 0,  // 0 means remove
       });
@@ -3159,6 +3336,12 @@ export class HwpxDocument {
     if (this._pendingHangingIndents && this._pendingHangingIndents.length > 0) {
       await this.applyHangingIndentsToXml();
       this._pendingHangingIndents = [];
+    }
+
+    // Apply table cell hanging indent changes
+    if (this._pendingTableCellHangingIndents && this._pendingTableCellHangingIndents.length > 0) {
+      await this.applyTableCellHangingIndentsToXml();
+      this._pendingTableCellHangingIndents = [];
     }
 
     // NOTE: Do NOT call syncCharShapesToZip() here.
@@ -7690,5 +7873,210 @@ export class HwpxDocument {
         this._zip.file(sectionPath, newSectionXml);
       }
     }
+  }
+
+  /**
+   * Apply table cell hanging indent changes to XML files.
+   * This adds new paraPr elements to header.xml and updates paragraph references in table cells.
+   */
+  private async applyTableCellHangingIndentsToXml(): Promise<void> {
+    if (!this._zip || this._pendingTableCellHangingIndents.length === 0) return;
+
+    // Read header.xml to find existing paraPr elements and their max ID
+    const headerPath = 'Contents/header.xml';
+    let headerXml = await this._zip.file(headerPath)?.async('string');
+    if (!headerXml) return;
+
+    // Find the maximum paraPr ID
+    const paraPrIdMatches = headerXml.matchAll(/<hh:paraPr[^>]*\sid="(\d+)"/g);
+    let maxParaPrId = 0;
+    for (const match of paraPrIdMatches) {
+      const id = parseInt(match[1], 10);
+      if (id > maxParaPrId) maxParaPrId = id;
+    }
+
+    // Group pending changes by section and table
+    const changesBySection = new Map<number, typeof this._pendingTableCellHangingIndents>();
+    for (const change of this._pendingTableCellHangingIndents) {
+      const existing = changesBySection.get(change.sectionIndex) || [];
+      existing.push(change);
+      changesBySection.set(change.sectionIndex, existing);
+    }
+
+    // Create new paraPr for each unique indent value
+    const indentToParaPrId = new Map<number, number>();
+    let newParaPrXml = '';
+
+    for (const change of this._pendingTableCellHangingIndents) {
+      if (change.indentPt === 0) continue; // Skip removal (use existing paraPr 0)
+      if (indentToParaPrId.has(change.indentPt)) continue;
+
+      maxParaPrId++;
+      const newId = maxParaPrId;
+      indentToParaPrId.set(change.indentPt, newId);
+
+      // HWPUNIT = pt * 100
+      const intentValue = -change.indentPt * 100; // Negative for hanging indent
+      const leftValue = change.indentPt * 100;    // Positive for left margin
+
+      // Create new paraPr with hanging indent
+      newParaPrXml += `\n      <hh:paraPr id="${newId}" tabPrIDRef="0">
+        <hh:align horizontal="JUSTIFY" vertical="BASELINE"/>
+        <hh:margin>
+          <hc:intent value="${intentValue}" unit="HWPUNIT"/>
+          <hc:left value="${leftValue}" unit="HWPUNIT"/>
+          <hc:right value="0" unit="HWPUNIT"/>
+          <hc:prev value="0" unit="HWPUNIT"/>
+          <hc:next value="0" unit="HWPUNIT"/>
+        </hh:margin>
+        <hh:lineSpacing type="PERCENT" value="160" unit="HWPUNIT"/>
+      </hh:paraPr>`;
+    }
+
+    // Insert new paraPr elements into header.xml
+    if (newParaPrXml) {
+      // Find the closing tag of paraProperties
+      const paraPropsEndMatch = headerXml.match(/<\/hh:paraProperties>/);
+      if (paraPropsEndMatch && paraPropsEndMatch.index !== undefined) {
+        headerXml = headerXml.slice(0, paraPropsEndMatch.index) +
+          newParaPrXml + '\n    ' +
+          headerXml.slice(paraPropsEndMatch.index);
+
+        // Update itemCnt attribute
+        const itemCntMatch = headerXml.match(/<hh:paraProperties[^>]*itemCnt="(\d+)"/);
+        if (itemCntMatch) {
+          const oldCount = parseInt(itemCntMatch[1], 10);
+          const newCount = oldCount + indentToParaPrId.size;
+          headerXml = headerXml.replace(
+            /<hh:paraProperties([^>]*)itemCnt="\d+"/,
+            `<hh:paraProperties$1itemCnt="${newCount}"`
+          );
+        }
+      }
+
+      this._zip.file(headerPath, headerXml);
+    }
+
+    // Update section XMLs with new paraPrIDRef for table cell paragraphs
+    for (const [sectionIndex, changes] of changesBySection) {
+      const sectionPath = `Contents/section${sectionIndex}.xml`;
+      let sectionXml = await this._zip.file(sectionPath)?.async('string');
+      if (!sectionXml) continue;
+
+      // Group changes by table index
+      const changesByTable = new Map<number, typeof changes>();
+      for (const change of changes) {
+        const existing = changesByTable.get(change.tableIndex) || [];
+        existing.push(change);
+        changesByTable.set(change.tableIndex, existing);
+      }
+
+      // Find all tables in the section
+      const tables = this.findAllTables(sectionXml);
+
+      for (const [tableIndex, tableChanges] of changesByTable) {
+        if (tableIndex >= tables.length) continue;
+
+        const tableData = tables[tableIndex];
+        let tableXml = tableData.xml;
+
+        // Process changes for this table (sorted by row/col/para in reverse for safe mutation)
+        const sortedChanges = [...tableChanges].sort((a, b) => {
+          if (a.row !== b.row) return b.row - a.row;
+          if (a.col !== b.col) return b.col - a.col;
+          return b.paragraphIndex - a.paragraphIndex;
+        });
+
+        for (const change of sortedChanges) {
+          const targetParaPrId = change.indentPt === 0
+            ? 0
+            : (indentToParaPrId.get(change.indentPt) || 0);
+
+          // Find the cell
+          const cellInfo = this.findTableCellInXml(tableXml, change.row, change.col);
+          if (!cellInfo) continue;
+
+          // Find the paragraph within the cell
+          const cellContent = cellInfo.xml;
+          const pRegex = /<hp:p\b([^>]*)>/g;
+          let pMatch: RegExpExecArray | null;
+          let paraCount = 0;
+
+          while ((pMatch = pRegex.exec(cellContent)) !== null) {
+            if (paraCount === change.paragraphIndex) {
+              // Update this paragraph's paraPrIDRef
+              const attrs = pMatch[1];
+              const updatedAttrs = attrs.replace(
+                /paraPrIDRef="\d+"/,
+                `paraPrIDRef="${targetParaPrId}"`
+              );
+              const updatedCell = cellContent.slice(0, pMatch.index) +
+                `<hp:p${updatedAttrs}>` +
+                cellContent.slice(pMatch.index + pMatch[0].length);
+
+              // Replace the cell content in table XML
+              tableXml = tableXml.slice(0, cellInfo.startIndex) +
+                updatedCell +
+                tableXml.slice(cellInfo.endIndex);
+              break;
+            }
+            paraCount++;
+          }
+        }
+
+        // Replace table in section XML
+        sectionXml = sectionXml.slice(0, tableData.startIndex) +
+          tableXml +
+          sectionXml.slice(tableData.endIndex);
+      }
+
+      this._zip.file(sectionPath, sectionXml);
+    }
+  }
+
+  /**
+   * Find a specific cell in table XML by row and column index.
+   * @returns Cell XML content and its position, or null if not found
+   */
+  private findTableCellInXml(tableXml: string, targetRow: number, targetCol: number): {
+    xml: string;
+    startIndex: number;
+    endIndex: number;
+  } | null {
+    // Find all rows
+    const trRegex = /<hp:tr\b[^>]*>([\s\S]*?)<\/hp:tr>/g;
+    let trMatch: RegExpExecArray | null;
+    let rowIndex = 0;
+
+    while ((trMatch = trRegex.exec(tableXml)) !== null) {
+      if (rowIndex === targetRow) {
+        const rowContent = trMatch[1];
+        const rowStart = trMatch.index + trMatch[0].indexOf('>') + 1;
+
+        // Find all cells in this row
+        const tcRegex = /<hp:tc\b[^>]*>([\s\S]*?)<\/hp:tc>/g;
+        let tcMatch: RegExpExecArray | null;
+        let colIndex = 0;
+
+        while ((tcMatch = tcRegex.exec(rowContent)) !== null) {
+          if (colIndex === targetCol) {
+            const cellContent = tcMatch[1];
+            const absoluteStart = rowStart + tcMatch.index + tcMatch[0].indexOf('>') + 1;
+            const absoluteEnd = absoluteStart + cellContent.length;
+
+            return {
+              xml: cellContent,
+              startIndex: absoluteStart,
+              endIndex: absoluteEnd,
+            };
+          }
+          colIndex++;
+        }
+        break;
+      }
+      rowIndex++;
+    }
+
+    return null;
   }
 }
