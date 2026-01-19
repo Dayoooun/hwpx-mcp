@@ -274,6 +274,48 @@ const tools = [
     },
   },
 
+  // === Hanging Indent (내어쓰기) ===
+  {
+    name: 'set_hanging_indent',
+    description: 'Set hanging indent on a paragraph (HWPX only). Hanging indent pulls the first line left while indenting the rest of the lines.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        doc_id: { type: 'string', description: 'Document ID' },
+        section_index: { type: 'number', description: 'Section index' },
+        paragraph_index: { type: 'number', description: 'Paragraph index' },
+        indent_pt: { type: 'number', description: 'Indent amount in points (positive value)' },
+      },
+      required: ['doc_id', 'section_index', 'paragraph_index', 'indent_pt'],
+    },
+  },
+  {
+    name: 'get_hanging_indent',
+    description: 'Get hanging indent value for a paragraph',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        doc_id: { type: 'string', description: 'Document ID' },
+        section_index: { type: 'number', description: 'Section index' },
+        paragraph_index: { type: 'number', description: 'Paragraph index' },
+      },
+      required: ['doc_id', 'section_index', 'paragraph_index'],
+    },
+  },
+  {
+    name: 'remove_hanging_indent',
+    description: 'Remove hanging indent from a paragraph (HWPX only)',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        doc_id: { type: 'string', description: 'Document ID' },
+        section_index: { type: 'number', description: 'Section index' },
+        paragraph_index: { type: 'number', description: 'Paragraph index' },
+      },
+      required: ['doc_id', 'section_index', 'paragraph_index'],
+    },
+  },
+
   // === Search & Replace ===
   {
     name: 'search_text',
@@ -1528,6 +1570,173 @@ Positioning within cell:
       required: ['doc_id', 'section_index', 'xml'],
     },
   },
+
+  // ===== Agentic Document Reading Tools =====
+  {
+    name: 'chunk_document',
+    description: `📖 Split document into overlapping chunks for agentic reading.
+
+Use this for:
+- Large document analysis where full text would exceed context limits
+- Semantic search across document sections
+- Progressive document exploration
+
+Returns array of chunks with:
+- Unique chunk ID for reference
+- Text content
+- Position offsets (global character positions)
+- Element type (paragraph/table/mixed)
+- Metadata (char count, word count, heading level)
+
+Chunks are cached for performance. Call invalidate_reading_cache after document modifications.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        doc_id: { type: 'string', description: 'Document ID' },
+        chunk_size: { type: 'number', description: 'Target chunk size in characters (default: 500)' },
+        overlap: { type: 'number', description: 'Overlap between chunks in characters (default: 100)' },
+      },
+      required: ['doc_id'],
+    },
+  },
+  {
+    name: 'search_chunks',
+    description: `🔍 Search document chunks using BM25-based relevance scoring.
+
+Returns chunks ranked by similarity to query with:
+- Relevance score (higher = more relevant)
+- Matched search terms
+- Text snippet around first match
+- Full chunk data with position info
+
+Use for finding relevant sections in large documents without reading the entire content.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        doc_id: { type: 'string', description: 'Document ID' },
+        query: { type: 'string', description: 'Search query (keywords or phrase)' },
+        top_k: { type: 'number', description: 'Number of top results to return (default: 5)' },
+        min_score: { type: 'number', description: 'Minimum relevance score threshold (default: 0.1)' },
+      },
+      required: ['doc_id', 'query'],
+    },
+  },
+  {
+    name: 'get_chunk_context',
+    description: `📄 Get surrounding chunks for expanded context around a specific chunk.
+
+After finding a relevant chunk with search_chunks, use this to get additional context
+by retrieving chunks before and after the target chunk.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        doc_id: { type: 'string', description: 'Document ID' },
+        chunk_id: { type: 'string', description: 'ID of the center chunk (from search_chunks or chunk_document)' },
+        before: { type: 'number', description: 'Number of chunks before to include (default: 1)' },
+        after: { type: 'number', description: 'Number of chunks after to include (default: 1)' },
+      },
+      required: ['doc_id', 'chunk_id'],
+    },
+  },
+  {
+    name: 'extract_toc',
+    description: `📋 Extract table of contents based on Korean document formatting conventions.
+
+Detects headings by:
+- Roman numerals (I. II. III.)
+- Arabic numerals (1. 2. 3.)
+- Korean characters (가. 나. 다.)
+- Circled numbers (① ② ③)
+- Parenthesized numbers ((1) (2) (3))
+- Korean consonants (ㄱ. ㄴ. ㄷ.)
+- Bullet points (- • ◦)
+
+Returns hierarchical TOC with level, title, section/element indices, and character offsets.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        doc_id: { type: 'string', description: 'Document ID' },
+      },
+      required: ['doc_id'],
+    },
+  },
+  {
+    name: 'build_position_index',
+    description: `🗂️ Build position index for document elements (headings, paragraphs, tables).
+
+Creates a searchable index of all document elements with:
+- Unique ID
+- Element type (heading/paragraph/table/image)
+- Text preview (first 200 chars)
+- Section and element indices
+- Character offset
+- Heading level (if applicable)
+- Table info (rows, cols) for tables
+
+Use get_position_index to retrieve cached index, or call this to rebuild after modifications.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        doc_id: { type: 'string', description: 'Document ID' },
+      },
+      required: ['doc_id'],
+    },
+  },
+  {
+    name: 'get_position_index',
+    description: `📍 Get cached position index (builds if not available).
+
+Returns all indexed elements. Use search_position_index for filtered queries.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        doc_id: { type: 'string', description: 'Document ID' },
+      },
+      required: ['doc_id'],
+    },
+  },
+  {
+    name: 'search_position_index',
+    description: `🔎 Search position index by text and/or element type.
+
+Filter the position index to find specific headings, paragraphs, or tables by their text content.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        doc_id: { type: 'string', description: 'Document ID' },
+        query: { type: 'string', description: 'Text to search for in element content' },
+        type: { type: 'string', enum: ['heading', 'paragraph', 'table'], description: 'Filter by element type (optional)' },
+      },
+      required: ['doc_id', 'query'],
+    },
+  },
+  {
+    name: 'get_chunk_at_offset',
+    description: `📌 Get the chunk containing a specific character offset.
+
+Use after finding a position in the index to get the full chunk context.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        doc_id: { type: 'string', description: 'Document ID' },
+        offset: { type: 'number', description: 'Character offset in the document' },
+      },
+      required: ['doc_id', 'offset'],
+    },
+  },
+  {
+    name: 'invalidate_reading_cache',
+    description: `🔄 Clear cached chunks and position index.
+
+Call this after modifying the document to ensure fresh data on next read operation.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        doc_id: { type: 'string', description: 'Document ID' },
+      },
+      required: ['doc_id'],
+    },
+  },
 ];
 
 // ============================================================
@@ -1881,6 +2090,46 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           args?.paragraph_index as number
         );
         return success({ style });
+      }
+
+      // === Hanging Indent (내어쓰기) ===
+      case 'set_hanging_indent': {
+        const doc = getDoc(args?.doc_id as string);
+        if (!doc) return error('Document not found');
+        if (doc.format === 'hwp') return error('HWP files are read-only');
+
+        const result = doc.setHangingIndent(
+          args?.section_index as number,
+          args?.paragraph_index as number,
+          args?.indent_pt as number
+        );
+        if (!result) return error('Failed to set hanging indent. Check section/paragraph indices and indent value (must be positive).');
+        return success({ message: `Hanging indent set to ${args?.indent_pt}pt` });
+      }
+
+      case 'get_hanging_indent': {
+        const doc = getDoc(args?.doc_id as string);
+        if (!doc) return error('Document not found');
+
+        const indent = doc.getHangingIndent(
+          args?.section_index as number,
+          args?.paragraph_index as number
+        );
+        if (indent === null) return error('Invalid section or paragraph index');
+        return success({ hanging_indent_pt: indent });
+      }
+
+      case 'remove_hanging_indent': {
+        const doc = getDoc(args?.doc_id as string);
+        if (!doc) return error('Document not found');
+        if (doc.format === 'hwp') return error('HWP files are read-only');
+
+        const result = doc.removeHangingIndent(
+          args?.section_index as number,
+          args?.paragraph_index as number
+        );
+        if (!result) return error('Failed to remove hanging indent. Check section/paragraph indices.');
+        return success({ message: 'Hanging indent removed' });
       }
 
       // === Search & Replace ===
@@ -3261,6 +3510,207 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             issues: result.issues,
           });
         }
+      }
+
+      // ===== Agentic Document Reading Handlers =====
+
+      case 'chunk_document': {
+        const doc = getDoc(args?.doc_id as string);
+        if (!doc) return error('Document not found');
+
+        const chunkSize = (args?.chunk_size as number) || 500;
+        const overlap = (args?.overlap as number) || 100;
+
+        const chunks = doc.chunkDocument(chunkSize, overlap);
+        return success({
+          total_chunks: chunks.length,
+          chunk_size: chunkSize,
+          overlap: overlap,
+          chunks: chunks.map(c => ({
+            id: c.id,
+            text: c.text,
+            start_offset: c.startOffset,
+            end_offset: c.endOffset,
+            section_index: c.sectionIndex,
+            element_type: c.elementType,
+            element_index: c.elementIndex,
+            metadata: c.metadata,
+          })),
+        });
+      }
+
+      case 'search_chunks': {
+        const doc = getDoc(args?.doc_id as string);
+        if (!doc) return error('Document not found');
+
+        const query = args?.query as string;
+        if (!query) return error('query is required');
+
+        const topK = (args?.top_k as number) || 5;
+        const minScore = (args?.min_score as number) || 0.1;
+
+        const results = doc.searchChunks(query, topK, minScore);
+        return success({
+          query,
+          total_results: results.length,
+          results: results.map(r => ({
+            chunk_id: r.chunk.id,
+            score: r.score,
+            matched_terms: r.matchedTerms,
+            snippet: r.snippet,
+            chunk: {
+              text: r.chunk.text,
+              start_offset: r.chunk.startOffset,
+              end_offset: r.chunk.endOffset,
+              section_index: r.chunk.sectionIndex,
+              element_type: r.chunk.elementType,
+              metadata: r.chunk.metadata,
+            },
+          })),
+        });
+      }
+
+      case 'get_chunk_context': {
+        const doc = getDoc(args?.doc_id as string);
+        if (!doc) return error('Document not found');
+
+        const chunkId = args?.chunk_id as string;
+        if (!chunkId) return error('chunk_id is required');
+
+        const before = (args?.before as number) || 1;
+        const after = (args?.after as number) || 1;
+
+        const context = doc.getChunkContext(chunkId, before, after);
+        return success({
+          center_index: context.centerIndex,
+          total_chunks: context.chunks.length,
+          chunks: context.chunks.map(c => ({
+            id: c.id,
+            text: c.text,
+            start_offset: c.startOffset,
+            end_offset: c.endOffset,
+            section_index: c.sectionIndex,
+            element_type: c.elementType,
+            metadata: c.metadata,
+          })),
+        });
+      }
+
+      case 'extract_toc': {
+        const doc = getDoc(args?.doc_id as string);
+        if (!doc) return error('Document not found');
+
+        const toc = doc.extractToc();
+        return success({
+          total_entries: toc.length,
+          toc: toc.map(t => ({
+            level: t.level,
+            title: t.title,
+            section_index: t.sectionIndex,
+            element_index: t.elementIndex,
+            offset: t.offset,
+          })),
+        });
+      }
+
+      case 'build_position_index': {
+        const doc = getDoc(args?.doc_id as string);
+        if (!doc) return error('Document not found');
+
+        const index = doc.buildPositionIndex();
+        return success({
+          total_entries: index.length,
+          index: index.map(e => ({
+            id: e.id,
+            type: e.type,
+            text: e.text,
+            section_index: e.sectionIndex,
+            element_index: e.elementIndex,
+            offset: e.offset,
+            level: e.level,
+            table_info: e.tableInfo,
+          })),
+        });
+      }
+
+      case 'get_position_index': {
+        const doc = getDoc(args?.doc_id as string);
+        if (!doc) return error('Document not found');
+
+        const index = doc.getPositionIndex();
+        return success({
+          total_entries: index.length,
+          index: index.map(e => ({
+            id: e.id,
+            type: e.type,
+            text: e.text,
+            section_index: e.sectionIndex,
+            element_index: e.elementIndex,
+            offset: e.offset,
+            level: e.level,
+            table_info: e.tableInfo,
+          })),
+        });
+      }
+
+      case 'search_position_index': {
+        const doc = getDoc(args?.doc_id as string);
+        if (!doc) return error('Document not found');
+
+        const query = args?.query as string;
+        if (!query) return error('query is required');
+
+        const type = args?.type as 'heading' | 'paragraph' | 'table' | undefined;
+
+        const results = doc.searchPositionIndex(query, type);
+        return success({
+          query,
+          type_filter: type || 'all',
+          total_results: results.length,
+          results: results.map(e => ({
+            id: e.id,
+            type: e.type,
+            text: e.text,
+            section_index: e.sectionIndex,
+            element_index: e.elementIndex,
+            offset: e.offset,
+            level: e.level,
+            table_info: e.tableInfo,
+          })),
+        });
+      }
+
+      case 'get_chunk_at_offset': {
+        const doc = getDoc(args?.doc_id as string);
+        if (!doc) return error('Document not found');
+
+        const offset = args?.offset as number;
+        if (offset === undefined) return error('offset is required');
+
+        const chunk = doc.getChunkAtOffset(offset);
+        if (!chunk) {
+          return success({ found: false, message: 'No chunk found at this offset' });
+        }
+        return success({
+          found: true,
+          chunk: {
+            id: chunk.id,
+            text: chunk.text,
+            start_offset: chunk.startOffset,
+            end_offset: chunk.endOffset,
+            section_index: chunk.sectionIndex,
+            element_type: chunk.elementType,
+            metadata: chunk.metadata,
+          },
+        });
+      }
+
+      case 'invalidate_reading_cache': {
+        const doc = getDoc(args?.doc_id as string);
+        if (!doc) return error('Document not found');
+
+        doc.invalidateReadingCache();
+        return success({ success: true, message: 'Reading cache invalidated' });
       }
 
       default:

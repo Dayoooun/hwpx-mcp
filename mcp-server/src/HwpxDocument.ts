@@ -52,6 +52,41 @@ export interface ImagePositionOptions {
   textWrap?: 'top_and_bottom' | 'square' | 'tight' | 'behind_text' | 'in_front_of_text' | 'none';
 }
 
+// Document chunk type for agentic reading
+export interface DocumentChunk {
+  id: string;
+  text: string;
+  startOffset: number;
+  endOffset: number;
+  sectionIndex: number;
+  elementType: 'paragraph' | 'table' | 'mixed';
+  elementIndex?: number;
+  tableIndex?: number;
+  cellPosition?: { row: number; col: number };
+  metadata: {
+    charCount: number;
+    wordCount: number;
+    hasTable: boolean;
+    headingLevel?: number;
+  };
+}
+
+// Position index entry for tracking document structure
+export interface PositionIndexEntry {
+  id: string;
+  type: 'heading' | 'paragraph' | 'table' | 'image';
+  text: string;
+  sectionIndex: number;
+  elementIndex: number;
+  offset: number;
+  level?: number; // For headings
+  tableInfo?: {
+    tableIndex: number;
+    rows: number;
+    cols: number;
+  };
+}
+
 export class HwpxDocument {
   private _id: string;
   private _path: string;
@@ -120,6 +155,12 @@ export class HwpxDocument {
     col: number;
     originalColSpan: number;
     originalRowSpan: number;
+  }> = [];
+  private _pendingHangingIndents: Array<{
+    sectionIndex: number;
+    elementIndex: number;
+    paragraphId: string;
+    indentPt: number;  // Positive value in points
   }> = [];
 
   private constructor(id: string, path: string, zip: JSZip | null, content: HwpxContent, format: DocumentFormat) {
@@ -322,7 +363,7 @@ export class HwpxDocument {
     this._redoStack.push(currentState);
     const previousState = this._undoStack.pop()!;
     this.deserializeContent(previousState);
-    this._isDirty = true;
+    this.markModified();
     return true;
   }
 
@@ -332,8 +373,17 @@ export class HwpxDocument {
     this._undoStack.push(currentState);
     const nextState = this._redoStack.pop()!;
     this.deserializeContent(nextState);
-    this._isDirty = true;
+    this.markModified();
     return true;
+  }
+
+  /**
+   * Mark document as modified and invalidate agentic reading cache.
+   * Call this after any modification that changes document structure or content.
+   */
+  private markModified(): void {
+    this._isDirty = true;
+    this.invalidateReadingCache();
   }
 
   // ============================================================
@@ -433,7 +483,7 @@ export class HwpxDocument {
 
     this.saveState();
     paragraph.runs[runIndex].text = text;
-    this._isDirty = true;
+    this.markModified();
   }
 
   updateParagraphRuns(sectionIndex: number, elementIndex: number, runs: TextRun[]): void {
@@ -441,7 +491,7 @@ export class HwpxDocument {
     if (!paragraph) return;
     this.saveState();
     paragraph.runs = runs;
-    this._isDirty = true;
+    this.markModified();
   }
 
   insertParagraph(sectionIndex: number, afterElementIndex: number, text: string = ''): number {
@@ -456,7 +506,8 @@ export class HwpxDocument {
 
     const newElement: SectionElement = { type: 'paragraph', data: newParagraph };
     section.elements.splice(afterElementIndex + 1, 0, newElement);
-    this._isDirty = true;
+    this.markModified();
+    this.invalidateReadingCache();
     return afterElementIndex + 1;
   }
 
@@ -466,7 +517,8 @@ export class HwpxDocument {
 
     this.saveState();
     section.elements.splice(elementIndex, 1);
-    this._isDirty = true;
+    this.markModified();
+    this.invalidateReadingCache();
     return true;
   }
 
@@ -476,7 +528,7 @@ export class HwpxDocument {
 
     this.saveState();
     paragraph.runs.push({ text });
-    this._isDirty = true;
+    this.markModified();
   }
 
   // ============================================================
@@ -490,7 +542,7 @@ export class HwpxDocument {
     this.saveState();
     const run = paragraph.runs[runIndex];
     run.charStyle = { ...run.charStyle, ...style };
-    this._isDirty = true;
+    this.markModified();
   }
 
   getCharacterStyle(sectionIndex: number, elementIndex: number, runIndex?: number): CharacterStyle | CharacterStyle[] | null {
@@ -513,12 +565,126 @@ export class HwpxDocument {
 
     this.saveState();
     paragraph.paraStyle = { ...paragraph.paraStyle, ...style };
-    this._isDirty = true;
+    this.markModified();
   }
 
   getParagraphStyle(sectionIndex: number, elementIndex: number): ParagraphStyle | null {
     const paragraph = this.findParagraphByPath(sectionIndex, elementIndex);
     return paragraph?.paraStyle || null;
+  }
+
+  // ============================================================
+  // Hanging Indent Operations (내어쓰기)
+  // ============================================================
+
+  /**
+   * Set hanging indent on a paragraph.
+   * In HWPML, hanging indent uses:
+   * - intent: negative value (pulls first line left)
+   * - left: positive value (base left margin for other lines)
+   * @param sectionIndex Section index
+   * @param elementIndex Paragraph element index
+   * @param indentPt Indent amount in points (positive value)
+   * @returns true if successful, false otherwise
+   */
+  setHangingIndent(sectionIndex: number, elementIndex: number, indentPt: number): boolean {
+    // Validate indent value
+    if (indentPt <= 0) return false;
+
+    const paragraph = this.findParagraphByPath(sectionIndex, elementIndex);
+    if (!paragraph) return false;
+
+    this.saveState();
+
+    // Set paragraph style with hanging indent
+    // firstLineIndent: negative (pulls first line left)
+    // marginLeft: positive (base margin for other lines)
+    paragraph.paraStyle = {
+      ...paragraph.paraStyle,
+      firstLineIndent: -indentPt,
+      marginLeft: indentPt,
+    };
+
+    // Track for XML update during save (update existing entry if present)
+    const existingIdx = this._pendingHangingIndents.findIndex(
+      p => p.sectionIndex === sectionIndex && p.elementIndex === elementIndex
+    );
+    if (existingIdx >= 0) {
+      this._pendingHangingIndents[existingIdx].indentPt = indentPt;
+    } else {
+      this._pendingHangingIndents.push({
+        sectionIndex,
+        elementIndex,
+        paragraphId: paragraph.id,
+        indentPt,
+      });
+    }
+
+    this.markModified();
+    return true;
+  }
+
+  /**
+   * Get hanging indent value for a paragraph.
+   * @param sectionIndex Section index
+   * @param elementIndex Paragraph element index
+   * @returns Indent value in points, 0 if no hanging indent, null if invalid indices
+   */
+  getHangingIndent(sectionIndex: number, elementIndex: number): number | null {
+    const paragraph = this.findParagraphByPath(sectionIndex, elementIndex);
+    if (!paragraph) return null;
+
+    const style = paragraph.paraStyle;
+    if (!style) return 0;
+
+    // Hanging indent: firstLineIndent is negative and marginLeft is positive
+    const firstLineIndent = style.firstLineIndent || 0;
+    const marginLeft = style.marginLeft || 0;
+
+    if (firstLineIndent < 0 && marginLeft > 0) {
+      // Return the indent amount (positive value)
+      return marginLeft;
+    }
+
+    return 0;
+  }
+
+  /**
+   * Remove hanging indent from a paragraph.
+   * @param sectionIndex Section index
+   * @param elementIndex Paragraph element index
+   * @returns true if successful, false otherwise
+   */
+  removeHangingIndent(sectionIndex: number, elementIndex: number): boolean {
+    const paragraph = this.findParagraphByPath(sectionIndex, elementIndex);
+    if (!paragraph) return false;
+
+    this.saveState();
+
+    // Reset indent values
+    paragraph.paraStyle = {
+      ...paragraph.paraStyle,
+      firstLineIndent: 0,
+      marginLeft: 0,
+    };
+
+    // Track for XML update (update existing entry if present)
+    const existingIdx = this._pendingHangingIndents.findIndex(
+      p => p.sectionIndex === sectionIndex && p.elementIndex === elementIndex
+    );
+    if (existingIdx >= 0) {
+      this._pendingHangingIndents[existingIdx].indentPt = 0;  // 0 means remove
+    } else {
+      this._pendingHangingIndents.push({
+        sectionIndex,
+        elementIndex,
+        paragraphId: paragraph.id,
+        indentPt: 0,  // 0 means remove
+      });
+    }
+
+    this.markModified();
+    return true;
   }
 
   // ============================================================
@@ -1263,7 +1429,7 @@ export class HwpxDocument {
     } else {
       cell.paragraphs = [{ id: Math.random().toString(36).substring(2, 11), runs: [{ text }] }];
     }
-    this._isDirty = true;
+    this.markModified();
     return true;
   }
 
@@ -1275,7 +1441,7 @@ export class HwpxDocument {
 
     this.saveState();
     Object.assign(cell, props);
-    this._isDirty = true;
+    this.markModified();
     return true;
   }
 
@@ -1297,7 +1463,7 @@ export class HwpxDocument {
     };
 
     table.rows.splice(afterRowIndex + 1, 0, newRow as any);
-    this._isDirty = true;
+    this.markModified();
     return true;
   }
 
@@ -1307,7 +1473,7 @@ export class HwpxDocument {
 
     this.saveState();
     table.rows.splice(rowIndex, 1);
-    this._isDirty = true;
+    this.markModified();
     return true;
   }
 
@@ -1324,7 +1490,7 @@ export class HwpxDocument {
         }],
       } as any);
     }
-    this._isDirty = true;
+    this.markModified();
     return true;
   }
 
@@ -1336,7 +1502,7 @@ export class HwpxDocument {
     for (const row of table.rows) {
       row.cells.splice(colIndex, 1);
     }
-    this._isDirty = true;
+    this.markModified();
     return true;
   }
 
@@ -1466,7 +1632,8 @@ export class HwpxDocument {
     if (count > 0 && this._zip) {
       this._pendingTextReplacements = this._pendingTextReplacements || [];
       this._pendingTextReplacements.push({ oldText, newText, options });
-      this._isDirty = true;
+      this.markModified();
+      this.invalidateReadingCache();
     }
 
     return count;
@@ -1556,7 +1723,8 @@ export class HwpxDocument {
         col,
         text: cellText,
       });
-      this._isDirty = true;
+      this.markModified();
+      this.invalidateReadingCache();
     }
 
     return { success: true, count };
@@ -1573,7 +1741,7 @@ export class HwpxDocument {
   setMetadata(metadata: Partial<HwpxContent['metadata']>): void {
     this.saveState();
     this._content.metadata = { ...this._content.metadata, ...metadata };
-    this._isDirty = true;
+    this.markModified();
   }
 
   // ============================================================
@@ -1591,7 +1759,7 @@ export class HwpxDocument {
 
     this.saveState();
     section.pageSettings = { ...section.pageSettings, ...settings } as PageSettings;
-    this._isDirty = true;
+    this.markModified();
     return true;
   }
 
@@ -1636,7 +1804,7 @@ export class HwpxDocument {
     const copy = JSON.parse(JSON.stringify(srcElement));
     copy.data.id = Math.random().toString(36).substring(2, 11);
     tgtSection.elements.splice(targetAfter + 1, 0, copy);
-    this._isDirty = true;
+    this.markModified();
     return true;
   }
 
@@ -1651,7 +1819,7 @@ export class HwpxDocument {
     this.saveState();
     srcSection.elements.splice(sourceParagraph, 1);
     tgtSection.elements.splice(targetAfter + 1, 0, srcElement);
-    this._isDirty = true;
+    this.markModified();
     return true;
   }
 
@@ -1731,7 +1899,7 @@ export class HwpxDocument {
       cellWidth,
     });
 
-    this._isDirty = true;
+    this.markModified();
     return { tableIndex };
   }
 
@@ -1792,7 +1960,7 @@ export class HwpxDocument {
       data: options?.data || []
     });
 
-    this._isDirty = true;
+    this.markModified();
     return true;
   }
 
@@ -1888,7 +2056,7 @@ export class HwpxDocument {
       endCol
     });
 
-    this._isDirty = true;
+    this.markModified();
     return true;
   }
 
@@ -1970,7 +2138,7 @@ export class HwpxDocument {
       originalRowSpan: rowSpan
     });
 
-    this._isDirty = true;
+    this.markModified();
     return true;
   }
 
@@ -2009,7 +2177,7 @@ export class HwpxDocument {
       section.header.paragraphs = [headerParagraph];
     }
 
-    this._isDirty = true;
+    this.markModified();
     return true;
   }
 
@@ -2044,7 +2212,7 @@ export class HwpxDocument {
       section.footer.paragraphs = [footerParagraph];
     }
 
-    this._isDirty = true;
+    this.markModified();
     return true;
   }
 
@@ -2086,7 +2254,7 @@ export class HwpxDocument {
       footnoteRef: footnoteNumber,
     });
 
-    this._isDirty = true;
+    this.markModified();
     return { id: footnoteId };
   }
 
@@ -2123,7 +2291,7 @@ export class HwpxDocument {
       endnoteRef: endnoteNumber,
     });
 
-    this._isDirty = true;
+    this.markModified();
     return { id: endnoteId };
   }
 
@@ -2167,7 +2335,7 @@ export class HwpxDocument {
       },
     });
 
-    this._isDirty = true;
+    this.markModified();
     return true;
   }
 
@@ -2209,7 +2377,7 @@ export class HwpxDocument {
       },
     });
 
-    this._isDirty = true;
+    this.markModified();
     return true;
   }
 
@@ -2340,7 +2508,7 @@ export class HwpxDocument {
       headerText: imageData.headerText,
     });
 
-    this._isDirty = true;
+    this.markModified();
     return { id: imageId, actualWidth: finalWidth, actualHeight: finalHeight };
   }
 
@@ -2460,7 +2628,7 @@ export class HwpxDocument {
       afterText: imageData.afterText,
     });
 
-    this._isDirty = true;
+    this.markModified();
     return { id: imageId, actualWidth: finalWidth, actualHeight: finalHeight };
   }
 
@@ -2495,7 +2663,7 @@ export class HwpxDocument {
     image.width = width;
     image.height = height;
 
-    this._isDirty = true;
+    this.markModified();
     return true;
   }
 
@@ -2540,7 +2708,7 @@ export class HwpxDocument {
       }
     }
 
-    this._isDirty = true;
+    this.markModified();
     return true;
   }
 
@@ -2569,7 +2737,7 @@ export class HwpxDocument {
     const newElement: SectionElement = { type: 'line', data: newLine };
     section.elements.push(newElement);
 
-    this._isDirty = true;
+    this.markModified();
     return { id: lineId };
   }
 
@@ -2594,7 +2762,7 @@ export class HwpxDocument {
     const newElement: SectionElement = { type: 'rect', data: newRect };
     section.elements.push(newElement);
 
-    this._isDirty = true;
+    this.markModified();
     return { id: rectId };
   }
 
@@ -2619,7 +2787,7 @@ export class HwpxDocument {
     const newElement: SectionElement = { type: 'ellipse', data: newEllipse };
     section.elements.push(newElement);
 
-    this._isDirty = true;
+    this.markModified();
     return { id: ellipseId };
   }
 
@@ -2645,7 +2813,7 @@ export class HwpxDocument {
     const newElement: SectionElement = { type: 'equation', data: newEquation };
     section.elements.splice(afterElementIndex + 1, 0, newElement);
 
-    this._isDirty = true;
+    this.markModified();
     return { id: equationId };
   }
 
@@ -2711,7 +2879,7 @@ export class HwpxDocument {
       paragraph.runs[paragraph.runs.length - 1].memoId = memoId;
     }
 
-    this._isDirty = true;
+    this.markModified();
     return { id: memoId };
   }
 
@@ -2745,7 +2913,7 @@ export class HwpxDocument {
         }
       }
 
-      this._isDirty = true;
+      this.markModified();
     }
 
     return found;
@@ -2794,7 +2962,7 @@ export class HwpxDocument {
     const insertIndex = afterSectionIndex + 1;
     this._content.sections.splice(insertIndex, 0, newSection);
 
-    this._isDirty = true;
+    this.markModified();
     return insertIndex;
   }
 
@@ -2804,7 +2972,7 @@ export class HwpxDocument {
 
     this.saveState();
     this._content.sections.splice(sectionIndex, 1);
-    this._isDirty = true;
+    this.markModified();
     return true;
   }
 
@@ -2876,7 +3044,7 @@ export class HwpxDocument {
       }
     }
 
-    this._isDirty = true;
+    this.markModified();
     return true;
   }
 
@@ -2910,7 +3078,7 @@ export class HwpxDocument {
       })),
     };
 
-    this._isDirty = true;
+    this.markModified();
     return true;
   }
 
@@ -2985,6 +3153,12 @@ export class HwpxDocument {
     if (this._pendingImageDeletes && this._pendingImageDeletes.length > 0) {
       await this.applyImageDeletesToZip();
       this._pendingImageDeletes = [];
+    }
+
+    // Apply hanging indent changes
+    if (this._pendingHangingIndents && this._pendingHangingIndents.length > 0) {
+      await this.applyHangingIndentsToXml();
+      this._pendingHangingIndents = [];
     }
 
     // NOTE: Do NOT call syncCharShapesToZip() here.
@@ -5597,7 +5771,7 @@ export class HwpxDocument {
 
     // Replace section XML
     this._zip.file(sectionPath, xml);
-    this._isDirty = true;
+    this.markModified();
 
     // Re-parse the section to update in-memory content
     try {
@@ -6555,7 +6729,7 @@ export class HwpxDocument {
 
     // Save repaired XML
     this._zip.file(sectionPath, xml);
-    this._isDirty = true;
+    this.markModified();
 
     return {
       success: true,
@@ -6842,11 +7016,679 @@ export class HwpxDocument {
 
     const sectionPath = `Contents/section${sectionIndex}.xml`;
     this._zip.file(sectionPath, xml);
-    this._isDirty = true;
+    this.markModified();
 
     // Note: Internal state is not automatically updated.
     // Save and reopen the document to see changes in other tools.
 
     return { success: true, message: 'Section XML updated successfully. Save and reopen to refresh internal state.' };
+  }
+
+  // ===== Agentic Document Reading System =====
+
+  // In-memory position index storage
+  private _positionIndex: PositionIndexEntry[] = [];
+  private _documentChunks: DocumentChunk[] = [];
+  private _lastChunkTime: number = 0;
+
+  /**
+   * Chunk document into overlapping segments for agentic reading
+   * @param chunkSize Target chunk size in characters (default 500)
+   * @param overlap Overlap between chunks in characters (default 100)
+   * @returns Array of document chunks with position information
+   */
+  public chunkDocument(chunkSize: number = 500, overlap: number = 100): DocumentChunk[] {
+    // Input validation to prevent infinite loop
+    chunkSize = Math.max(50, Math.min(100000, chunkSize)); // Clamp to reasonable range
+    overlap = Math.max(0, Math.min(chunkSize - 1, overlap)); // Ensure overlap < chunkSize
+
+    const chunks: DocumentChunk[] = [];
+    let globalOffset = 0;
+    let chunkId = 0;
+
+    for (let secIdx = 0; secIdx < this._content.sections.length; secIdx++) {
+      const section = this._content.sections[secIdx];
+      let sectionText = '';
+      const elementPositions: Array<{ start: number; end: number; type: string; index: number }> = [];
+
+      // Build section text and track element positions
+      for (let elemIdx = 0; elemIdx < section.elements.length; elemIdx++) {
+        const elem = section.elements[elemIdx];
+        const startPos = sectionText.length;
+
+        if (elem.type === 'paragraph') {
+          const para = elem.data;
+          const paraText = para.runs?.map(r => r.text || '').join('') || '';
+          sectionText += paraText + '\n';
+          elementPositions.push({ start: startPos, end: sectionText.length, type: 'paragraph', index: elemIdx });
+        } else if (elem.type === 'table') {
+          const table = elem.data;
+          let tableText = '[TABLE]\n';
+          for (const row of table.rows || []) {
+            for (const cell of row.cells || []) {
+              const cellText = cell.paragraphs?.map(p =>
+                p.runs?.map(r => r.text || '').join('') || ''
+              ).join(' ') || '';
+              tableText += cellText + '\t';
+            }
+            tableText += '\n';
+          }
+          tableText += '[/TABLE]\n';
+          sectionText += tableText;
+          elementPositions.push({ start: startPos, end: sectionText.length, type: 'table', index: elemIdx });
+        }
+      }
+
+      // Create chunks from section text with sliding window
+      let pos = 0;
+      while (pos < sectionText.length) {
+        const endPos = Math.min(pos + chunkSize, sectionText.length);
+        const chunkText = sectionText.substring(pos, endPos);
+
+        // Determine which elements this chunk covers
+        const coveredElements = elementPositions.filter(e =>
+          (e.start >= pos && e.start < endPos) || (e.end > pos && e.end <= endPos) || (e.start <= pos && e.end >= endPos)
+        );
+
+        const hasTable = coveredElements.some(e => e.type === 'table');
+        const elementType = coveredElements.length === 0 ? 'mixed' :
+          coveredElements.every(e => e.type === 'paragraph') ? 'paragraph' :
+          coveredElements.every(e => e.type === 'table') ? 'table' : 'mixed';
+
+        // Detect heading level (simple heuristic: short paragraphs at start might be headings)
+        let headingLevel: number | undefined;
+        if (chunkText.length < 100 && !hasTable) {
+          const firstLine = chunkText.split('\n')[0];
+          if (firstLine && firstLine.length < 50) {
+            // Simple heading detection based on content
+            if (/^[1-9][.)]?\s/.test(firstLine)) headingLevel = 1;
+            else if (/^[가-힣][.)]?\s/.test(firstLine)) headingLevel = 2;
+            else if (/^[①-⑩]/.test(firstLine) || /^\([1-9]\)/.test(firstLine)) headingLevel = 3;
+          }
+        }
+
+        const chunk: DocumentChunk = {
+          id: `chunk_${secIdx}_${chunkId++}`,
+          text: chunkText,
+          startOffset: globalOffset + pos,
+          endOffset: globalOffset + endPos,
+          sectionIndex: secIdx,
+          elementType,
+          elementIndex: coveredElements.length > 0 ? coveredElements[0].index : undefined,
+          metadata: {
+            charCount: chunkText.length,
+            wordCount: chunkText.split(/\s+/).filter(w => w.length > 0).length,
+            hasTable,
+            headingLevel,
+          },
+        };
+
+        chunks.push(chunk);
+
+        // Move position with overlap
+        pos += chunkSize - overlap;
+        if (pos >= sectionText.length - overlap) break;
+      }
+
+      globalOffset += sectionText.length;
+    }
+
+    // Cache the chunks
+    this._documentChunks = chunks;
+    this._lastChunkTime = Date.now();
+
+    return chunks;
+  }
+
+  /**
+   * Search chunks using keyword-based similarity scoring
+   * Returns chunks ranked by relevance to the query
+   * @param query Search query
+   * @param topK Number of top results to return (default 5)
+   * @param minScore Minimum similarity score threshold (default 0.1)
+   */
+  public searchChunks(query: string, topK: number = 5, minScore: number = 0.1): Array<{
+    chunk: DocumentChunk;
+    score: number;
+    matchedTerms: string[];
+    snippet: string;
+  }> {
+    // Ensure chunks are available
+    if (this._documentChunks.length === 0) {
+      this.chunkDocument();
+    }
+
+    // Tokenize and normalize query
+    const queryTerms = this.tokenize(query.toLowerCase());
+    if (queryTerms.length === 0) return [];
+
+    // Calculate IDF for query terms across all chunks
+    const termDocFreq: Map<string, number> = new Map();
+    for (const chunk of this._documentChunks) {
+      const chunkTerms = new Set(this.tokenize(chunk.text.toLowerCase()));
+      for (const term of queryTerms) {
+        if (chunkTerms.has(term)) {
+          termDocFreq.set(term, (termDocFreq.get(term) || 0) + 1);
+        }
+      }
+    }
+
+    const N = this._documentChunks.length;
+    if (N === 0) return []; // Guard against empty document
+
+    const termIdf: Map<string, number> = new Map();
+    for (const term of queryTerms) {
+      const df = termDocFreq.get(term) || 0;
+      termIdf.set(term, df > 0 ? Math.log((N + 1) / (df + 1)) + 1 : 0);
+    }
+
+    // Score each chunk using BM25-like scoring
+    const k1 = 1.5;
+    const b = 0.75;
+    const totalLength = this._documentChunks.reduce((sum, c) => sum + c.text.length, 0);
+    const avgDl = Math.max(1, totalLength / N); // Prevent division by zero
+
+    const results: Array<{ chunk: DocumentChunk; score: number; matchedTerms: string[]; snippet: string }> = [];
+
+    for (const chunk of this._documentChunks) {
+      const chunkText = chunk.text.toLowerCase();
+      const chunkTerms = this.tokenize(chunkText);
+      const termFreq: Map<string, number> = new Map();
+
+      for (const term of chunkTerms) {
+        termFreq.set(term, (termFreq.get(term) || 0) + 1);
+      }
+
+      let score = 0;
+      const matchedTerms: string[] = [];
+
+      for (const term of queryTerms) {
+        const tf = termFreq.get(term) || 0;
+        if (tf > 0) {
+          matchedTerms.push(term);
+          const idf = termIdf.get(term) || 0;
+          const dl = chunk.text.length;
+          // BM25 scoring
+          score += idf * ((tf * (k1 + 1)) / (tf + k1 * (1 - b + b * (dl / avgDl))));
+        }
+      }
+
+      // Bonus for phrase matching
+      if (queryTerms.length > 1) {
+        const queryPhrase = queryTerms.join(' ');
+        if (chunkText.includes(queryPhrase)) {
+          score *= 1.5; // Boost for exact phrase match
+        }
+      }
+
+      if (score >= minScore) {
+        // Extract snippet around first match
+        const firstMatch = matchedTerms[0];
+        const matchIndex = chunkText.indexOf(firstMatch);
+        const snippetStart = Math.max(0, matchIndex - 50);
+        const snippetEnd = Math.min(chunk.text.length, matchIndex + firstMatch.length + 100);
+        const snippet = (snippetStart > 0 ? '...' : '') +
+          chunk.text.substring(snippetStart, snippetEnd) +
+          (snippetEnd < chunk.text.length ? '...' : '');
+
+        results.push({ chunk, score, matchedTerms, snippet });
+      }
+    }
+
+    // Sort by score descending and return top K
+    results.sort((a, b) => b.score - a.score);
+    return results.slice(0, topK);
+  }
+
+  /**
+   * Simple tokenizer for Korean and English text
+   */
+  private tokenize(text: string): string[] {
+    // Limit text length to prevent ReDoS attacks on very large strings
+    const MAX_TOKENIZE_LENGTH = 100000;
+    if (text.length > MAX_TOKENIZE_LENGTH) {
+      text = text.substring(0, MAX_TOKENIZE_LENGTH);
+    }
+
+    // Remove special characters, split on whitespace and common delimiters
+    return text
+      .replace(/[^\w\s가-힣]/g, ' ')
+      .split(/\s+/)
+      .filter(token => token.length >= 2); // Filter out single chars
+  }
+
+  /**
+   * Extract table of contents based on formatting rules
+   * Identifies headings by:
+   * - Numbered patterns (1., 가., (1), ①)
+   * - Short paragraphs followed by longer content
+   * - Bold or larger font (if style info available)
+   */
+  public extractToc(): Array<{
+    level: number;
+    title: string;
+    sectionIndex: number;
+    elementIndex: number;
+    offset: number;
+    children?: Array<{ level: number; title: string; sectionIndex: number; elementIndex: number; offset: number }>;
+  }> {
+    const toc: Array<{
+      level: number;
+      title: string;
+      sectionIndex: number;
+      elementIndex: number;
+      offset: number;
+    }> = [];
+
+    // Heading detection patterns (Korean document conventions)
+    const headingPatterns = [
+      { pattern: /^[IVX]+[.)]?\s*(.+)$/i, level: 1 },      // Roman numerals: I. II. III.
+      { pattern: /^[1-9][0-9]?[.)]?\s*(.+)$/, level: 1 },   // Arabic numerals: 1. 2. 3.
+      { pattern: /^[가-힣][.)]?\s*(.+)$/, level: 2 },       // Korean: 가. 나. 다.
+      { pattern: /^[①-⑳]\s*(.+)$/, level: 3 },             // Circled numbers: ① ② ③
+      { pattern: /^\([1-9][0-9]?\)\s*(.+)$/, level: 3 },   // Parenthesized: (1) (2) (3)
+      { pattern: /^[ㄱ-ㅎ][.)]?\s*(.+)$/, level: 4 },       // Korean consonants: ㄱ. ㄴ. ㄷ.
+      { pattern: /^[-•◦▪]\s*(.+)$/, level: 5 },            // Bullets
+    ];
+
+    let globalOffset = 0;
+
+    for (let secIdx = 0; secIdx < this._content.sections.length; secIdx++) {
+      const section = this._content.sections[secIdx];
+
+      for (let elemIdx = 0; elemIdx < section.elements.length; elemIdx++) {
+        const elem = section.elements[elemIdx];
+
+        if (elem.type === 'paragraph') {
+          const para = elem.data;
+          const paraText = para.runs?.map(r => r.text || '').join('').trim() || '';
+
+          if (paraText.length === 0) {
+            globalOffset += 1; // Empty paragraph
+            continue;
+          }
+
+          // Check if this looks like a heading
+          for (const { pattern, level } of headingPatterns) {
+            const match = paraText.match(pattern);
+            if (match) {
+              // Additional check: headings are typically short
+              if (paraText.length <= 100) {
+                toc.push({
+                  level,
+                  title: paraText,
+                  sectionIndex: secIdx,
+                  elementIndex: elemIdx,
+                  offset: globalOffset,
+                });
+                break;
+              }
+            }
+          }
+
+          globalOffset += paraText.length + 1;
+        } else if (elem.type === 'table') {
+          const table = elem.data;
+          // Estimate table text length
+          let tableLen = 0;
+          for (const row of table.rows || []) {
+            for (const cell of row.cells || []) {
+              for (const p of cell.paragraphs || []) {
+                tableLen += (p.runs?.map(r => r.text || '').join('').length || 0) + 1;
+              }
+            }
+          }
+          globalOffset += tableLen + 10; // Approximate
+        }
+      }
+    }
+
+    // Build hierarchical structure
+    return this.buildTocHierarchy(toc);
+  }
+
+  /**
+   * Build hierarchical TOC structure from flat list
+   */
+  private buildTocHierarchy(flatToc: Array<{
+    level: number;
+    title: string;
+    sectionIndex: number;
+    elementIndex: number;
+    offset: number;
+  }>): Array<{
+    level: number;
+    title: string;
+    sectionIndex: number;
+    elementIndex: number;
+    offset: number;
+    children?: Array<{ level: number; title: string; sectionIndex: number; elementIndex: number; offset: number }>;
+  }> {
+    // For simplicity, return flat structure with level info
+    // Client can build tree from levels
+    return flatToc;
+  }
+
+  /**
+   * Build and store position index for quick lookup
+   * Call this after document modifications to keep index updated
+   */
+  public buildPositionIndex(): PositionIndexEntry[] {
+    this._positionIndex = [];
+    let globalOffset = 0;
+    let entryId = 0;
+
+    // Heading patterns for level detection
+    const levelPatterns: Array<{ pattern: RegExp; level: number }> = [
+      { pattern: /^[IVX]+[.)]?/i, level: 1 },
+      { pattern: /^[1-9][0-9]?[.)]/, level: 1 },
+      { pattern: /^[가-힣][.)]/, level: 2 },
+      { pattern: /^[①-⑳]/, level: 3 },
+      { pattern: /^\([1-9]/, level: 3 },
+    ];
+
+    for (let secIdx = 0; secIdx < this._content.sections.length; secIdx++) {
+      const section = this._content.sections[secIdx];
+      let tableIndex = 0;
+
+      for (let elemIdx = 0; elemIdx < section.elements.length; elemIdx++) {
+        const elem = section.elements[elemIdx];
+
+        if (elem.type === 'paragraph') {
+          const para = elem.data;
+          const text = para.runs?.map(r => r.text || '').join('').trim() || '';
+
+          if (text.length === 0) {
+            // Empty paragraph - keep consistent with extractToc()
+            globalOffset += 1;
+            continue;
+          }
+
+          // Detect if heading
+          let level: number | undefined;
+          let type: 'heading' | 'paragraph' = 'paragraph';
+
+          for (const { pattern, level: lvl } of levelPatterns) {
+            if (pattern.test(text) && text.length <= 100) {
+              level = lvl;
+              type = 'heading';
+              break;
+            }
+          }
+
+          this._positionIndex.push({
+            id: `pos_${entryId++}`,
+            type,
+            text: text.substring(0, 200), // Truncate long text
+            sectionIndex: secIdx,
+            elementIndex: elemIdx,
+            offset: globalOffset,
+            level,
+          });
+
+          globalOffset += text.length + 1;
+        } else if (elem.type === 'table') {
+          const table = elem.data;
+          const rowCount = table.rows?.length || 0;
+          const colCount = table.rows?.[0]?.cells?.length || 0;
+
+          // Get table header/first cell text for identification
+          let headerText = '';
+          if (table.rows?.[0]?.cells?.[0]?.paragraphs?.[0]) {
+            headerText = table.rows[0].cells[0].paragraphs[0].runs?.map(r => r.text || '').join('') || '';
+          }
+
+          this._positionIndex.push({
+            id: `pos_${entryId++}`,
+            type: 'table',
+            text: headerText.substring(0, 100) || `Table ${tableIndex + 1}`,
+            sectionIndex: secIdx,
+            elementIndex: elemIdx,
+            offset: globalOffset,
+            tableInfo: {
+              tableIndex: tableIndex++,
+              rows: rowCount,
+              cols: colCount,
+            },
+          });
+
+          // Estimate table size
+          let tableLen = 0;
+          for (const row of table.rows || []) {
+            for (const cell of row.cells || []) {
+              for (const p of cell.paragraphs || []) {
+                tableLen += (p.runs?.map(r => r.text || '').join('').length || 0) + 1;
+              }
+            }
+          }
+          globalOffset += tableLen + 10;
+        }
+      }
+    }
+
+    return this._positionIndex;
+  }
+
+  /**
+   * Get cached position index or build if needed
+   */
+  public getPositionIndex(): PositionIndexEntry[] {
+    if (this._positionIndex.length === 0) {
+      this.buildPositionIndex();
+    }
+    return this._positionIndex;
+  }
+
+  /**
+   * Search position index by text query
+   */
+  public searchPositionIndex(query: string, type?: 'heading' | 'paragraph' | 'table'): PositionIndexEntry[] {
+    const index = this.getPositionIndex();
+    const queryLower = query.toLowerCase();
+
+    return index.filter(entry => {
+      if (type && entry.type !== type) return false;
+      return entry.text.toLowerCase().includes(queryLower);
+    });
+  }
+
+  /**
+   * Get chunk at specific offset
+   */
+  public getChunkAtOffset(offset: number): DocumentChunk | null {
+    if (this._documentChunks.length === 0) {
+      this.chunkDocument();
+    }
+
+    return this._documentChunks.find(chunk =>
+      offset >= chunk.startOffset && offset < chunk.endOffset
+    ) || null;
+  }
+
+  /**
+   * Get surrounding chunks (context window)
+   * @param chunkId ID of the center chunk
+   * @param before Number of chunks before
+   * @param after Number of chunks after
+   */
+  public getChunkContext(chunkId: string, before: number = 1, after: number = 1): {
+    chunks: DocumentChunk[];
+    centerIndex: number;
+  } {
+    if (this._documentChunks.length === 0) {
+      this.chunkDocument();
+    }
+
+    const centerIndex = this._documentChunks.findIndex(c => c.id === chunkId);
+    if (centerIndex === -1) {
+      return { chunks: [], centerIndex: -1 };
+    }
+
+    const startIdx = Math.max(0, centerIndex - before);
+    const endIdx = Math.min(this._documentChunks.length - 1, centerIndex + after);
+
+    return {
+      chunks: this._documentChunks.slice(startIdx, endIdx + 1),
+      centerIndex: centerIndex - startIdx,
+    };
+  }
+
+  /**
+   * Clear cached chunks and position index
+   * Call this after document modifications
+   */
+  public invalidateReadingCache(): void {
+    this._documentChunks = [];
+    this._positionIndex = [];
+    this._lastChunkTime = 0;
+  }
+
+  // ============================================================
+  // Hanging Indent XML Operations
+  // ============================================================
+
+  /**
+   * Apply hanging indent changes to XML files.
+   * This adds new paraPr elements to header.xml and updates paragraph references in section XML.
+   */
+  private async applyHangingIndentsToXml(): Promise<void> {
+    if (!this._zip || this._pendingHangingIndents.length === 0) return;
+
+    // Read header.xml to find existing paraPr elements and their max ID
+    const headerPath = 'Contents/header.xml';
+    let headerXml = await this._zip.file(headerPath)?.async('string');
+    if (!headerXml) return;
+
+    // Find the maximum paraPr ID
+    const paraPrIdMatches = headerXml.matchAll(/<hh:paraPr[^>]*\sid="(\d+)"/g);
+    let maxParaPrId = 0;
+    for (const match of paraPrIdMatches) {
+      const id = parseInt(match[1], 10);
+      if (id > maxParaPrId) maxParaPrId = id;
+    }
+
+    // Group pending changes by section
+    const changesBySection = new Map<number, typeof this._pendingHangingIndents>();
+    for (const change of this._pendingHangingIndents) {
+      const existing = changesBySection.get(change.sectionIndex) || [];
+      existing.push(change);
+      changesBySection.set(change.sectionIndex, existing);
+    }
+
+    // Create new paraPr for each unique indent value
+    const indentToParaPrId = new Map<number, number>();
+    let newParaPrXml = '';
+
+    for (const change of this._pendingHangingIndents) {
+      if (change.indentPt === 0) continue; // Skip removal (use existing paraPr 0)
+      if (indentToParaPrId.has(change.indentPt)) continue;
+
+      maxParaPrId++;
+      const newId = maxParaPrId;
+      indentToParaPrId.set(change.indentPt, newId);
+
+      // HWPUNIT = pt * 100
+      const intentValue = -change.indentPt * 100; // Negative for hanging indent
+      const leftValue = change.indentPt * 100;    // Positive for left margin
+
+      // Create new paraPr with hanging indent
+      newParaPrXml += `\n      <hh:paraPr id="${newId}" tabPrIDRef="0">
+        <hh:align horizontal="JUSTIFY" vertical="BASELINE"/>
+        <hh:margin>
+          <hc:intent value="${intentValue}" unit="HWPUNIT"/>
+          <hc:left value="${leftValue}" unit="HWPUNIT"/>
+          <hc:right value="0" unit="HWPUNIT"/>
+          <hc:prev value="0" unit="HWPUNIT"/>
+          <hc:next value="0" unit="HWPUNIT"/>
+        </hh:margin>
+        <hh:lineSpacing type="PERCENT" value="160" unit="HWPUNIT"/>
+      </hh:paraPr>`;
+    }
+
+    // Insert new paraPr elements into header.xml
+    if (newParaPrXml) {
+      // Find the closing tag of paraProperties
+      const paraPropsEndMatch = headerXml.match(/<\/hh:paraProperties>/);
+      if (paraPropsEndMatch && paraPropsEndMatch.index !== undefined) {
+        headerXml = headerXml.slice(0, paraPropsEndMatch.index) +
+          newParaPrXml + '\n    ' +
+          headerXml.slice(paraPropsEndMatch.index);
+
+        // Update itemCnt attribute
+        const itemCntMatch = headerXml.match(/<hh:paraProperties[^>]*itemCnt="(\d+)"/);
+        if (itemCntMatch) {
+          const oldCount = parseInt(itemCntMatch[1], 10);
+          const newCount = oldCount + indentToParaPrId.size;
+          headerXml = headerXml.replace(
+            /<hh:paraProperties([^>]*)itemCnt="\d+"/,
+            `<hh:paraProperties$1itemCnt="${newCount}"`
+          );
+        }
+      }
+
+      this._zip.file(headerPath, headerXml);
+    }
+
+    // Update section XMLs with new paraPrIDRef
+    for (const [sectionIndex, changes] of changesBySection) {
+      const sectionPath = `Contents/section${sectionIndex}.xml`;
+      let sectionXml = await this._zip.file(sectionPath)?.async('string');
+      if (!sectionXml) continue;
+
+      // Build map of elementIndex -> targetParaPrId (last change wins for duplicates)
+      const elementIndexToParaPrId = new Map<number, number>();
+      for (const change of changes) {
+        const targetParaPrId = change.indentPt === 0
+          ? 0
+          : (indentToParaPrId.get(change.indentPt) || 0);
+        elementIndexToParaPrId.set(change.elementIndex, targetParaPrId);
+      }
+
+      // Find all table positions to exclude paragraphs inside tables
+      const tablePositions: Array<{ start: number; end: number }> = [];
+      const tblRegex = /<hp:tbl\b[^>]*>[\s\S]*?<\/hp:tbl>/g;
+      let tblMatch;
+      while ((tblMatch = tblRegex.exec(sectionXml)) !== null) {
+        tablePositions.push({ start: tblMatch.index, end: tblMatch.index + tblMatch[0].length });
+      }
+
+      // Process all paragraphs in a single pass
+      const pRegex = /<hp:p\b([^>]*)>/g;
+      let pMatch: RegExpExecArray | null;
+      let newSectionXml = '';
+      let lastIndex = 0;
+      let paragraphCount = 0;
+
+      while ((pMatch = pRegex.exec(sectionXml)) !== null) {
+        const isInTable = tablePositions.some(
+          pos => pMatch!.index >= pos.start && pMatch!.index < pos.end
+        );
+
+        if (isInTable) {
+          continue; // Skip paragraphs inside tables
+        }
+
+        // Check if this paragraph needs updating
+        if (elementIndexToParaPrId.has(paragraphCount)) {
+          const targetParaPrId = elementIndexToParaPrId.get(paragraphCount)!;
+          newSectionXml += sectionXml.slice(lastIndex, pMatch.index);
+          const attrs = pMatch[1];
+          const updatedAttrs = attrs.replace(
+            /paraPrIDRef="\d+"/,
+            `paraPrIDRef="${targetParaPrId}"`
+          );
+          newSectionXml += `<hp:p${updatedAttrs}>`;
+          lastIndex = pMatch.index + pMatch[0].length;
+        }
+
+        paragraphCount++;
+      }
+
+      // Only update if we made changes
+      if (lastIndex > 0) {
+        newSectionXml += sectionXml.slice(lastIndex);
+        this._zip.file(sectionPath, newSectionXml);
+      }
+    }
   }
 }
