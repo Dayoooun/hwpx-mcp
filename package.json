@@ -11,7 +11,7 @@
     "url": "https://github.com/mjyoo2/hwp-extension"
   },
   "engines": {
-    "vscode": "^1.107.0"
+    "vscode": "^1.70.0"
   },
   "categories": [
     "Other",
@@ -61,7 +61,8 @@
   },
   "devDependencies": {
     "@types/node": "^25.0.3",
-    "@types/vscode": "^1.107.0",
+    "@types/vscode": "^1.70.0",
+    "@vscode/vsce": "^3.7.1",
     "esbuild": "^0.27.2",
     "pdf-parse": "^1.1.4",
     "typescript": "^5.9.3"
