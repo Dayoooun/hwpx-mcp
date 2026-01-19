@@ -76,6 +76,7 @@ export class HwpxDocument {
     width: number;
     height: number;
     position?: ImagePositionOptions;
+    headerText?: string; // Text to search for in XML to find exact position
   }> = [];
   private _pendingCellImageInserts: Array<{
     sectionIndex: number;
@@ -90,6 +91,7 @@ export class HwpxDocument {
     height: number;  // display height in points
     orgWidth: number;  // original image width in pixels
     orgHeight: number; // original image height in pixels
+    afterText?: string; // Text to search for - insert image after the paragraph containing this text
   }> = [];
   private _pendingTableInserts: Array<{
     sectionIndex: number;
@@ -102,6 +104,22 @@ export class HwpxDocument {
   private _pendingImageDeletes: Array<{
     imageId: string;
     binaryId: string;
+  }> = [];
+  private _pendingCellMerges: Array<{
+    sectionIndex: number;
+    tableIndex: number;
+    startRow: number;
+    startCol: number;
+    endRow: number;
+    endCol: number;
+  }> = [];
+  private _pendingCellSplits: Array<{
+    sectionIndex: number;
+    tableIndex: number;
+    row: number;
+    col: number;
+    originalColSpan: number;
+    originalRowSpan: number;
   }> = [];
 
   private constructor(id: string, path: string, zip: JSZip | null, content: HwpxContent, format: DocumentFormat) {
@@ -1779,6 +1797,184 @@ export class HwpxDocument {
   }
 
   // ============================================================
+  // Cell Merge Operations
+  // ============================================================
+
+  /**
+   * Merge multiple cells in a table into a single cell.
+   * The top-left cell becomes the master cell, and other cells in the range are removed.
+   *
+   * @param sectionIndex Section index
+   * @param tableIndex Table index within the section
+   * @param startRow Starting row index (0-based)
+   * @param startCol Starting column index (0-based)
+   * @param endRow Ending row index (0-based, inclusive)
+   * @param endCol Ending column index (0-based, inclusive)
+   * @returns true if merge was successful, false otherwise
+   */
+  mergeCells(
+    sectionIndex: number,
+    tableIndex: number,
+    startRow: number,
+    startCol: number,
+    endRow: number,
+    endCol: number
+  ): boolean {
+    // Validate section
+    const section = this._content.sections[sectionIndex];
+    if (!section) {
+      console.warn(`[HwpxDocument] mergeCells: Invalid section index ${sectionIndex}`);
+      return false;
+    }
+
+    // Find the table
+    let tableCount = 0;
+    let table: HwpxTable | null = null;
+    for (const element of section.elements) {
+      if (element.type === 'table') {
+        if (tableCount === tableIndex) {
+          table = element.data as HwpxTable;
+          break;
+        }
+        tableCount++;
+      }
+    }
+
+    if (!table) {
+      console.warn(`[HwpxDocument] mergeCells: Invalid table index ${tableIndex}`);
+      return false;
+    }
+
+    // Validate range
+    if (startRow > endRow || startCol > endCol) {
+      console.warn(`[HwpxDocument] mergeCells: Invalid range (start > end)`);
+      return false;
+    }
+
+    // Check bounds
+    const rowCount = table.rowCount || (table.rows?.length ?? 0);
+    const colCount = table.colCount || (table.rows?.[0]?.cells?.length ?? 0);
+    if (startRow < 0 || endRow >= rowCount || startCol < 0 || endCol >= colCount) {
+      console.warn(`[HwpxDocument] mergeCells: Range out of bounds`);
+      return false;
+    }
+
+    // Check if it's a single cell (no merge needed)
+    if (startRow === endRow && startCol === endCol) {
+      console.warn(`[HwpxDocument] mergeCells: Single cell selected, no merge needed`);
+      return false;
+    }
+
+    this.saveState();
+
+    // Calculate span values
+    const colSpan = endCol - startCol + 1;
+    const rowSpan = endRow - startRow + 1;
+
+    // Update master cell in memory model
+    if (table.rows && table.rows[startRow] && table.rows[startRow].cells[startCol]) {
+      const masterCell = table.rows[startRow].cells[startCol];
+      masterCell.colSpan = colSpan;
+      masterCell.rowSpan = rowSpan;
+    }
+
+    // Add to pending merges for XML application during save
+    this._pendingCellMerges.push({
+      sectionIndex,
+      tableIndex,
+      startRow,
+      startCol,
+      endRow,
+      endCol
+    });
+
+    this._isDirty = true;
+    return true;
+  }
+
+  /**
+   * Split a merged cell back into individual cells.
+   * Only works on cells with colSpan > 1 or rowSpan > 1.
+   *
+   * @param sectionIndex Section index
+   * @param tableIndex Table index within the section
+   * @param row Row index of the merged cell (0-based)
+   * @param col Column index of the merged cell (0-based)
+   * @returns true if split was successful, false otherwise
+   */
+  splitCell(
+    sectionIndex: number,
+    tableIndex: number,
+    row: number,
+    col: number
+  ): boolean {
+    // Validate section
+    const section = this._content.sections[sectionIndex];
+    if (!section) {
+      console.warn(`[HwpxDocument] splitCell: Invalid section index ${sectionIndex}`);
+      return false;
+    }
+
+    // Find the table
+    let tableCount = 0;
+    let table: HwpxTable | null = null;
+    for (const element of section.elements) {
+      if (element.type === 'table') {
+        if (tableCount === tableIndex) {
+          table = element.data as HwpxTable;
+          break;
+        }
+        tableCount++;
+      }
+    }
+
+    if (!table) {
+      console.warn(`[HwpxDocument] splitCell: Invalid table index ${tableIndex}`);
+      return false;
+    }
+
+    // Check bounds
+    const rowCount = table.rowCount || (table.rows?.length ?? 0);
+    const colCount = table.colCount || (table.rows?.[0]?.cells?.length ?? 0);
+    if (row < 0 || row >= rowCount || col < 0 || col >= colCount) {
+      console.warn(`[HwpxDocument] splitCell: Cell out of bounds`);
+      return false;
+    }
+
+    // Get the cell (from memory model if available)
+    const cell = table.rows?.[row]?.cells?.[col];
+    const colSpan = cell?.colSpan || 1;
+    const rowSpan = cell?.rowSpan || 1;
+
+    // Check if it's actually merged
+    if (colSpan <= 1 && rowSpan <= 1) {
+      console.warn(`[HwpxDocument] splitCell: Cell is not merged`);
+      return false;
+    }
+
+    this.saveState();
+
+    // Update memory model
+    if (cell) {
+      cell.colSpan = 1;
+      cell.rowSpan = 1;
+    }
+
+    // Add to pending splits for XML application during save
+    this._pendingCellSplits.push({
+      sectionIndex,
+      tableIndex,
+      row,
+      col,
+      originalColSpan: colSpan,
+      originalRowSpan: rowSpan
+    });
+
+    this._isDirty = true;
+    return true;
+  }
+
+  // ============================================================
   // Header/Footer Operations
   // ============================================================
 
@@ -2046,6 +2242,7 @@ export class HwpxDocument {
       height?: number;
       preserveAspectRatio?: boolean;
       position?: ImagePositionOptions;
+      headerText?: string; // Text to search for in XML to find exact position
     }
   ): { id: string; actualWidth: number; actualHeight: number } | null {
     const section = this._content.sections[sectionIndex];
@@ -2140,6 +2337,7 @@ export class HwpxDocument {
       width: finalWidth,
       height: finalHeight,
       position: imageData.position,
+      headerText: imageData.headerText,
     });
 
     this._isDirty = true;
@@ -2166,6 +2364,7 @@ export class HwpxDocument {
       width?: number;
       height?: number;
       preserveAspectRatio?: boolean;
+      afterText?: string; // Text to search for - insert image after the paragraph containing this text
     }
   ): { id: string; actualWidth: number; actualHeight: number } | null {
     const table = this.findTable(sectionIndex, tableIndex);
@@ -2258,6 +2457,7 @@ export class HwpxDocument {
       height: finalHeight,
       orgWidth: orgDimensions.width,
       orgHeight: orgDimensions.height,
+      afterText: imageData.afterText,
     });
 
     this._isDirty = true;
@@ -2737,6 +2937,18 @@ export class HwpxDocument {
     if (this._pendingTableCellUpdates && this._pendingTableCellUpdates.length > 0) {
       await this.applyTableCellUpdatesToXml();
       this._pendingTableCellUpdates = [];
+    }
+
+    // Apply cell merges
+    if (this._pendingCellMerges && this._pendingCellMerges.length > 0) {
+      await this.applyCellMergesToXml();
+      this._pendingCellMerges = [];
+    }
+
+    // Apply cell splits
+    if (this._pendingCellSplits && this._pendingCellSplits.length > 0) {
+      await this.applyCellSplitsToXml();
+      this._pendingCellSplits = [];
     }
 
     // Apply nested table inserts
@@ -3330,6 +3542,409 @@ export class HwpxDocument {
   }
 
   /**
+   * Apply cell merges to XML.
+   * Updates colSpan/rowSpan attributes on master cell and removes merged cells.
+   * Groups merges by table to handle multiple merges in the same table correctly.
+   */
+  private async applyCellMergesToXml(): Promise<void> {
+    if (!this._zip) return;
+
+    // Group merges by section, then by table
+    const mergesBySection = new Map<number, Map<number, Array<{
+      startRow: number;
+      startCol: number;
+      endRow: number;
+      endCol: number;
+    }>>>();
+
+    for (const merge of this._pendingCellMerges) {
+      if (!mergesBySection.has(merge.sectionIndex)) {
+        mergesBySection.set(merge.sectionIndex, new Map());
+      }
+      const sectionMerges = mergesBySection.get(merge.sectionIndex)!;
+
+      if (!sectionMerges.has(merge.tableIndex)) {
+        sectionMerges.set(merge.tableIndex, []);
+      }
+      sectionMerges.get(merge.tableIndex)!.push({
+        startRow: merge.startRow,
+        startCol: merge.startCol,
+        endRow: merge.endRow,
+        endCol: merge.endCol
+      });
+    }
+
+    // Process each section
+    for (const [sectionIndex, tablesMerges] of mergesBySection) {
+      const sectionPath = `Contents/section${sectionIndex}.xml`;
+      const file = this._zip.file(sectionPath);
+      if (!file) continue;
+
+      let xml = await file.async('string');
+      const originalXml = xml;
+
+      // Process tables in reverse order to avoid index shifting
+      const sortedTableIndices = [...tablesMerges.keys()].sort((a, b) => b - a);
+
+      for (const tableIndex of sortedTableIndices) {
+        // Re-find tables with current XML (positions may have shifted)
+        const currentTables = this.findAllTables(xml);
+
+        if (tableIndex >= currentTables.length) {
+          console.warn(`[HwpxDocument] applyCellMergesToXml: Table index ${tableIndex} out of bounds`);
+          continue;
+        }
+
+        const tableData = currentTables[tableIndex];
+        let tableXml = tableData.xml;
+
+        // Get merges for this table and sort by row/col descending
+        const tableMerges = tablesMerges.get(tableIndex)!;
+        tableMerges.sort((a, b) => {
+          if (a.startRow !== b.startRow) return b.startRow - a.startRow;
+          return b.startCol - a.startCol;
+        });
+
+        // Store original table XML for rollback
+        const originalTableXml = tableXml;
+
+        // Apply each merge to the table XML
+        for (const merge of tableMerges) {
+          const updatedTableXml = this.applyMergeToTable(
+            tableXml,
+            merge.startRow,
+            merge.startCol,
+            merge.endRow,
+            merge.endCol
+          );
+
+          if (updatedTableXml) {
+            tableXml = updatedTableXml;
+          }
+        }
+
+        // Validate table structure after all merges
+        const tableError = this.validateTableStructure(tableXml);
+        if (tableError) {
+          console.error(`[HwpxDocument] applyCellMergesToXml: Table structure validation failed: ${tableError}`);
+          console.error(`[HwpxDocument] Reverting table ${tableIndex} to original state`);
+          tableXml = originalTableXml;
+        }
+
+        // Replace table in section XML
+        xml = xml.substring(0, tableData.startIndex) + tableXml + xml.substring(tableData.endIndex);
+      }
+
+      // Validate result
+      if (this.validateXmlStructure(xml)) {
+        this._zip.file(sectionPath, xml);
+      } else {
+        console.error(`[HwpxDocument] applyCellMergesToXml: XML validation failed, reverting`);
+        this._zip.file(sectionPath, originalXml);
+      }
+    }
+  }
+
+  /**
+   * Apply merge to a single table XML.
+   * @returns Updated table XML or null if merge failed
+   */
+  private applyMergeToTable(
+    tableXml: string,
+    startRow: number,
+    startCol: number,
+    endRow: number,
+    endCol: number
+  ): string | null {
+    const colSpan = endCol - startCol + 1;
+    const rowSpan = endRow - startRow + 1;
+
+    // Find all rows
+    const rows = this.findAllElementsWithDepth(tableXml, 'tr');
+    if (rows.length <= endRow) {
+      console.warn(`[HwpxDocument] applyMergeToTable: Not enough rows`);
+      return null;
+    }
+
+    let result = tableXml;
+
+    // Process rows in reverse order to maintain indices
+    for (let rowIdx = endRow; rowIdx >= startRow; rowIdx--) {
+      const row = rows[rowIdx];
+      const rowXml = row.xml;
+
+      // Find all cells in this row
+      const cells = this.findAllElementsWithDepth(rowXml, 'tc');
+
+      let updatedRowXml = rowXml;
+
+      // Process cells in reverse order within the merge range
+      for (let colIdx = endCol; colIdx >= startCol; colIdx--) {
+        // Find the cell at this column address
+        const cellIndex = cells.findIndex(c => {
+          const colAddrMatch = c.xml.match(/colAddr="(\d+)"/);
+          return colAddrMatch && parseInt(colAddrMatch[1]) === colIdx;
+        });
+
+        if (cellIndex === -1) continue;
+
+        const cell = cells[cellIndex];
+
+        if (rowIdx === startRow && colIdx === startCol) {
+          // This is the master cell - update colSpan and rowSpan
+          let updatedCellXml = cell.xml;
+
+          // Update colSpan
+          if (updatedCellXml.includes('colSpan="')) {
+            updatedCellXml = updatedCellXml.replace(/colSpan="\d+"/, `colSpan="${colSpan}"`);
+          } else {
+            // Add colSpan attribute
+            updatedCellXml = updatedCellXml.replace(/<(hp|hs):tc\b/, `<$1:tc colSpan="${colSpan}"`);
+          }
+
+          // Update rowSpan
+          if (updatedCellXml.includes('rowSpan="')) {
+            updatedCellXml = updatedCellXml.replace(/rowSpan="\d+"/, `rowSpan="${rowSpan}"`);
+          } else {
+            // Add rowSpan attribute
+            updatedCellXml = updatedCellXml.replace(/<(hp|hs):tc\b/, `<$1:tc rowSpan="${rowSpan}"`);
+          }
+
+          // Replace in row XML
+          const cellStart = updatedRowXml.indexOf(cell.xml);
+          if (cellStart !== -1) {
+            updatedRowXml = updatedRowXml.substring(0, cellStart) + updatedCellXml + updatedRowXml.substring(cellStart + cell.xml.length);
+          }
+        } else {
+          // This cell should be removed (it's covered by the master cell)
+          const cellStart = updatedRowXml.indexOf(cell.xml);
+          if (cellStart !== -1) {
+            updatedRowXml = updatedRowXml.substring(0, cellStart) + updatedRowXml.substring(cellStart + cell.xml.length);
+          }
+        }
+      }
+
+      // Replace the row in result
+      const rowStart = result.indexOf(row.xml);
+      if (rowStart !== -1) {
+        result = result.substring(0, rowStart) + updatedRowXml + result.substring(rowStart + row.xml.length);
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * Apply cell splits to XML.
+   * Resets colSpan/rowSpan to 1 and creates new cells to fill the split area.
+   */
+  private async applyCellSplitsToXml(): Promise<void> {
+    if (!this._zip) return;
+
+    // Group splits by section
+    const splitsBySection = new Map<number, Array<{
+      tableIndex: number;
+      row: number;
+      col: number;
+      originalColSpan: number;
+      originalRowSpan: number;
+    }>>();
+
+    for (const split of this._pendingCellSplits) {
+      const sectionSplits = splitsBySection.get(split.sectionIndex) || [];
+      sectionSplits.push({
+        tableIndex: split.tableIndex,
+        row: split.row,
+        col: split.col,
+        originalColSpan: split.originalColSpan,
+        originalRowSpan: split.originalRowSpan
+      });
+      splitsBySection.set(split.sectionIndex, sectionSplits);
+    }
+
+    // Process each section
+    for (const [sectionIndex, splits] of splitsBySection) {
+      const sectionPath = `Contents/section${sectionIndex}.xml`;
+      const file = this._zip.file(sectionPath);
+      if (!file) continue;
+
+      let xml = await file.async('string');
+      const originalXml = xml;
+
+      // Find all tables in this section
+      const tables = this.findAllTables(xml);
+
+      // Process splits in reverse table order to avoid index shifting
+      const sortedSplits = [...splits].sort((a, b) => b.tableIndex - a.tableIndex);
+
+      for (const split of sortedSplits) {
+        // Re-find tables with current XML (positions may have shifted)
+        const currentTables = this.findAllTables(xml);
+
+        if (split.tableIndex >= currentTables.length) {
+          console.warn(`[HwpxDocument] applyCellSplitsToXml: Table index ${split.tableIndex} out of bounds`);
+          continue;
+        }
+
+        const tableData = currentTables[split.tableIndex];
+        const originalTableXml = tableData.xml;
+
+        const updatedTableXml = this.applySplitToTable(
+          tableData.xml,
+          split.row,
+          split.col,
+          split.originalColSpan,
+          split.originalRowSpan
+        );
+
+        if (updatedTableXml) {
+          // Validate table structure after split
+          const tableError = this.validateTableStructure(updatedTableXml);
+          if (tableError) {
+            console.error(`[HwpxDocument] applyCellSplitsToXml: Table structure validation failed: ${tableError}`);
+            console.error(`[HwpxDocument] Skipping split for table ${split.tableIndex}`);
+            continue;
+          }
+
+          xml = xml.substring(0, tableData.startIndex) + updatedTableXml + xml.substring(tableData.endIndex);
+        }
+      }
+
+      // Validate result
+      if (this.validateXmlStructure(xml)) {
+        this._zip.file(sectionPath, xml);
+      } else {
+        console.error(`[HwpxDocument] applyCellSplitsToXml: XML validation failed, reverting`);
+        this._zip.file(sectionPath, originalXml);
+      }
+    }
+  }
+
+  /**
+   * Apply split to a single table XML.
+   * @returns Updated table XML or null if split failed
+   */
+  private applySplitToTable(
+    tableXml: string,
+    masterRow: number,
+    masterCol: number,
+    colSpan: number,
+    rowSpan: number
+  ): string | null {
+    // Find all rows
+    const rows = this.findAllElementsWithDepth(tableXml, 'tr');
+    if (rows.length <= masterRow) {
+      console.warn(`[HwpxDocument] applySplitToTable: Not enough rows`);
+      return null;
+    }
+
+    let result = tableXml;
+
+    // Process rows that need new cells (from bottom to top to maintain indices)
+    for (let rowIdx = masterRow + rowSpan - 1; rowIdx >= masterRow; rowIdx--) {
+      // Re-find rows after each modification
+      const currentRows = this.findAllElementsWithDepth(result, 'tr');
+      if (rowIdx >= currentRows.length) continue;
+
+      const row = currentRows[rowIdx];
+      let updatedRowXml = row.xml;
+
+      // Find all cells in this row
+      const cells = this.findAllElementsWithDepth(updatedRowXml, 'tc');
+
+      if (rowIdx === masterRow) {
+        // This is the master cell row - update the master cell and add cells after it
+        const masterCellIndex = cells.findIndex(c => {
+          const colAddrMatch = c.xml.match(/colAddr="(\d+)"/);
+          return colAddrMatch && parseInt(colAddrMatch[1]) === masterCol;
+        });
+
+        if (masterCellIndex === -1) continue;
+
+        const masterCell = cells[masterCellIndex];
+
+        // Update master cell's colSpan and rowSpan to 1
+        let updatedMasterCellXml = masterCell.xml;
+        updatedMasterCellXml = updatedMasterCellXml.replace(/colSpan="\d+"/, 'colSpan="1"');
+        updatedMasterCellXml = updatedMasterCellXml.replace(/rowSpan="\d+"/, 'rowSpan="1"');
+
+        // Find position to insert new cells (after master cell)
+        const masterCellEnd = updatedRowXml.indexOf(masterCell.xml) + masterCell.xml.length;
+
+        // Generate new cells for this row (colSpan - 1 new cells)
+        let newCells = '';
+        for (let c = masterCol + 1; c < masterCol + colSpan; c++) {
+          newCells += this.generateEmptyCell(rowIdx, c);
+        }
+
+        // Replace master cell and insert new cells
+        const masterCellStart = updatedRowXml.indexOf(masterCell.xml);
+        updatedRowXml = updatedRowXml.substring(0, masterCellStart) + updatedMasterCellXml + newCells + updatedRowXml.substring(masterCellEnd);
+      } else {
+        // This is a row that was covered by rowSpan - add new cells
+        // Find the insertion point (after the cell before masterCol, or at the beginning)
+        let insertPoint = -1;
+
+        // Find cells sorted by colAddr
+        const sortedCells = cells.slice().sort((a, b) => {
+          const aAddr = parseInt(a.xml.match(/colAddr="(\d+)"/)?.[1] || '0');
+          const bAddr = parseInt(b.xml.match(/colAddr="(\d+)"/)?.[1] || '0');
+          return aAddr - bAddr;
+        });
+
+        // Find position to insert
+        for (const cell of sortedCells) {
+          const cellColAddr = parseInt(cell.xml.match(/colAddr="(\d+)"/)?.[1] || '0');
+          if (cellColAddr < masterCol) {
+            insertPoint = updatedRowXml.indexOf(cell.xml) + cell.xml.length;
+          }
+        }
+
+        // If no cell before masterCol, insert at the beginning of row content
+        if (insertPoint === -1) {
+          const trMatch = updatedRowXml.match(/<(hp|hs):tr[^>]*>/);
+          if (trMatch) {
+            insertPoint = trMatch[0].length;
+          } else {
+            continue;
+          }
+        }
+
+        // Generate new cells for this row
+        let newCells = '';
+        for (let c = masterCol; c < masterCol + colSpan; c++) {
+          newCells += this.generateEmptyCell(rowIdx, c);
+        }
+
+        // Insert new cells
+        updatedRowXml = updatedRowXml.substring(0, insertPoint) + newCells + updatedRowXml.substring(insertPoint);
+      }
+
+      // Replace the row in result
+      const rowStart = result.indexOf(row.xml);
+      if (rowStart !== -1) {
+        result = result.substring(0, rowStart) + updatedRowXml + result.substring(rowStart + row.xml.length);
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * Generate an empty cell XML for split operations.
+   */
+  private generateEmptyCell(rowAddr: number, colAddr: number): string {
+    const paragraphId = Math.random().toString(36).substring(2, 11);
+    return `<hp:tc colAddr="${colAddr}" rowAddr="${rowAddr}" colSpan="1" rowSpan="1">
+        <hp:subList>
+          <hp:p id="${paragraphId}">
+            <hp:run><hp:t></hp:t></hp:run>
+          </hp:p>
+        </hp:subList>
+      </hp:tc>`;
+  }
+
+  /**
    * Apply table cell updates to XML while preserving original structure.
    * This function modifies only the text content of specific cells,
    * keeping all other XML elements, attributes, and structure intact.
@@ -3435,7 +4050,174 @@ export class HwpxDocument {
       return false;
     }
 
+    // Check tag balance for critical structural elements
+    const criticalTags = ['tbl', 'tr', 'tc', 'p', 'subList'];
+    for (const tag of criticalTags) {
+      const balance = this.checkTagBalance(xml, tag);
+      if (balance !== 0) {
+        console.warn(`[HwpxDocument] Tag imbalance detected for ${tag}: ${balance > 0 ? '+' : ''}${balance}`);
+        return false;
+      }
+    }
+
     return true;
+  }
+
+  /**
+   * Check tag balance for a specific element name.
+   * Returns the difference (open - close). 0 means balanced.
+   */
+  private checkTagBalance(xml: string, elementName: string): number {
+    // Count opening tags: <hp:elementName> or <hp:elementName attr...> (not self-closing)
+    const openPattern = new RegExp(`<(?:hp|hs|hc):${elementName}(?:\\s[^>]*)?>`, 'g');
+    // Exclude self-closing tags from open count
+    const selfClosingPattern = new RegExp(`<(?:hp|hs|hc):${elementName}(?:\\s[^>]*)?\\/\\s*>`, 'g');
+    const closePattern = new RegExp(`<\\/(?:hp|hs|hc):${elementName}>`, 'g');
+
+    const allOpens = (xml.match(openPattern) || []).length;
+    const selfClosing = (xml.match(selfClosingPattern) || []).length;
+    const opens = allOpens - selfClosing;
+    const closes = (xml.match(closePattern) || []).length;
+
+    return opens - closes;
+  }
+
+  /**
+   * Validate table structure integrity.
+   * Checks:
+   * - Row count consistency (declared vs actual)
+   * - Cell count per row matches colCnt when accounting for colSpan
+   * - colAddr/rowAddr continuity
+   * - No orphaned cells (rowSpan consistency)
+   * @returns Error message if validation fails, null if valid
+   */
+  private validateTableStructure(tableXml: string): string | null {
+    // Extract declared row and column counts
+    const rowCntMatch = tableXml.match(/rowCnt="(\d+)"/);
+    const colCntMatch = tableXml.match(/colCnt="(\d+)"/);
+
+    if (!rowCntMatch || !colCntMatch) {
+      // Tables without these attributes can't be validated
+      return null;
+    }
+
+    const declaredRows = parseInt(rowCntMatch[1]);
+    const declaredCols = parseInt(colCntMatch[1]);
+
+    // Find all rows
+    const rows = this.findAllElementsWithDepth(tableXml, 'tr');
+
+    if (rows.length !== declaredRows) {
+      return `Row count mismatch: declared ${declaredRows}, actual ${rows.length}`;
+    }
+
+    // Track which cells are covered by rowSpan from previous rows
+    const coveredCells: Map<number, Set<number>> = new Map();
+    for (let r = 0; r < declaredRows; r++) {
+      coveredCells.set(r, new Set());
+    }
+
+    // Validate each row
+    for (let rowIdx = 0; rowIdx < rows.length; rowIdx++) {
+      const row = rows[rowIdx];
+      const cells = this.findAllElementsWithDepth(row.xml, 'tc');
+
+      let effectiveColCount = 0;
+      const covered = coveredCells.get(rowIdx)!;
+
+      for (const cell of cells) {
+        // Get cell attributes
+        const colAddrMatch = cell.xml.match(/colAddr="(\d+)"/);
+        const rowAddrMatch = cell.xml.match(/rowAddr="(\d+)"/);
+        const colSpanMatch = cell.xml.match(/colSpan="(\d+)"/);
+        const rowSpanMatch = cell.xml.match(/rowSpan="(\d+)"/);
+
+        const colAddr = colAddrMatch ? parseInt(colAddrMatch[1]) : effectiveColCount;
+        const rowAddr = rowAddrMatch ? parseInt(rowAddrMatch[1]) : rowIdx;
+        const colSpan = colSpanMatch ? parseInt(colSpanMatch[1]) : 1;
+        const rowSpan = rowSpanMatch ? parseInt(rowSpanMatch[1]) : 1;
+
+        // Validate rowAddr matches current row
+        if (rowAddr !== rowIdx) {
+          return `Row address mismatch at row ${rowIdx}: cell has rowAddr=${rowAddr}`;
+        }
+
+        // Add colSpan to effective count
+        effectiveColCount += colSpan;
+
+        // Mark cells as covered for future rows if rowSpan > 1
+        if (rowSpan > 1) {
+          for (let r = rowIdx + 1; r < rowIdx + rowSpan && r < declaredRows; r++) {
+            for (let c = colAddr; c < colAddr + colSpan; c++) {
+              coveredCells.get(r)!.add(c);
+            }
+          }
+        }
+      }
+
+      // Add covered cells from previous rowSpan
+      effectiveColCount += covered.size;
+
+      // Validate total columns match
+      if (effectiveColCount !== declaredCols) {
+        return `Column count mismatch at row ${rowIdx}: effective ${effectiveColCount}, declared ${declaredCols}`;
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Extract all nested tables from XML content.
+   * Uses balanced bracket matching to find complete table elements.
+   */
+  private extractNestedTables(xml: string, prefix: string): string {
+    const tables: string[] = [];
+    const openTag = `<${prefix}:tbl`;
+    const closeTag = `</${prefix}:tbl>`;
+
+    let searchPos = 0;
+    while (searchPos < xml.length) {
+      const tblStart = xml.indexOf(openTag, searchPos);
+      if (tblStart === -1) break;
+
+      // Find the end of the opening tag
+      const tagEnd = xml.indexOf('>', tblStart);
+      if (tagEnd === -1) break;
+
+      // Use balanced bracket matching to find the closing tag
+      let depth = 1;
+      let pos = tagEnd + 1;
+      let tblEnd = -1;
+
+      while (depth > 0 && pos < xml.length) {
+        const nextOpen = xml.indexOf(openTag, pos);
+        const nextClose = xml.indexOf(closeTag, pos);
+
+        if (nextClose === -1) break;
+
+        if (nextOpen !== -1 && nextOpen < nextClose) {
+          depth++;
+          pos = nextOpen + openTag.length;
+        } else {
+          depth--;
+          if (depth === 0) {
+            tblEnd = nextClose + closeTag.length;
+          }
+          pos = nextClose + closeTag.length;
+        }
+      }
+
+      if (tblEnd !== -1) {
+        tables.push(xml.substring(tblStart, tblEnd));
+        searchPos = tblEnd;
+      } else {
+        // Malformed XML, move past this opening tag
+        searchPos = tagEnd + 1;
+      }
+    }
+
+    return tables.join('');
   }
 
   /**
@@ -3604,6 +4386,12 @@ export class HwpxDocument {
   private updateTableCellsInXml(tableXml: string, updates: Array<{ row: number; col: number; text: string; charShapeId?: number }>): string {
     let result = tableXml;
 
+    // Capture initial tag counts for validation
+    const initialTrOpen = (tableXml.match(/<(?:hp|hs|hc):tr[\s>]/g) || []).length;
+    const initialTrClose = (tableXml.match(/<\/(?:hp|hs|hc):tr>/g) || []).length;
+    const initialTcOpen = (tableXml.match(/<(?:hp|hs|hc):tc[\s>]/g) || []).length;
+    const initialTcClose = (tableXml.match(/<\/(?:hp|hs|hc):tc>/g) || []).length;
+
     // Find all rows using depth tracking to handle nested tables correctly
     const rows = this.findAllElementsWithDepth(tableXml, 'tr');
 
@@ -3624,10 +4412,41 @@ export class HwpxDocument {
       const rowData = rows[rowIndex];
       const cellUpdates = updatesByRow.get(rowIndex)!;
 
+      // Validate row before update
+      const rowTrOpen = (rowData.xml.match(/<(?:hp|hs|hc):tr[\s>]/g) || []).length;
+      const rowTrClose = (rowData.xml.match(/<\/(?:hp|hs|hc):tr>/g) || []).length;
+
       // Apply all cell updates to this row at once
       const updatedRowXml = this.updateMultipleCellsInRow(rowData.xml, cellUpdates);
 
+      // Validate row after update - tag balance should be preserved
+      const updatedTrOpen = (updatedRowXml.match(/<(?:hp|hs|hc):tr[\s>]/g) || []).length;
+      const updatedTrClose = (updatedRowXml.match(/<\/(?:hp|hs|hc):tr>/g) || []).length;
+
+      if (rowTrOpen !== updatedTrOpen || rowTrClose !== updatedTrClose) {
+        console.error(`[HwpxDocument] Row update corrupted tr tags: before=${rowTrOpen}/${rowTrClose}, after=${updatedTrOpen}/${updatedTrClose}`);
+        console.error(`[HwpxDocument] Row ${rowIndex}, updates: ${JSON.stringify(cellUpdates.map(u => ({ col: u.col, textLen: u.text.length })))}`);
+        // Return original to prevent corruption
+        return tableXml;
+      }
+
       result = result.substring(0, rowData.startIndex) + updatedRowXml + result.substring(rowData.endIndex);
+    }
+
+    // Final validation: ensure tag counts are preserved
+    const finalTrOpen = (result.match(/<(?:hp|hs|hc):tr[\s>]/g) || []).length;
+    const finalTrClose = (result.match(/<\/(?:hp|hs|hc):tr>/g) || []).length;
+    const finalTcOpen = (result.match(/<(?:hp|hs|hc):tc[\s>]/g) || []).length;
+    const finalTcClose = (result.match(/<\/(?:hp|hs|hc):tc>/g) || []).length;
+
+    if (initialTrOpen !== finalTrOpen || initialTrClose !== finalTrClose) {
+      console.error(`[HwpxDocument] Table update corrupted tr tags: initial=${initialTrOpen}/${initialTrClose}, final=${finalTrOpen}/${finalTrClose}`);
+      return tableXml;
+    }
+
+    if (initialTcOpen !== finalTcOpen || initialTcClose !== finalTcClose) {
+      console.error(`[HwpxDocument] Table update corrupted tc tags: initial=${initialTcOpen}/${initialTcClose}, final=${finalTcOpen}/${finalTcClose}`);
+      return tableXml;
     }
 
     return result;
@@ -3650,7 +4469,30 @@ export class HwpxDocument {
       if (update.col >= cells.length) continue;
 
       const cellData = cells[update.col];
+
+      // Validate cell before update - capture nested table structure
+      const cellTblOpen = (cellData.xml.match(/<(?:hp|hs|hc):tbl[\s>]/g) || []).length;
+      const cellTblClose = (cellData.xml.match(/<\/(?:hp|hs|hc):tbl>/g) || []).length;
+      const cellTrOpen = (cellData.xml.match(/<(?:hp|hs|hc):tr[\s>]/g) || []).length;
+      const cellTrClose = (cellData.xml.match(/<\/(?:hp|hs|hc):tr>/g) || []).length;
+
       const updatedCellXml = this.updateTextInCell(cellData.xml, update.text, update.charShapeId);
+
+      // Validate cell after update - nested structures must be preserved
+      const updatedTblOpen = (updatedCellXml.match(/<(?:hp|hs|hc):tbl[\s>]/g) || []).length;
+      const updatedTblClose = (updatedCellXml.match(/<\/(?:hp|hs|hc):tbl>/g) || []).length;
+      const updatedTrOpen = (updatedCellXml.match(/<(?:hp|hs|hc):tr[\s>]/g) || []).length;
+      const updatedTrClose = (updatedCellXml.match(/<\/(?:hp|hs|hc):tr>/g) || []).length;
+
+      if (cellTblOpen !== updatedTblOpen || cellTblClose !== updatedTblClose ||
+          cellTrOpen !== updatedTrOpen || cellTrClose !== updatedTrClose) {
+        console.error(`[HwpxDocument] Cell update corrupted nested structure at col ${update.col}`);
+        console.error(`[HwpxDocument] Before: tbl=${cellTblOpen}/${cellTblClose}, tr=${cellTrOpen}/${cellTrClose}`);
+        console.error(`[HwpxDocument] After: tbl=${updatedTblOpen}/${updatedTblClose}, tr=${updatedTrOpen}/${updatedTrClose}`);
+        console.error(`[HwpxDocument] Text (first 100 chars): ${update.text.substring(0, 100)}`);
+        // Skip this update to prevent corruption
+        continue;
+      }
 
       result = result.substring(0, cellData.startIndex) + updatedCellXml + result.substring(cellData.endIndex);
     }
@@ -3844,6 +4686,9 @@ export class HwpxDocument {
       if (contentEndIndex !== -1) {
         const subListContent = cellXml.substring(contentStartIndex, contentEndIndex);
 
+        // IMPORTANT: Check for nested tables in subList content - preserve them!
+        const nestedTables = this.extractNestedTables(subListContent, prefix);
+
         // Extract paraPrIDRef and styleIDRef from existing paragraph if available
         const existingPMatch = subListContent.match(/<(?:hp|hs|hc):p[^>]*paraPrIDRef="([^"]*)"[^>]*styleIDRef="([^"]*)"/);
         const paraPrIDRef = existingPMatch?.[1] || '0';
@@ -3856,7 +4701,10 @@ export class HwpxDocument {
           return `<${prefix}:p id="${paraId}" paraPrIDRef="${paraPrIDRef}" styleIDRef="${styleIDRef}" pageBreak="0" columnBreak="0" merged="0"><${prefix}:run${charAttr}><${prefix}:t>${escapedLine}</${prefix}:t></${prefix}:run><${prefix}:linesegarray><${prefix}:lineseg textpos="0" vertpos="0" vertsize="1000" textheight="1000" baseline="850" spacing="600" horzpos="0" horzsize="0" flags="0"/></${prefix}:linesegarray></${prefix}:p>`;
         }).join('');
 
-        return cellXml.substring(0, contentStartIndex) + paragraphs + cellXml.substring(contentEndIndex);
+        // Append nested tables after paragraphs to preserve them
+        const newContent = paragraphs + nestedTables;
+
+        return cellXml.substring(0, contentStartIndex) + newContent + cellXml.substring(contentEndIndex);
       }
     }
 
@@ -3913,6 +4761,10 @@ export class HwpxDocument {
       }
 
       if (lastParagraphEnd !== -1) {
+        // IMPORTANT: Check for nested tables in the content being replaced - preserve them!
+        const contentToReplace = cellXml.substring(firstPStart, lastParagraphEnd);
+        const nestedTables = this.extractNestedTables(contentToReplace, prefix);
+
         // Generate multiple paragraphs
         const paragraphs = lines.map((line, index) => {
           const escapedLine = this.escapeXml(line);
@@ -3924,7 +4776,10 @@ export class HwpxDocument {
           return `<${prefix}:p${attrs}><${prefix}:run${charAttr}><${prefix}:t>${escapedLine}</${prefix}:t></${prefix}:run><${prefix}:linesegarray><${prefix}:lineseg textpos="0" vertpos="0" vertsize="1000" textheight="1000" baseline="850" spacing="600" horzpos="0" horzsize="0" flags="0"/></${prefix}:linesegarray></${prefix}:p>`;
         }).join('');
 
-        return cellXml.substring(0, firstPStart) + paragraphs + cellXml.substring(lastParagraphEnd);
+        // Append nested tables after paragraphs to preserve them
+        const newContent = paragraphs + nestedTables;
+
+        return cellXml.substring(0, firstPStart) + newContent + cellXml.substring(lastParagraphEnd);
       }
     }
 
@@ -3950,6 +4805,7 @@ export class HwpxDocument {
       height: number;
       orgWidth: number;
       orgHeight: number;
+      afterText?: string;
     }>>();
 
     for (const insert of this._pendingCellImageInserts) {
@@ -3964,6 +4820,7 @@ export class HwpxDocument {
         height: insert.height,
         orgWidth: insert.orgWidth,
         orgHeight: insert.orgHeight,
+        afterText: insert.afterText,
       });
       insertsBySection.set(insert.sectionIndex, sectionInserts);
     }
@@ -4011,12 +4868,42 @@ export class HwpxDocument {
         const targetCell = cells[insert.col];
         if (!targetCell) continue;
 
-        // Find the first <hp:p> in the cell and insert the image inside it
-        const paragraphMatch = targetCell.xml.match(/<hp:p[^>]*>/);
-        if (!paragraphMatch) continue;
+        // Find insertion position based on afterText or use first paragraph
+        let insertPosition: number;
+        let insertMode: 'inside_paragraph' | 'after_paragraph' = 'inside_paragraph';
 
-        const paragraphStartIndex = targetCell.xml.indexOf(paragraphMatch[0]);
-        const paragraphTagEnd = paragraphStartIndex + paragraphMatch[0].length;
+        if (insert.afterText) {
+          // Find all paragraphs in the cell
+          const paragraphs = this.findAllParagraphsInCell(targetCell.xml);
+          const normalizedSearch = insert.afterText.toLowerCase().trim();
+
+          // Find the paragraph containing the search text
+          let foundParagraph: { start: number; end: number; xml: string } | null = null;
+          for (const para of paragraphs) {
+            const textContent = this.extractTextFromParagraphXml(para.xml).toLowerCase();
+            if (textContent.includes(normalizedSearch)) {
+              foundParagraph = para;
+              break;
+            }
+          }
+
+          if (foundParagraph) {
+            // Insert after the found paragraph (create a new paragraph with the image)
+            insertPosition = foundParagraph.end;
+            insertMode = 'after_paragraph';
+          } else {
+            // Text not found, fall back to first paragraph
+            console.warn(`[HwpxDocument] afterText "${insert.afterText}" not found in cell, using first paragraph`);
+            const paragraphMatch = targetCell.xml.match(/<hp:p[^>]*>/);
+            if (!paragraphMatch) continue;
+            insertPosition = targetCell.xml.indexOf(paragraphMatch[0]) + paragraphMatch[0].length;
+          }
+        } else {
+          // Default: find the first <hp:p> in the cell and insert the image inside it
+          const paragraphMatch = targetCell.xml.match(/<hp:p[^>]*>/);
+          if (!paragraphMatch) continue;
+          insertPosition = targetCell.xml.indexOf(paragraphMatch[0]) + paragraphMatch[0].length;
+        }
 
         // Generate image XML - use same size for orgSz/curSz (rollback to simpler approach)
         maxPicId++;
@@ -4056,11 +4943,22 @@ export class HwpxDocument {
   <hp:shapeComment>Inserted in cell by HWPX MCP</hp:shapeComment>
 </hp:pic><hp:t/></hp:run>`;
 
-        // Insert the image right after the <hp:p> opening tag
-        const updatedCellContent =
-          targetCell.xml.substring(0, paragraphTagEnd) +
-          picXml +
-          targetCell.xml.substring(paragraphTagEnd);
+        // Insert the image at the calculated position
+        let updatedCellContent: string;
+        if (insertMode === 'after_paragraph') {
+          // Create a new paragraph containing the image and insert after the found paragraph
+          const newParagraphWithImage = `<hp:p id="img_${maxPicId}">${picXml}</hp:p>`;
+          updatedCellContent =
+            targetCell.xml.substring(0, insertPosition) +
+            newParagraphWithImage +
+            targetCell.xml.substring(insertPosition);
+        } else {
+          // Insert the image inside the first paragraph (after opening tag)
+          updatedCellContent =
+            targetCell.xml.substring(0, insertPosition) +
+            picXml +
+            targetCell.xml.substring(insertPosition);
+        }
 
         // Calculate position of cell in table XML
         const cellStartInTable = targetRow.startIndex + targetCell.startIndex;
@@ -4774,6 +5672,7 @@ export class HwpxDocument {
       backgroundColor?: string;
       preserveAspectRatio?: boolean;
       position?: ImagePositionOptions;
+      headerText?: string; // Text to search for in XML to find exact position
     }
   ): Promise<{ success: boolean; imageId?: string; actualWidth?: number; actualHeight?: number; error?: string }> {
     if (!this._zip) {
@@ -4833,6 +5732,7 @@ export class HwpxDocument {
         height: options?.height,
         preserveAspectRatio,
         position: options?.position,
+        headerText: options?.headerText,
       });
 
       if (result) {
@@ -4902,7 +5802,8 @@ export class HwpxDocument {
         insert.imageId,
         insert.width,
         insert.height,
-        insert.position
+        insert.position,
+        insert.headerText
       );
     }
   }
@@ -5046,7 +5947,8 @@ export class HwpxDocument {
     imageId: string,
     width: number,
     height: number,
-    position?: ImagePositionOptions
+    position?: ImagePositionOptions,
+    headerText?: string
   ): Promise<void> {
     if (!this._zip) return;
 
@@ -5073,53 +5975,146 @@ export class HwpxDocument {
     const paraId = Math.floor(Math.random() * 2000000000);
     const fullParagraphXml = `<hp:p id="${paraId}" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="0">${picXml}<hp:t/></hp:run><hp:linesegarray><hp:lineseg textpos="0" vertpos="0" vertsize="1600" textheight="1600" baseline="1360" spacing="960" horzpos="0" horzsize="0" flags="393216"/></hp:linesegarray></hp:p>`;
 
-    // Find insertion point - after the specified element (paragraph or table)
-    // Find all top-level elements (paragraphs and tables) in order
-    const elements: Array<{ type: 'paragraph' | 'table'; start: number; end: number }> = [];
+    // Find insertion point
+    let insertPos: number | null = null;
 
-    // Use balanced bracket matching to find tables correctly (handles nested tables)
-    const tables = this.findAllTables(sectionXml);
-    const tableRegions: Array<{ start: number; end: number }> = [];
-    for (const table of tables) {
-      tableRegions.push({ start: table.startIndex, end: table.endIndex });
-      elements.push({ type: 'table', start: table.startIndex, end: table.endIndex });
+    // If headerText is provided, find position by searching for the text in XML
+    if (headerText) {
+      insertPos = this.findInsertPositionByTextInXml(sectionXml, headerText);
     }
 
-    // Use balanced bracket matching to find paragraphs correctly (handles nested structures)
-    const paragraphs = this.findAllElementsWithDepth(sectionXml, 'p');
-    for (const para of paragraphs) {
-      // Check if this paragraph is inside any table (exclude table-internal paragraphs)
-      const isInsideTable = tableRegions.some(t => para.startIndex >= t.start && para.startIndex < t.end);
-      if (!isInsideTable) {
-        elements.push({ type: 'paragraph', start: para.startIndex, end: para.endIndex });
-      }
-    }
+    // If text-based search didn't find position, fall back to index-based
+    if (insertPos === null) {
+      // Find all top-level elements (paragraphs and tables) in order
+      const elements: Array<{ type: 'paragraph' | 'table'; start: number; end: number }> = [];
 
-    // Sort elements by start position
-    elements.sort((a, b) => a.start - b.start);
-
-    // Insert after the specified element (or at the beginning if -1)
-    let insertPos: number;
-    if (afterElementIndex < 0 || elements.length === 0) {
-      // Insert at the beginning of section (after <hs:sec ...> or <hp:sec ...>)
-      const secStartMatch = sectionXml.match(/<(?:hs|hp):sec[^>]*>/);
-      insertPos = secStartMatch ? secStartMatch.index! + secStartMatch[0].length : 0;
-    } else if (afterElementIndex >= elements.length) {
-      // Insert at the end (before </hs:sec> or </hp:sec>)
-      let secEndMatch = sectionXml.lastIndexOf('</hs:sec>');
-      if (secEndMatch === -1) {
-        secEndMatch = sectionXml.lastIndexOf('</hp:sec>');
+      // Use balanced bracket matching to find tables correctly (handles nested tables)
+      const tables = this.findAllTables(sectionXml);
+      const tableRegions: Array<{ start: number; end: number }> = [];
+      for (const table of tables) {
+        tableRegions.push({ start: table.startIndex, end: table.endIndex });
+        elements.push({ type: 'table', start: table.startIndex, end: table.endIndex });
       }
-      insertPos = secEndMatch !== -1 ? secEndMatch : sectionXml.length;
-    } else {
-      // Insert after the specified element (paragraph or table)
-      insertPos = elements[afterElementIndex].end;
+
+      // Use balanced bracket matching to find paragraphs correctly (handles nested structures)
+      const paragraphs = this.findAllElementsWithDepth(sectionXml, 'p');
+      for (const para of paragraphs) {
+        // Check if this paragraph is inside any table (exclude table-internal paragraphs)
+        const isInsideTable = tableRegions.some(t => para.startIndex >= t.start && para.startIndex < t.end);
+        if (!isInsideTable) {
+          elements.push({ type: 'paragraph', start: para.startIndex, end: para.endIndex });
+        }
+      }
+
+      // Sort elements by start position
+      elements.sort((a, b) => a.start - b.start);
+
+      // Insert after the specified element (or at the beginning if -1)
+      if (afterElementIndex < 0 || elements.length === 0) {
+        // Insert at the beginning of section (after <hs:sec ...> or <hp:sec ...>)
+        const secStartMatch = sectionXml.match(/<(?:hs|hp):sec[^>]*>/);
+        insertPos = secStartMatch ? secStartMatch.index! + secStartMatch[0].length : 0;
+      } else if (afterElementIndex >= elements.length) {
+        // Insert at the end (before </hs:sec> or </hp:sec>)
+        let secEndMatch = sectionXml.lastIndexOf('</hs:sec>');
+        if (secEndMatch === -1) {
+          secEndMatch = sectionXml.lastIndexOf('</hp:sec>');
+        }
+        insertPos = secEndMatch !== -1 ? secEndMatch : sectionXml.length;
+      } else {
+        // Insert after the specified element (paragraph or table)
+        insertPos = elements[afterElementIndex].end;
+      }
     }
 
     // Insert the image paragraph XML
     sectionXml = sectionXml.substring(0, insertPos) + fullParagraphXml + sectionXml.substring(insertPos);
 
     this._zip.file(sectionPath, sectionXml);
+  }
+
+  /**
+   * Find insertion position in XML by searching for text content.
+   * Returns the position right after the paragraph containing the text, or null if not found.
+   */
+  private findInsertPositionByTextInXml(xml: string, searchText: string): number | null {
+    const normalizedSearch = searchText.toLowerCase().trim();
+
+    // Find all top-level paragraphs (not inside tables)
+    const tables = this.findAllTables(xml);
+    const tableRegions = tables.map(t => ({ start: t.startIndex, end: t.endIndex }));
+
+    const paragraphs = this.findAllElementsWithDepth(xml, 'p');
+
+    for (const para of paragraphs) {
+      // Skip paragraphs inside tables
+      const isInsideTable = tableRegions.some(t => para.startIndex >= t.start && para.startIndex < t.end);
+      if (isInsideTable) continue;
+
+      // Extract text content from the paragraph XML
+      const paraXml = xml.substring(para.startIndex, para.endIndex);
+      const textContent = this.extractTextFromParagraphXml(paraXml);
+
+      if (textContent.toLowerCase().includes(normalizedSearch)) {
+        // Found the paragraph - return position right after it
+        return para.endIndex;
+      }
+    }
+
+    // Also search in table cells
+    for (const table of tables) {
+      const tableXml = xml.substring(table.startIndex, table.endIndex);
+
+      // Find cells in this table
+      const cellMatches = [...tableXml.matchAll(/<(?:hp|hs):tc[^>]*>([\s\S]*?)<\/(?:hp|hs):tc>/g)];
+      for (const cellMatch of cellMatches) {
+        const cellContent = cellMatch[1];
+        const textContent = this.extractTextFromCellXml(cellContent);
+
+        if (textContent.toLowerCase().includes(normalizedSearch)) {
+          // Found in table cell - return position right after the table
+          return table.endIndex;
+        }
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Extract text content from paragraph XML
+   */
+  private extractTextFromParagraphXml(paraXml: string): string {
+    const textMatches = [...paraXml.matchAll(/<(?:hp|hs):t[^>]*>([^<]*)<\/(?:hp|hs):t>/g)];
+    return textMatches.map(m => m[1]).join('');
+  }
+
+  /**
+   * Extract text content from cell XML (handles subList and nested paragraphs)
+   */
+  private extractTextFromCellXml(cellXml: string): string {
+    const textMatches = [...cellXml.matchAll(/<(?:hp|hs):t[^>]*>([^<]*)<\/(?:hp|hs):t>/g)];
+    return textMatches.map(m => m[1]).join('');
+  }
+
+  /**
+   * Find all paragraphs in a table cell XML
+   * Returns array of { start, end, xml } for each paragraph
+   */
+  private findAllParagraphsInCell(cellXml: string): Array<{ start: number; end: number; xml: string }> {
+    const paragraphs: Array<{ start: number; end: number; xml: string }> = [];
+    const paragraphRegex = /<hp:p[^>]*>[\s\S]*?<\/hp:p>/g;
+
+    let match;
+    while ((match = paragraphRegex.exec(cellXml)) !== null) {
+      paragraphs.push({
+        start: match.index,
+        end: match.index + match[0].length,
+        xml: match[0],
+      });
+    }
+
+    return paragraphs;
   }
 
   /**
@@ -5571,58 +6566,92 @@ export class HwpxDocument {
   }
 
   /**
-   * Remove orphan closing tags
+   * Remove orphan closing tags (tbl, tr, tc, p, subList)
    */
   private removeOrphanCloseTags(xml: string): { xml: string; modified: boolean; repairs: string[] } {
     const repairs: string[] = [];
     let modified = false;
+    let result = xml;
 
-    // Find and track all table tags
-    const allTags: Array<{ type: 'open' | 'close'; pos: number; tag: string; prefix: string }> = [];
+    // Process each tag type separately
+    const tagsToFix = ['tbl', 'tr', 'tc', 'subList', 'p'];
 
-    const openRegex = /<(hp|hs|hc):tbl[^>]*>/g;
-    const closeRegex = /<\/(hp|hs|hc):tbl>/g;
+    for (const tagName of tagsToFix) {
+      const tagResult = this.fixTagImbalanceGlobal(result, tagName);
+      if (tagResult.modified) {
+        result = tagResult.xml;
+        modified = true;
+        repairs.push(...tagResult.repairs);
+      }
+    }
+
+    return { xml: result, modified, repairs };
+  }
+
+  /**
+   * Fix tag imbalance globally (not just within tables)
+   */
+  private fixTagImbalanceGlobal(xml: string, tagName: string): { xml: string; modified: boolean; repairs: string[] } {
+    const repairs: string[] = [];
+    let modified = false;
+    let result = xml;
+
+    // Collect all open and close tags with positions
+    const allTags: Array<{ type: 'open' | 'close' | 'selfclose'; pos: number; tag: string; endPos: number }> = [];
+
+    const openRegex = new RegExp(`<(hp|hs|hc):${tagName}(?:\\s[^>]*)?>`, 'g');
+    const closeRegex = new RegExp(`</(hp|hs|hc):${tagName}>`, 'g');
+    const selfCloseRegex = new RegExp(`<(hp|hs|hc):${tagName}(?:\\s[^>]*)?\\/\\s*>`, 'g');
 
     let match;
-    while ((match = openRegex.exec(xml)) !== null) {
-      allTags.push({ type: 'open', pos: match.index, tag: match[0], prefix: match[1] });
-    }
-    while ((match = closeRegex.exec(xml)) !== null) {
-      allTags.push({ type: 'close', pos: match.index, tag: match[0], prefix: match[1] });
+
+    // Find self-closing tags first
+    const selfClosePositions = new Set<number>();
+    while ((match = selfCloseRegex.exec(xml)) !== null) {
+      selfClosePositions.add(match.index);
+      allTags.push({ type: 'selfclose', pos: match.index, tag: match[0], endPos: match.index + match[0].length });
     }
 
+    // Find open tags (excluding self-closing)
+    while ((match = openRegex.exec(xml)) !== null) {
+      if (!selfClosePositions.has(match.index)) {
+        allTags.push({ type: 'open', pos: match.index, tag: match[0], endPos: match.index + match[0].length });
+      }
+    }
+
+    // Find close tags
+    while ((match = closeRegex.exec(xml)) !== null) {
+      allTags.push({ type: 'close', pos: match.index, tag: match[0], endPos: match.index + match[0].length });
+    }
+
+    // Sort by position
     allTags.sort((a, b) => a.pos - b.pos);
 
-    // Find orphan close tags
-    const orphanPositions: number[] = [];
+    // Find orphan close tags (depth tracking)
+    const orphanClosePositions: Array<{ pos: number; endPos: number; tag: string }> = [];
     let depth = 0;
 
     for (const tag of allTags) {
       if (tag.type === 'open') {
         depth++;
-      } else {
+      } else if (tag.type === 'close') {
         depth--;
         if (depth < 0) {
-          orphanPositions.push(tag.pos);
+          orphanClosePositions.push({ pos: tag.pos, endPos: tag.endPos, tag: tag.tag });
           depth = 0;
         }
       }
     }
 
-    // Remove orphan tags in reverse order to maintain positions
-    if (orphanPositions.length > 0) {
-      orphanPositions.sort((a, b) => b - a);
-      for (const pos of orphanPositions) {
-        const closeTagMatch = xml.substring(pos).match(/^<\/(?:hp|hs|hc):tbl>/);
-        if (closeTagMatch) {
-          xml = xml.substring(0, pos) + xml.substring(pos + closeTagMatch[0].length);
-          repairs.push(`Removed orphan closing tag at position ${pos}`);
-          modified = true;
-        }
-      }
+    // Remove orphan close tags (from end to start)
+    for (let i = orphanClosePositions.length - 1; i >= 0; i--) {
+      const orphan = orphanClosePositions[i];
+      result = result.substring(0, orphan.pos) + result.substring(orphan.endPos);
+      repairs.push(`Removed orphan </${tagName}> at position ${orphan.pos}`);
+      modified = true;
     }
 
-    return { xml, modified, repairs };
+    return { xml: result, modified, repairs };
   }
 
   /**
@@ -5631,41 +6660,145 @@ export class HwpxDocument {
   private fixTableStructure(xml: string): { xml: string; modified: boolean; repairs: string[] } {
     const repairs: string[] = [];
     let modified = false;
+    let result = xml;
 
-    // Find tables and check their structure
-    const tables = this.findAllTables(xml);
+    // Fix orphan tr and tc close tags within tables
+    const tables = this.findAllTables(result);
 
     for (let i = tables.length - 1; i >= 0; i--) {
-      const table = tables[i];
-      const tableXml = table.xml;
+      const currentTables = this.findAllTables(result);
+      if (i >= currentTables.length) continue;
 
-      // Check for incomplete table (missing rows/cells)
-      const hasRows = /<(?:hp|hs|hc):tr/.test(tableXml);
-      const hasCells = /<(?:hp|hs|hc):tc/.test(tableXml);
+      const table = currentTables[i];
+      let tableXml = table.xml;
+      let tableModified = false;
 
-      if (!hasRows && !hasCells) {
-        // Empty table structure - this might be intentional, skip
-        continue;
+      // Fix tr tag imbalance
+      const trResult = this.fixTagImbalance(tableXml, 'tr');
+      if (trResult.modified) {
+        tableXml = trResult.xml;
+        tableModified = true;
+        repairs.push(...trResult.repairs.map(r => `Table ${i}: ${r}`));
       }
 
-      // Check row/cell balance
-      const trOpen = (tableXml.match(/<(?:hp|hs|hc):tr/g) || []).length;
-      const trClose = (tableXml.match(/<\/(?:hp|hs|hc):tr>/g) || []).length;
-
-      if (trOpen !== trClose) {
-        // Row imbalance - complex repair needed
-        repairs.push(`Table at position ${table.startIndex} has row imbalance: ${trOpen} open, ${trClose} close`);
+      // Fix tc tag imbalance
+      const tcResult = this.fixTagImbalance(tableXml, 'tc');
+      if (tcResult.modified) {
+        tableXml = tcResult.xml;
+        tableModified = true;
+        repairs.push(...tcResult.repairs.map(r => `Table ${i}: ${r}`));
       }
 
-      const tcOpen = (tableXml.match(/<(?:hp|hs|hc):tc/g) || []).length;
-      const tcClose = (tableXml.match(/<\/(?:hp|hs|hc):tc>/g) || []).length;
+      // Fix subList tag imbalance
+      const subListResult = this.fixTagImbalance(tableXml, 'subList');
+      if (subListResult.modified) {
+        tableXml = subListResult.xml;
+        tableModified = true;
+        repairs.push(...subListResult.repairs.map(r => `Table ${i}: ${r}`));
+      }
 
-      if (tcOpen !== tcClose) {
-        repairs.push(`Table at position ${table.startIndex} has cell imbalance: ${tcOpen} open, ${tcClose} close`);
+      // Fix p tag imbalance within table
+      const pResult = this.fixTagImbalance(tableXml, 'p');
+      if (pResult.modified) {
+        tableXml = pResult.xml;
+        tableModified = true;
+        repairs.push(...pResult.repairs.map(r => `Table ${i}: ${r}`));
+      }
+
+      if (tableModified) {
+        // Validate the repaired table structure
+        const tableError = this.validateTableStructure(tableXml);
+        if (tableError) {
+          // Table structure still invalid, log warning but keep repairs
+          repairs.push(`Table ${i}: Structure validation after repair: ${tableError}`);
+        }
+
+        result = result.substring(0, table.startIndex) + tableXml + result.substring(table.endIndex);
+        modified = true;
       }
     }
 
-    return { xml, modified, repairs };
+    return { xml: result, modified, repairs };
+  }
+
+  /**
+   * Fix tag imbalance for a specific element type
+   */
+  private fixTagImbalance(xml: string, tagName: string): { xml: string; modified: boolean; repairs: string[] } {
+    const repairs: string[] = [];
+    let modified = false;
+    let result = xml;
+
+    // Collect all open and close tags with positions
+    const allTags: Array<{ type: 'open' | 'close' | 'selfclose'; pos: number; tag: string; prefix: string; endPos: number }> = [];
+
+    const openRegex = new RegExp(`<(hp|hs|hc):${tagName}(?:\\s[^>]*)?>`, 'g');
+    const closeRegex = new RegExp(`</(hp|hs|hc):${tagName}>`, 'g');
+    const selfCloseRegex = new RegExp(`<(hp|hs|hc):${tagName}(?:\\s[^>]*)?\\/\\s*>`, 'g');
+
+    let match;
+
+    // Find self-closing tags first
+    const selfClosePositions = new Set<number>();
+    while ((match = selfCloseRegex.exec(xml)) !== null) {
+      selfClosePositions.add(match.index);
+      allTags.push({ type: 'selfclose', pos: match.index, tag: match[0], prefix: match[1], endPos: match.index + match[0].length });
+    }
+
+    // Find open tags (excluding self-closing)
+    while ((match = openRegex.exec(xml)) !== null) {
+      if (!selfClosePositions.has(match.index)) {
+        allTags.push({ type: 'open', pos: match.index, tag: match[0], prefix: match[1], endPos: match.index + match[0].length });
+      }
+    }
+
+    // Find close tags
+    while ((match = closeRegex.exec(xml)) !== null) {
+      allTags.push({ type: 'close', pos: match.index, tag: match[0], prefix: match[1], endPos: match.index + match[0].length });
+    }
+
+    // Sort by position
+    allTags.sort((a, b) => a.pos - b.pos);
+
+    // Find orphan close tags (depth tracking)
+    const orphanClosePositions: Array<{ pos: number; endPos: number; tag: string }> = [];
+    let depth = 0;
+
+    for (const tag of allTags) {
+      if (tag.type === 'open') {
+        depth++;
+      } else if (tag.type === 'close') {
+        depth--;
+        if (depth < 0) {
+          orphanClosePositions.push({ pos: tag.pos, endPos: tag.endPos, tag: tag.tag });
+          depth = 0; // Reset to continue finding more orphans
+        }
+      }
+      // selfclose doesn't affect depth
+    }
+
+    // Remove orphan close tags (from end to start to preserve positions)
+    for (let i = orphanClosePositions.length - 1; i >= 0; i--) {
+      const orphan = orphanClosePositions[i];
+      result = result.substring(0, orphan.pos) + result.substring(orphan.endPos);
+      repairs.push(`Removed orphan closing tag ${orphan.tag} at position ${orphan.pos}`);
+      modified = true;
+    }
+
+    // Recount to check for missing close tags
+    if (modified) {
+      // Recount after removal
+      const openCount = (result.match(new RegExp(`<(hp|hs|hc):${tagName}(?:\\s[^>]*)?>`, 'g')) || []).length -
+                       (result.match(new RegExp(`<(hp|hs|hc):${tagName}(?:\\s[^>]*)?\\/\\s*>`, 'g')) || []).length;
+      const closeCount = (result.match(new RegExp(`</(hp|hs|hc):${tagName}>`, 'g')) || []).length;
+
+      if (openCount > closeCount) {
+        // Need to add closing tags - this is complex and may require manual intervention
+        repairs.push(`Warning: ${openCount - closeCount} missing closing </${tagName}> tag(s) - manual review recommended`);
+      }
+    }
+
+    return { xml: result, modified, repairs };
   }
 
   /**

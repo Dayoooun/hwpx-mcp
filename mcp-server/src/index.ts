@@ -573,6 +573,38 @@ NOTE: This inserts AFTER the table, not inside it. To insert an image INSIDE a t
     },
   },
   {
+    name: 'merge_cells',
+    description: 'Merge multiple table cells into a single cell (HWPX only). The top-left cell becomes the master cell with increased colSpan/rowSpan.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        doc_id: { type: 'string', description: 'Document ID' },
+        section_index: { type: 'number', description: 'Section index' },
+        table_index: { type: 'number', description: 'Table index' },
+        start_row: { type: 'number', description: 'Starting row index (0-based)' },
+        start_col: { type: 'number', description: 'Starting column index (0-based)' },
+        end_row: { type: 'number', description: 'Ending row index (0-based, inclusive)' },
+        end_col: { type: 'number', description: 'Ending column index (0-based, inclusive)' },
+      },
+      required: ['doc_id', 'section_index', 'table_index', 'start_row', 'start_col', 'end_row', 'end_col'],
+    },
+  },
+  {
+    name: 'split_cell',
+    description: 'Split a merged table cell back into individual cells (HWPX only). Only works on cells with colSpan > 1 or rowSpan > 1.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        doc_id: { type: 'string', description: 'Document ID' },
+        section_index: { type: 'number', description: 'Section index' },
+        table_index: { type: 'number', description: 'Table index' },
+        row: { type: 'number', description: 'Row index of the merged cell (0-based)' },
+        col: { type: 'number', description: 'Column index of the merged cell (0-based)' },
+      },
+      required: ['doc_id', 'section_index', 'table_index', 'row', 'col'],
+    },
+  },
+  {
     name: 'insert_table_row',
     description: 'Insert a new row in a table (HWPX only)',
     inputSchema: {
@@ -992,9 +1024,14 @@ NOTE: This inserts AFTER the table, not inside it. To insert an image INSIDE a t
     name: 'insert_image',
     description: `Insert an image as an independent element in the document (HWPX only). The image is placed OUTSIDE of tables, between paragraphs or after tables.
 
-Use after_table or after_header for easier positioning. IMPORTANT: after_header searches table cells too, but always inserts OUTSIDE the table.
+Use after_table or after_header for easier positioning.
 
-To insert an image INSIDE a table cell, use insert_image_in_cell instead.`,
+⚠️ WARNING: This tool ALWAYS inserts OUTSIDE tables. Even if after_header finds text inside a table cell, the image will be placed AFTER the table, not inside it.
+
+👉 To insert an image INSIDE a table cell:
+1. First use find_insert_position_after_header to check found_in
+2. If found_in='table_cell', use insert_image_in_cell with the returned table_info (table_index, row, col)
+3. If found_in='paragraph', use this insert_image tool`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -1051,8 +1088,14 @@ To insert an image INSIDE a table cell, use insert_image_in_cell instead.`,
     name: 'render_mermaid',
     description: `Render a Mermaid diagram and insert it as an independent element OUTSIDE tables (HWPX only). Uses mermaid.ink API.
 
-Use after_table or after_header for easier positioning. IMPORTANT: This always inserts OUTSIDE tables.
-To insert a Mermaid diagram INSIDE a table cell, use render_mermaid_in_cell instead.`,
+Use after_table or after_header for easier positioning.
+
+⚠️ WARNING: This tool ALWAYS inserts OUTSIDE tables. Even if after_header finds text inside a table cell, the diagram will be placed AFTER the table, not inside it.
+
+👉 To insert a Mermaid diagram INSIDE a table cell:
+1. First use find_insert_position_after_header to check found_in
+2. If found_in='table_cell', use render_mermaid_in_cell with the returned table_info (table_index, row, col)
+3. If found_in='paragraph', use this render_mermaid tool`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -1081,13 +1124,21 @@ To insert a Mermaid diagram INSIDE a table cell, use render_mermaid_in_cell inst
   },
   {
     name: 'insert_image_in_cell',
-    description: `Insert an image INSIDE a specific table cell (HWPX only). The image appears inline within the cell content.
+    description: `📍 Insert an image INSIDE a specific table cell (HWPX only). The image appears inline within the cell content.
 
-Use this when:
-- You want the image to be part of a table cell's content
-- find_insert_position_after_header returned found_in='table_cell' - use the table_info (table_index, row, col) from that result
+⚠️ IMPORTANT: Use this tool (NOT insert_image) when inserting images into table cells!
 
-Use get_table_map to find the global table_index if you don't already have it.`,
+When to use:
+1. find_insert_position_after_header returned found_in='table_cell' → use table_info (table_index, row, col)
+2. You want to add an image to a specific cell you already know
+
+How to get table_index:
+- From find_insert_position_after_header result: table_info.table_index
+- Or use get_table_map to list all tables and find the index
+
+Positioning within cell:
+- By default, image is inserted at the beginning of the cell
+- Use after_text to insert the image after a specific paragraph containing that text`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -1099,16 +1150,28 @@ Use get_table_map to find the global table_index if you don't already have it.`,
         width: { type: 'number', description: 'Image width in points (optional, default: 200)' },
         height: { type: 'number', description: 'Image height in points (optional, default: 150)' },
         preserve_aspect_ratio: { type: 'boolean', description: 'If true, maintains original image aspect ratio. Default: false.' },
+        after_text: { type: 'string', description: 'Insert the image after the paragraph containing this text. If not found, falls back to beginning of cell.' },
       },
       required: ['doc_id', 'table_index', 'row', 'col', 'image_path'],
     },
   },
   {
     name: 'render_mermaid_in_cell',
-    description: `Render a Mermaid diagram and insert it INSIDE a specific table cell (HWPX only). Uses mermaid.ink API.
+    description: `📍 Render a Mermaid diagram and insert it INSIDE a specific table cell (HWPX only). Uses mermaid.ink API.
 
-Use this when you want the diagram to appear inside a table cell.
-Use get_table_map to find the global table_index, or use table_info from find_insert_position_after_header if found_in='table_cell'.`,
+⚠️ IMPORTANT: Use this tool (NOT render_mermaid) when inserting diagrams into table cells!
+
+When to use:
+1. find_insert_position_after_header returned found_in='table_cell' → use table_info (table_index, row, col)
+2. You want to add a diagram to a specific cell you already know
+
+How to get table_index:
+- From find_insert_position_after_header result: table_info.table_index
+- Or use get_table_map to list all tables and find the index
+
+Positioning within cell:
+- By default, diagram is inserted at the beginning of the cell
+- Use after_text to insert the diagram after a specific paragraph containing that text`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -1122,6 +1185,7 @@ Use get_table_map to find the global table_index, or use table_info from find_in
         theme: { type: 'string', enum: ['default', 'dark', 'forest', 'neutral'], description: 'Diagram theme (default: default)' },
         background_color: { type: 'string', description: 'Background color (e.g., "#ffffff" or "transparent")' },
         preserve_aspect_ratio: { type: 'boolean', description: 'If true, maintains original image aspect ratio. Default: true.' },
+        after_text: { type: 'string', description: 'Insert the diagram after the paragraph containing this text. If not found, falls back to beginning of cell.' },
       },
       required: ['doc_id', 'mermaid_code', 'table_index', 'row', 'col'],
     },
@@ -2074,6 +2138,50 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return error('Failed to update cell properties');
       }
 
+      case 'merge_cells': {
+        const doc = getDoc(args?.doc_id as string);
+        if (!doc) return error('Document not found');
+        if (doc.format === 'hwp') return error('HWP files are read-only');
+
+        if (doc.mergeCells(
+          args?.section_index as number,
+          args?.table_index as number,
+          args?.start_row as number,
+          args?.start_col as number,
+          args?.end_row as number,
+          args?.end_col as number
+        )) {
+          const colSpan = (args?.end_col as number) - (args?.start_col as number) + 1;
+          const rowSpan = (args?.end_row as number) - (args?.start_row as number) + 1;
+          return success({
+            message: `Cells merged successfully`,
+            colSpan,
+            rowSpan,
+            masterCell: { row: args?.start_row, col: args?.start_col }
+          });
+        }
+        return error('Failed to merge cells. Check that the range is valid and cells are not already merged.');
+      }
+
+      case 'split_cell': {
+        const doc = getDoc(args?.doc_id as string);
+        if (!doc) return error('Document not found');
+        if (doc.format === 'hwp') return error('HWP files are read-only');
+
+        if (doc.splitCell(
+          args?.section_index as number,
+          args?.table_index as number,
+          args?.row as number,
+          args?.col as number
+        )) {
+          return success({
+            message: `Cell split successfully`,
+            cell: { row: args?.row, col: args?.col }
+          });
+        }
+        return error('Failed to split cell. Check that the cell is actually merged (colSpan > 1 or rowSpan > 1).');
+      }
+
       case 'insert_table_row': {
         const doc = getDoc(args?.doc_id as string);
         if (!doc) return error('Document not found');
@@ -2527,6 +2635,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             height: args?.height as number | undefined,
             preserveAspectRatio,
             position,
+            headerText: afterHeader, // Pass header text for precise XML positioning
           }
         );
         if (!result) return error('Failed to insert image');
@@ -2643,6 +2752,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           backgroundColor: args?.background_color as string | undefined,
           preserveAspectRatio: args?.preserve_aspect_ratio as boolean | undefined,
           position: positionOptions,
+          headerText: afterHeader, // Pass header text for precise XML positioning
         });
 
         if (result.success) {
@@ -2695,6 +2805,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           '.bmp': 'image/bmp',
         };
 
+        const afterText = args?.after_text as string | undefined;
+
         const result = doc.insertImageInCell(
           secIdx,
           localTblIdx,
@@ -2706,6 +2818,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             width: args?.width as number | undefined,
             height: args?.height as number | undefined,
             preserveAspectRatio: args?.preserve_aspect_ratio as boolean | undefined,
+            afterText,
           }
         );
 
@@ -2715,8 +2828,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const cellInfo = doc.getTableCell(secIdx, localTblIdx, rowIdx, colIdx);
         const cellText = cellInfo?.text?.substring(0, 30) || '';
 
+        const positionInfo = afterText
+          ? `after paragraph containing "${afterText}"`
+          : 'at the beginning';
+
         return success({
-          message: `Image inserted in cell [${rowIdx}, ${colIdx}] of table ${globalTblIdx} (section ${secIdx}, local index ${localTblIdx})`,
+          message: `Image inserted in cell [${rowIdx}, ${colIdx}] of table ${globalTblIdx} ${positionInfo}`,
           id: result.id,
           actualWidth: result.actualWidth,
           actualHeight: result.actualHeight,
@@ -2778,6 +2895,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
           const imageBuffer = Buffer.from(await response.arrayBuffer());
 
+          const afterText = args?.after_text as string | undefined;
+
           const result = doc.insertImageInCell(
             secIdx,
             localTblIdx,
@@ -2789,6 +2908,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               width: args?.width as number | undefined,
               height: args?.height as number | undefined,
               preserveAspectRatio: args?.preserve_aspect_ratio !== false, // default true for Mermaid
+              afterText,
             }
           );
 
@@ -2798,8 +2918,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           const cellInfo = doc.getTableCell(secIdx, localTblIdx, rowIdx, colIdx);
           const cellText = cellInfo?.text?.substring(0, 30) || '';
 
+          const positionInfo = afterText
+            ? `after paragraph containing "${afterText}"`
+            : 'at the beginning';
+
           return success({
-            message: `Mermaid diagram inserted in cell [${rowIdx}, ${colIdx}] of table ${globalTblIdx} (section ${secIdx}, local index ${localTblIdx})`,
+            message: `Mermaid diagram inserted in cell [${rowIdx}, ${colIdx}] of table ${globalTblIdx} ${positionInfo}`,
             image_id: result.id,
             actualWidth: result.actualWidth,
             actualHeight: result.actualHeight,
