@@ -183,3 +183,158 @@ describe('HwpxDocument - Table Cell Update', () => {
     expect(savedXml).toContain('Modified'); // New text
   });
 });
+
+describe('HwpxDocument - Paragraph Insert', () => {
+  let testFilePath: string;
+
+  beforeEach(async () => {
+    // Create test HWPX file
+    testFilePath = path.join(__dirname, 'test-para-insert.hwpx');
+    const buffer = await createTestHwpxBuffer();
+    fs.writeFileSync(testFilePath, buffer);
+  });
+
+  it('should insert paragraph and persist after save', async () => {
+    // 1. Open document
+    const originalBuffer = fs.readFileSync(testFilePath);
+    const doc = await HwpxDocument.createFromBuffer('test-id', testFilePath, originalBuffer);
+
+    // 2. Insert paragraph after first element (index 0)
+    const newIndex = doc.insertParagraph(0, 0, '새로운 문단 텍스트');
+    expect(newIndex).toBe(1);
+
+    // 3. Verify in memory
+    const paragraphs = doc.getParagraphs(0);
+    expect(paragraphs?.length).toBeGreaterThan(1);
+
+    // 4. Save
+    const savedBuffer = await doc.save();
+
+    // 5. Reload and verify
+    const reloadedDoc = await HwpxDocument.createFromBuffer('test-id-2', testFilePath, savedBuffer);
+    const reloadedZip = await JSZip.loadAsync(savedBuffer);
+    const savedXml = await reloadedZip.file('Contents/section0.xml')?.async('string');
+
+    console.log('Saved XML with inserted paragraph:', savedXml);
+
+    // Verify the inserted text is in XML
+    expect(savedXml).toContain('새로운 문단 텍스트');
+
+    // Verify document text includes the new paragraph
+    const docText = reloadedDoc.getAllText();
+    expect(docText).toContain('새로운 문단 텍스트');
+  });
+
+  it('should insert paragraph with special characters and escape properly', async () => {
+    const originalBuffer = fs.readFileSync(testFilePath);
+    const doc = await HwpxDocument.createFromBuffer('test-id', testFilePath, originalBuffer);
+
+    // Insert paragraph with special XML characters
+    doc.insertParagraph(0, 0, '특수문자 테스트: <tag> & "quotes" \'apostrophe\'');
+
+    const savedBuffer = await doc.save();
+    const savedZip = await JSZip.loadAsync(savedBuffer);
+    const savedXml = await savedZip.file('Contents/section0.xml')?.async('string');
+
+    // XML should be properly escaped
+    expect(savedXml).toContain('&lt;tag&gt;');
+    expect(savedXml).toContain('&amp;');
+    expect(savedXml).toContain('&quot;quotes&quot;');
+
+    // Reload and verify text is decoded correctly
+    const reloadedDoc = await HwpxDocument.createFromBuffer('test-id-2', testFilePath, savedBuffer);
+    const docText = reloadedDoc.getAllText();
+    expect(docText).toContain('<tag>');
+    expect(docText).toContain('&');
+  });
+
+  it('should insert multiple paragraphs and preserve order', async () => {
+    const originalBuffer = fs.readFileSync(testFilePath);
+    const doc = await HwpxDocument.createFromBuffer('test-id', testFilePath, originalBuffer);
+
+    // Insert multiple paragraphs
+    doc.insertParagraph(0, 0, '첫 번째 삽입');
+    doc.insertParagraph(0, 1, '두 번째 삽입');
+    doc.insertParagraph(0, 2, '세 번째 삽입');
+
+    const savedBuffer = await doc.save();
+    const savedZip = await JSZip.loadAsync(savedBuffer);
+    const savedXml = await savedZip.file('Contents/section0.xml')?.async('string');
+
+    // All paragraphs should be in the XML
+    expect(savedXml).toContain('첫 번째 삽입');
+    expect(savedXml).toContain('두 번째 삽입');
+    expect(savedXml).toContain('세 번째 삽입');
+
+    // Verify order (first should come before second)
+    const firstIdx = savedXml!.indexOf('첫 번째 삽입');
+    const secondIdx = savedXml!.indexOf('두 번째 삽입');
+    const thirdIdx = savedXml!.indexOf('세 번째 삽입');
+    expect(firstIdx).toBeLessThan(secondIdx);
+    expect(secondIdx).toBeLessThan(thirdIdx);
+  });
+
+  it('should create new document, insert paragraph, and save valid HWPX', async () => {
+    // 1. Create new document using createNew()
+    const doc = HwpxDocument.createNew('test-new-doc', 'Test Document', 'Test Author');
+
+    // 2. Insert a paragraph
+    const newIndex = doc.insertParagraph(0, 0, 'Hello World - 새 문서 테스트');
+    expect(newIndex).toBe(1);
+
+    // 3. Save
+    const savedBuffer = await doc.save();
+    expect(savedBuffer).toBeDefined();
+    expect(savedBuffer.byteLength).toBeGreaterThan(0);
+
+    // 4. Verify ZIP structure
+    const savedZip = await JSZip.loadAsync(savedBuffer);
+
+    // Check required files exist
+    expect(savedZip.file('mimetype')).not.toBeNull();
+    expect(savedZip.file('version.xml')).not.toBeNull();
+    expect(savedZip.file('Contents/content.hpf')).not.toBeNull();
+    expect(savedZip.file('Contents/header.xml')).not.toBeNull();
+    expect(savedZip.file('Contents/section0.xml')).not.toBeNull();
+
+    // 5. Verify XML validity
+    const sectionXml = await savedZip.file('Contents/section0.xml')?.async('string');
+    expect(sectionXml).toBeDefined();
+    console.log('New document section XML:', sectionXml);
+
+    // Check XML is well-formed (no orphan tags)
+    const openSec = (sectionXml!.match(/<hs:sec/g) || []).length;
+    const closeSec = (sectionXml!.match(/<\/hs:sec>/g) || []).length;
+    expect(openSec).toBe(closeSec);
+
+    const openP = (sectionXml!.match(/<hp:p[ >]/g) || []).length;
+    const closeP = (sectionXml!.match(/<\/hp:p>/g) || []).length;
+    expect(openP).toBe(closeP);
+
+    // Verify inserted text is in XML
+    expect(sectionXml).toContain('Hello World - 새 문서 테스트');
+
+    // 6. Reload and verify content persists
+    const reloadedDoc = await HwpxDocument.createFromBuffer('test-reload', 'test.hwpx', savedBuffer);
+    const docText = reloadedDoc.getAllText();
+    expect(docText).toContain('Hello World - 새 문서 테스트');
+  });
+
+  it('should validate header.xml in newly created document', async () => {
+    const doc = HwpxDocument.createNew('test-header', 'Header Test', 'Author');
+    const savedBuffer = await doc.save();
+    const savedZip = await JSZip.loadAsync(savedBuffer);
+
+    const headerXml = await savedZip.file('Contents/header.xml')?.async('string');
+    expect(headerXml).toBeDefined();
+    console.log('Header XML:', headerXml);
+
+    // Check for balanced tags (use word boundary to avoid matching <hh:heading as <hh:head)
+    const openHead = (headerXml!.match(/<hh:head[ >]/g) || []).length;
+    const closeHead = (headerXml!.match(/<\/hh:head>/g) || []).length;
+    expect(openHead).toBe(closeHead);
+
+    // Check that there are no broken closing tags (like <\tag> instead of </tag>)
+    expect(headerXml).not.toMatch(/<\\[a-zA-Z]/);
+  });
+});

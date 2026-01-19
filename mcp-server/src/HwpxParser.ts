@@ -2081,14 +2081,18 @@ export class HwpxParser {
   }
 
   private static parseParagraph(xml: string): HwpxParagraph {
-    const paragraph: HwpxParagraph = {
-      id: generateId(),
-      runs: [],
-    };
-
     // Extract only the opening <hp:p ...> tag to get paragraph attributes
     const pTagMatch = xml.match(/^<hp:p\s+([^>]*)>/);
     const pTagAttrs = pTagMatch ? pTagMatch[1] : '';
+
+    // Extract original id from XML if present, otherwise generate new one
+    const idMatch = pTagAttrs.match(/\bid="([^"]+)"/);
+    const originalId = idMatch ? idMatch[1] : generateId();
+
+    const paragraph: HwpxParagraph = {
+      id: originalId,
+      runs: [],
+    };
 
     // Check for page break on this paragraph (only in the <hp:p> tag itself)
     const pageBreakMatch = pTagAttrs.match(/pageBreak="([^"]*)"/);

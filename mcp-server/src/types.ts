@@ -621,6 +621,7 @@ export interface FieldControl {
 
 export interface TextRun {
   text: string;
+  charPrIDRef?: number;  // Reference to character property in header.xml
   charStyle?: CharacterStyle;
   tab?: TabInfo;
   hyperlink?: HyperlinkField;

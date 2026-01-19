@@ -146,7 +146,7 @@ const tools = [
   },
   {
     name: 'insert_paragraph',
-    description: 'Insert a new paragraph (HWPX only)',
+    description: 'Insert a new paragraph (HWPX only). Automatically applies hanging indent if text contains a marker like "○ ", "1. ", "가. ", etc.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -154,6 +154,7 @@ const tools = [
         section_index: { type: 'number', description: 'Section index' },
         after_index: { type: 'number', description: 'Insert after this paragraph index (-1 for beginning)' },
         text: { type: 'string', description: 'Paragraph text' },
+        auto_hanging_indent: { type: 'boolean', description: 'Automatically apply hanging indent if marker detected (default: true)' },
       },
       required: ['doc_id', 'section_index', 'after_index', 'text'],
     },
@@ -360,6 +361,37 @@ const tools = [
         row: { type: 'number', description: 'Row index (0-based)' },
         col: { type: 'number', description: 'Column index (0-based)' },
         paragraph_index: { type: 'number', description: 'Paragraph index within cell (0-based)' },
+      },
+      required: ['doc_id', 'section_index', 'table_index', 'row', 'col', 'paragraph_index'],
+    },
+  },
+  {
+    name: 'set_auto_hanging_indent',
+    description: 'Automatically set hanging indent based on detected marker in paragraph text (HWPX only). Detects markers like "○ ", "1. ", "가. ", "(1) ", "① " etc. and calculates appropriate indent width. If font_size is not provided, reads the actual font size from the document.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        doc_id: { type: 'string', description: 'Document ID' },
+        section_index: { type: 'number', description: 'Section index' },
+        paragraph_index: { type: 'number', description: 'Paragraph element index' },
+        font_size: { type: 'number', description: 'Font size in pt. If not provided, reads from document (falls back to 10pt if not found)' },
+      },
+      required: ['doc_id', 'section_index', 'paragraph_index'],
+    },
+  },
+  {
+    name: 'set_table_cell_auto_hanging_indent',
+    description: 'Automatically set hanging indent on a paragraph inside a table cell based on detected marker (HWPX only). Detects markers like "○ ", "1. ", "가. ", "(1) ", "① " etc. If font_size is not provided, reads the actual font size from the document.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        doc_id: { type: 'string', description: 'Document ID' },
+        section_index: { type: 'number', description: 'Section index' },
+        table_index: { type: 'number', description: 'Table index within section' },
+        row: { type: 'number', description: 'Row index (0-based)' },
+        col: { type: 'number', description: 'Column index (0-based)' },
+        paragraph_index: { type: 'number', description: 'Paragraph index within cell (0-based)' },
+        font_size: { type: 'number', description: 'Font size in pt. If not provided, reads from document (falls back to 10pt if not found)' },
       },
       required: ['doc_id', 'section_index', 'table_index', 'row', 'col', 'paragraph_index'],
     },
@@ -629,7 +661,7 @@ NOTE: This inserts AFTER the table, not inside it. To insert an image INSIDE a t
   },
   {
     name: 'update_table_cell',
-    description: 'Update content of a table cell (HWPX only). Preserves existing charPrIDRef by default.',
+    description: 'Update content of a table cell (HWPX only). Preserves existing charPrIDRef by default. Automatically applies hanging indent if text contains a marker.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -640,6 +672,7 @@ NOTE: This inserts AFTER the table, not inside it. To insert an image INSIDE a t
         col: { type: 'number', description: 'Column index' },
         text: { type: 'string', description: 'New cell content' },
         char_shape_id: { type: 'number', description: 'Character shape ID to apply (optional, uses existing style if omitted)' },
+        auto_hanging_indent: { type: 'boolean', description: 'Automatically apply hanging indent if marker detected (default: true)' },
       },
       required: ['doc_id', 'section_index', 'table_index', 'row', 'col', 'text'],
     },
@@ -829,6 +862,36 @@ NOTE: This inserts AFTER the table, not inside it. To insert an image INSIDE a t
         target_after: { type: 'number', description: 'Insert after this paragraph in target' },
       },
       required: ['doc_id', 'source_section', 'source_paragraph', 'target_section', 'target_after'],
+    },
+  },
+  {
+    name: 'move_table',
+    description: 'Move a table to another location (HWPX only). Uses XML-based approach for accurate structure preservation with strict validation.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        doc_id: { type: 'string', description: 'Document ID' },
+        section_index: { type: 'number', description: 'Source section index' },
+        table_index: { type: 'number', description: 'Table index within source section (0-based)' },
+        target_section_index: { type: 'number', description: 'Target section index' },
+        target_after_index: { type: 'number', description: 'Insert after this element index in target (-1 for beginning)' },
+      },
+      required: ['doc_id', 'section_index', 'table_index', 'target_section_index', 'target_after_index'],
+    },
+  },
+  {
+    name: 'copy_table',
+    description: 'Copy a table to another location (HWPX only). Preserves original and generates new IDs for the copy. Uses strict validation.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        doc_id: { type: 'string', description: 'Document ID' },
+        section_index: { type: 'number', description: 'Source section index' },
+        table_index: { type: 'number', description: 'Table index within source section (0-based)' },
+        target_section_index: { type: 'number', description: 'Target section index' },
+        target_after_index: { type: 'number', description: 'Insert after this element index in target (-1 for beginning)' },
+      },
+      required: ['doc_id', 'section_index', 'table_index', 'target_section_index', 'target_after_index'],
     },
   },
 
@@ -2022,13 +2085,26 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (!doc) return error('Document not found');
         if (doc.format === 'hwp') return error('HWP files are read-only');
 
+        const sectionIndex = args?.section_index as number;
         const index = doc.insertParagraph(
-          args?.section_index as number,
+          sectionIndex,
           args?.after_index as number,
           args?.text as string
         );
 
         if (index === -1) return error('Failed to insert paragraph');
+
+        // Auto hanging indent (default: true)
+        const autoHangingIndent = args?.auto_hanging_indent !== false;
+        let indentPt = 0;
+        if (autoHangingIndent) {
+          // Use async version to read font size from document
+          indentPt = await doc.setAutoHangingIndentAsync(sectionIndex, index, 10);
+        }
+
+        if (indentPt > 0) {
+          return success({ message: `Paragraph inserted with hanging indent: ${indentPt.toFixed(2)}pt`, index, indent_pt: indentPt });
+        }
         return success({ message: 'Paragraph inserted', index });
       }
 
@@ -2228,6 +2304,60 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         );
         if (!result) return error('Failed to remove hanging indent. Check indices.');
         return success({ message: 'Table cell hanging indent removed' });
+      }
+
+      case 'set_auto_hanging_indent': {
+        const doc = getDoc(args?.doc_id as string);
+        if (!doc) return error('Document not found');
+        if (doc.format === 'hwp') return error('HWP files are read-only');
+
+        // Use async version to read actual font size from document
+        const fontSizeArg = args?.font_size as number | undefined;
+        const indentPt = fontSizeArg !== undefined
+          ? doc.setAutoHangingIndent(
+              args?.section_index as number,
+              args?.paragraph_index as number,
+              fontSizeArg
+            )
+          : await doc.setAutoHangingIndentAsync(
+              args?.section_index as number,
+              args?.paragraph_index as number,
+              10  // fallback font size
+            );
+        if (indentPt === 0) {
+          return success({ message: 'No marker detected in paragraph text. No hanging indent applied.', indent_pt: 0 });
+        }
+        return success({ message: `Auto hanging indent applied: ${indentPt.toFixed(2)}pt`, indent_pt: indentPt });
+      }
+
+      case 'set_table_cell_auto_hanging_indent': {
+        const doc = getDoc(args?.doc_id as string);
+        if (!doc) return error('Document not found');
+        if (doc.format === 'hwp') return error('HWP files are read-only');
+
+        // Use async version to read actual font size from document
+        const fontSizeArg = args?.font_size as number | undefined;
+        const indentPt = fontSizeArg !== undefined
+          ? doc.setTableCellAutoHangingIndent(
+              args?.section_index as number,
+              args?.table_index as number,
+              args?.row as number,
+              args?.col as number,
+              args?.paragraph_index as number,
+              fontSizeArg
+            )
+          : await doc.setTableCellAutoHangingIndentAsync(
+              args?.section_index as number,
+              args?.table_index as number,
+              args?.row as number,
+              args?.col as number,
+              args?.paragraph_index as number,
+              10  // fallback font size
+            );
+        if (indentPt === 0) {
+          return success({ message: 'No marker detected in cell text. No hanging indent applied.', indent_pt: 0 });
+        }
+        return success({ message: `Auto hanging indent applied to cell: ${indentPt.toFixed(2)}pt`, indent_pt: indentPt });
       }
 
       // === Search & Replace ===
@@ -2448,18 +2578,40 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (!doc) return error('Document not found');
         if (doc.format === 'hwp') return error('HWP files are read-only');
 
+        const sectionIndex = args?.section_index as number;
+        const tableIndex = args?.table_index as number;
+        const row = args?.row as number;
+        const col = args?.col as number;
         const charShapeId = args?.char_shape_id as number | undefined;
-        if (doc.updateTableCell(
-          args?.section_index as number,
-          args?.table_index as number,
-          args?.row as number,
-          args?.col as number,
+
+        if (!doc.updateTableCell(
+          sectionIndex,
+          tableIndex,
+          row,
+          col,
           args?.text as string,
           charShapeId
         )) {
-          return success({ message: 'Cell updated' });
+          return error('Failed to update cell');
         }
-        return error('Failed to update cell');
+
+        // Auto hanging indent (default: true)
+        const autoHangingIndent = args?.auto_hanging_indent !== false;
+        let indentPt = 0;
+        if (autoHangingIndent) {
+          // Use async version to read font size from document
+          indentPt = await doc.setTableCellAutoHangingIndentAsync(
+            sectionIndex, tableIndex, row, col, 0, 10
+          );
+        }
+
+        if (indentPt > 0) {
+          return success({
+            message: `Cell updated with hanging indent: ${indentPt.toFixed(2)}pt`,
+            indent_pt: indentPt
+          });
+        }
+        return success({ message: 'Cell updated' });
       }
 
       case 'set_cell_properties': {
@@ -2663,6 +2815,42 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           return success({ message: 'Paragraph moved' });
         }
         return error('Failed to move paragraph');
+      }
+
+      case 'move_table': {
+        const doc = getDoc(args?.doc_id as string);
+        if (!doc) return error('Document not found');
+        if (doc.format === 'hwp') return error('HWP files are read-only');
+
+        const result = doc.moveTable(
+          args?.section_index as number,
+          args?.table_index as number,
+          args?.target_section_index as number,
+          args?.target_after_index as number
+        );
+
+        if (result.success) {
+          return success({ message: 'Table move scheduled. Changes will be applied on save.' });
+        }
+        return error(result.error || 'Failed to move table');
+      }
+
+      case 'copy_table': {
+        const doc = getDoc(args?.doc_id as string);
+        if (!doc) return error('Document not found');
+        if (doc.format === 'hwp') return error('HWP files are read-only');
+
+        const result = doc.copyTable(
+          args?.section_index as number,
+          args?.table_index as number,
+          args?.target_section_index as number,
+          args?.target_after_index as number
+        );
+
+        if (result.success) {
+          return success({ message: 'Table copy scheduled. Changes will be applied on save.' });
+        }
+        return error(result.error || 'Failed to copy table');
       }
 
       // === Statistics ===

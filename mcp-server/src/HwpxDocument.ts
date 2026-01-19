@@ -1,6 +1,7 @@
 import JSZip from 'jszip';
 import pako from 'pako';
 import { HwpxParser } from './HwpxParser';
+import { HangingIndentCalculator } from './HangingIndentCalculator';
 import {
   HwpxContent,
   HwpxParagraph,
@@ -171,6 +172,15 @@ export class HwpxDocument {
     paragraphId: string;
     indentPt: number;  // Positive value in points
   }> = [];
+  private _pendingParagraphInserts: Array<{
+    sectionIndex: number;
+    afterElementIndex: number;
+    paragraphId: string;
+    text: string;
+  }> = [];
+
+  // Cache for character properties (id → font size in pt)
+  private _charPrCache: Map<number, number> | null = null;
 
   private constructor(id: string, path: string, zip: JSZip | null, content: HwpxContent, format: DocumentFormat) {
     this._id = id;
@@ -284,16 +294,6 @@ export class HwpxDocument {
         <hh:spacing hangul="0" latin="0" hanja="0" japanese="0" other="0" symbol="0" user="0"/>
         <hh:relSz hangul="100" latin="100" hanja="100" japanese="100" other="100" symbol="100" user="100"/>
         <hh:offset hangul="0" latin="0" hanja="0" japanese="0" other="0" symbol="0" user="0"/>
-        <hh:italic/>
-        <hh:bold/>
-        <hh:underline type="NONE" shape="SOLID" color="#000000"/>
-        <hh:strikeout type="NONE" shape="SOLID" color="#000000"/>
-        <hh:outline type="NONE"/>
-        <hh:shadow type="NONE" color="#B2B2B2" offsetX="10" offsetY="10"/>
-        <hh:emboss/>
-        <hh:engrave/>
-        <hh:supscript/>
-        <hh:subscript/>
       </hh:charPr>
     </hh:charProperties>
     <hh:tabProperties itemCnt="1">
@@ -303,10 +303,11 @@ export class HwpxDocument {
     <hh:bullets itemCnt="0"/>
     <hh:paraProperties itemCnt="1">
       <hh:paraPr id="0" tabPrIDRef="0" condense="0" fontLineHeight="0" snapToGrid="1" suppressLineNumbers="0" checked="0">
-        <hh:align horizontal="JUSTIFY" vertical="BASELINE"/>
+        <hh:align horizontal="LEFT" vertical="BASELINE"/>
         <hh:heading type="NONE" idRef="0" level="0"/>
         <hh:breakSetting breakLatinWord="KEEP_WORD" breakNonLatinWord="KEEP_WORD" widowOrphan="0" keepWithNext="0" keepLines="0" pageBreakBefore="0" lineWrap="BREAK"/>
         <hh:autoSpacing eAsianEng="0" eAsianNum="0"/>
+        <hh:lineSpacing type="PERCENT" value="160" unit="HWPUNIT"/>
       </hh:paraPr>
     </hh:paraProperties>
     <hh:styles itemCnt="1">
@@ -322,7 +323,7 @@ export class HwpxDocument {
 </hh:head>`);
 
     // Contents/section0.xml with all namespaces
-    zip.file('Contents/section0.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes" ?><hs:sec xmlns:ha="http://www.hancom.co.kr/hwpml/2011/app" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph" xmlns:hp10="http://www.hancom.co.kr/hwpml/2016/paragraph" xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core" xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head" xmlns:hhs="http://www.hancom.co.kr/hwpml/2011/history" xmlns:hm="http://www.hancom.co.kr/hwpml/2011/master-page" xmlns:hpf="http://www.hancom.co.kr/schema/2011/hpf" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:opf="http://www.idpf.org/2007/opf/" xmlns:ooxmlchart="http://www.hancom.co.kr/hwpml/2016/ooxmlchart" xmlns:hwpunitchar="http://www.hancom.co.kr/hwpml/2016/HwpUnitChar" xmlns:epub="http://www.idpf.org/2007/ops" xmlns:config="urn:oasis:names:tc:opendocument:xmlns:config:1.0"><hp:p id="0" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="0"><hp:secPr id="" textDirection="HORIZONTAL" spaceColumns="1134" tabStop="8000" tabStopVal="4000" tabStopUnit="HWPUNIT" outlineShapeIDRef="1" memoShapeIDRef="0" textVerticalWidthHead="0" masterPageCnt="0"><hp:grid lineGrid="0" charGrid="0" wongoji="0"/><hp:startNum pageStartsOn="BOTH" page="0" pic="0" tbl="0" equation="0"/><hp:visibility hideFirstHeader="0" hideFirstFooter="0" hideFirstMasterPage="0" border="SHOW_ALL" fill="SHOW_ALL" hideFirstPageNum="0" hideFirstEmptyLine="0" showLineNumber="0"/><hp:pagePr landscape="NARROWER" width="59528" height="84188" gutterType="LEFT_ONLY"><hp:pageMar header="4252" footer="4252" left="8504" right="8504" top="5668" bottom="4252" gutter="0"/></hp:pagePr><hp:footNotePr><hp:autoNumFormat type="DIGIT"/><hp:noteLine length="-1" type="SOLID" width="0.12mm" color="#000000"/><hp:noteSpacing aboveLine="850" belowLine="567" betweenNotes="283"/><hp:numbering type="CONTINUOUS" newNum="1"/><hp:placement place="EACH_COLUMN" beneathText="0"/></hp:footNotePr><hp:endNotePr><hp:autoNumFormat type="DIGIT"/><hp:noteLine length="14692" type="SOLID" width="0.12mm" color="#000000"/><hp:noteSpacing aboveLine="850" belowLine="567" betweenNotes="0"/><hp:numbering type="CONTINUOUS" newNum="1"/><hp:placement place="END_OF_DOCUMENT" beneathText="0"/></hp:endNotePr></hp:secPr><hp:t></hp:t></hp:run></hp:p></hs:sec>`);
+    zip.file('Contents/section0.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes" ?><hs:sec xmlns:ha="http://www.hancom.co.kr/hwpml/2011/app" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph" xmlns:hp10="http://www.hancom.co.kr/hwpml/2016/paragraph" xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core" xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head" xmlns:hhs="http://www.hancom.co.kr/hwpml/2011/history" xmlns:hm="http://www.hancom.co.kr/hwpml/2011/master-page" xmlns:hpf="http://www.hancom.co.kr/schema/2011/hpf" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:opf="http://www.idpf.org/2007/opf/" xmlns:ooxmlchart="http://www.hancom.co.kr/hwpml/2016/ooxmlchart" xmlns:hwpunitchar="http://www.hancom.co.kr/hwpml/2016/HwpUnitChar" xmlns:epub="http://www.idpf.org/2007/ops" xmlns:config="urn:oasis:names:tc:opendocument:xmlns:config:1.0"><hp:p id="0" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="0"><hp:secPr id="" textDirection="HORIZONTAL" spaceColumns="1134" tabStop="8000" tabStopVal="4000" tabStopUnit="HWPUNIT" outlineShapeIDRef="1" memoShapeIDRef="0" textVerticalWidthHead="0" masterPageCnt="0"><hp:grid lineGrid="0" charGrid="0" wongoji="0"/><hp:startNum pageStartsOn="BOTH" page="0" pic="0" tbl="0" equation="0"/><hp:visibility hideFirstHeader="0" hideFirstFooter="0" hideFirstMasterPage="0" border="SHOW_ALL" fill="SHOW_ALL" hideFirstPageNum="0" hideFirstEmptyLine="0" showLineNumber="0"/><hp:pagePr landscape="0" width="59528" height="84188" gutterType="LEFT_ONLY"><hp:pageMar header="4252" footer="4252" left="8504" right="8504" top="5668" bottom="4252" gutter="0"/></hp:pagePr><hp:footNotePr><hp:autoNumFormat type="DIGIT"/><hp:noteLine length="-1" type="SOLID" width="0.12mm" color="#000000"/><hp:noteSpacing aboveLine="850" belowLine="567" betweenNotes="283"/><hp:numbering type="CONTINUOUS" newNum="1"/><hp:placement place="EACH_COLUMN" beneathText="0"/></hp:footNotePr><hp:endNotePr><hp:autoNumFormat type="DIGIT"/><hp:noteLine length="14692" type="SOLID" width="0.12mm" color="#000000"/><hp:noteSpacing aboveLine="850" belowLine="567" betweenNotes="0"/><hp:numbering type="CONTINUOUS" newNum="1"/><hp:placement place="END_OF_DOCUMENT" beneathText="0"/></hp:endNotePr></hp:secPr><hp:t></hp:t></hp:run></hp:p></hs:sec>`);
 
     // Create empty BinData folder
     zip.folder('BinData');
@@ -508,13 +509,23 @@ export class HwpxDocument {
     if (!section) return -1;
 
     this.saveState();
+    const paragraphId = Math.random().toString(36).substring(2, 11);
     const newParagraph: HwpxParagraph = {
-      id: Math.random().toString(36).substring(2, 11),
+      id: paragraphId,
       runs: [{ text }],
     };
 
     const newElement: SectionElement = { type: 'paragraph', data: newParagraph };
     section.elements.splice(afterElementIndex + 1, 0, newElement);
+
+    // Add to pending list for XML sync
+    this._pendingParagraphInserts.push({
+      sectionIndex,
+      afterElementIndex,
+      paragraphId,
+      text,
+    });
+
     this.markModified();
     this.invalidateReadingCache();
     return afterElementIndex + 1;
@@ -697,6 +708,195 @@ export class HwpxDocument {
   }
 
   // ============================================================
+  // Font Size Lookup (폰트 크기 조회)
+  // ============================================================
+
+  /**
+   * Load character property cache from header.xml.
+   * Maps charPr id to font size in pt.
+   */
+  private async loadCharPrCache(): Promise<void> {
+    if (this._charPrCache !== null || !this._zip) return;
+
+    this._charPrCache = new Map<number, number>();
+
+    const headerPath = 'Contents/header.xml';
+    const headerXml = await this._zip.file(headerPath)?.async('string');
+    if (!headerXml) return;
+
+    // Parse charPr elements: <hh:charPr id="0" height="1000" ...>
+    // height is in HWPUNIT (pt × 100)
+    const charPrRegex = /<hh:charPr\s+[^>]*id="(\d+)"[^>]*height="(\d+)"/g;
+    let match;
+    while ((match = charPrRegex.exec(headerXml)) !== null) {
+      const id = parseInt(match[1], 10);
+      const heightHwpUnit = parseInt(match[2], 10);
+      const fontSizePt = heightHwpUnit / 100;
+      this._charPrCache.set(id, fontSizePt);
+    }
+
+    // Also try charShape format: <hh:charShape id="0" height="1000" ...>
+    const charShapeRegex = /<hh:charShape\s+[^>]*id="(\d+)"[^>]*height="(\d+)"/g;
+    while ((match = charShapeRegex.exec(headerXml)) !== null) {
+      const id = parseInt(match[1], 10);
+      const heightHwpUnit = parseInt(match[2], 10);
+      const fontSizePt = heightHwpUnit / 100;
+      this._charPrCache.set(id, fontSizePt);
+    }
+  }
+
+  /**
+   * Get font size from charPr id.
+   * @param charPrId Character property ID
+   * @returns Font size in pt, or undefined if not found
+   */
+  async getFontSizeFromCharPrId(charPrId: number): Promise<number | undefined> {
+    await this.loadCharPrCache();
+    return this._charPrCache?.get(charPrId);
+  }
+
+  /**
+   * Get font size of a paragraph from XML.
+   * Reads charPrIDRef from the first run in the paragraph.
+   * @param sectionIndex Section index
+   * @param elementIndex Paragraph element index
+   * @returns Font size in pt, or undefined if not found
+   */
+  async getParagraphFontSize(sectionIndex: number, elementIndex: number): Promise<number | undefined> {
+    if (!this._zip) return undefined;
+
+    const sectionPath = `Contents/section${sectionIndex}.xml`;
+    const sectionXml = await this._zip.file(sectionPath)?.async('string');
+    if (!sectionXml) return undefined;
+
+    // Find all paragraphs in the section
+    const paragraphs = this.findAllElementsWithDepth(sectionXml, 'p');
+    const paraXml = paragraphs[elementIndex]?.xml;
+    if (!paraXml) return undefined;
+
+    // Extract charPrIDRef from first run
+    const runMatch = paraXml.match(/<(?:hp|hc|hs):run\s+[^>]*charPrIDRef="(\d+)"/);
+    if (!runMatch) return undefined;
+
+    const charPrId = parseInt(runMatch[1], 10);
+    return await this.getFontSizeFromCharPrId(charPrId);
+  }
+
+  /**
+   * Get font size of a paragraph in a table cell from XML.
+   * @param sectionIndex Section index
+   * @param tableIndex Table index within section
+   * @param row Row index (0-based)
+   * @param col Column index (0-based)
+   * @param paragraphIndex Paragraph index within cell (0-based)
+   * @returns Font size in pt, or undefined if not found
+   */
+  async getTableCellParagraphFontSize(
+    sectionIndex: number,
+    tableIndex: number,
+    row: number,
+    col: number,
+    paragraphIndex: number
+  ): Promise<number | undefined> {
+    if (!this._zip) return undefined;
+
+    const sectionPath = `Contents/section${sectionIndex}.xml`;
+    const sectionXml = await this._zip.file(sectionPath)?.async('string');
+    if (!sectionXml) return undefined;
+
+    // Find all tables
+    const tables = this.findAllTables(sectionXml);
+    const tableData = tables[tableIndex];
+    if (!tableData) return undefined;
+
+    // Find the specific cell
+    const rows = this.findAllElementsWithDepth(tableData.xml, 'tr');
+    const rowXml = rows[row]?.xml;
+    if (!rowXml) return undefined;
+
+    const cells = this.findAllElementsWithDepth(rowXml, 'tc');
+    const cellXml = cells[col]?.xml;
+    if (!cellXml) return undefined;
+
+    // Find paragraphs in the cell
+    const paragraphs = this.findAllElementsWithDepth(cellXml, 'p');
+    const paraXml = paragraphs[paragraphIndex]?.xml;
+    if (!paraXml) return undefined;
+
+    // Extract charPrIDRef from first run
+    const runMatch = paraXml.match(/<(?:hp|hc|hs):run\s+[^>]*charPrIDRef="(\d+)"/);
+    if (!runMatch) return undefined;
+
+    const charPrId = parseInt(runMatch[1], 10);
+    return await this.getFontSizeFromCharPrId(charPrId);
+  }
+
+  /**
+   * Automatically set hanging indent based on detected marker in paragraph text.
+   * Uses HangingIndentCalculator to detect markers like "○ ", "1. ", "가. " etc.
+   * @param sectionIndex Section index
+   * @param elementIndex Paragraph element index
+   * @param fontSize Font size in pt (if not provided, reads from document)
+   * @returns Calculated indent value in pt, or 0 if no marker detected
+   */
+  setAutoHangingIndent(sectionIndex: number, elementIndex: number, fontSize?: number): number {
+    const paragraph = this.findParagraphByPath(sectionIndex, elementIndex);
+    if (!paragraph) return 0;
+
+    // Get paragraph text
+    const text = paragraph.runs?.map(r => r.text || '').join('') || '';
+    if (!text) return 0;
+
+    // If fontSize not provided, use default (will be updated async if available)
+    const effectiveFontSize = fontSize ?? 10;
+
+    // Calculate indent using HangingIndentCalculator
+    const calculator = new HangingIndentCalculator();
+    const indentPt = calculator.calculateHangingIndent(text, effectiveFontSize);
+
+    if (indentPt > 0) {
+      this.setHangingIndent(sectionIndex, elementIndex, indentPt);
+    }
+
+    return indentPt;
+  }
+
+  /**
+   * Automatically set hanging indent with dynamic font size from document.
+   * Async version that reads actual font size from the document.
+   * @param sectionIndex Section index
+   * @param elementIndex Paragraph element index
+   * @param fallbackFontSize Fallback font size in pt if document font size not found (default: 10)
+   * @returns Calculated indent value in pt, or 0 if no marker detected
+   */
+  async setAutoHangingIndentAsync(
+    sectionIndex: number,
+    elementIndex: number,
+    fallbackFontSize: number = 10
+  ): Promise<number> {
+    const paragraph = this.findParagraphByPath(sectionIndex, elementIndex);
+    if (!paragraph) return 0;
+
+    // Get paragraph text
+    const text = paragraph.runs?.map(r => r.text || '').join('') || '';
+    if (!text) return 0;
+
+    // Try to get font size from document
+    const docFontSize = await this.getParagraphFontSize(sectionIndex, elementIndex);
+    const effectiveFontSize = docFontSize ?? fallbackFontSize;
+
+    // Calculate indent using HangingIndentCalculator
+    const calculator = new HangingIndentCalculator();
+    const indentPt = calculator.calculateHangingIndent(text, effectiveFontSize);
+
+    if (indentPt > 0) {
+      this.setHangingIndent(sectionIndex, elementIndex, indentPt);
+    }
+
+    return indentPt;
+  }
+
+  // ============================================================
   // Table Cell Hanging Indent (테이블 셀 내어쓰기)
   // ============================================================
 
@@ -862,6 +1062,102 @@ export class HwpxDocument {
 
     this.markModified();
     return true;
+  }
+
+  /**
+   * Automatically set hanging indent on a paragraph inside a table cell
+   * based on detected marker in the text.
+   * @param sectionIndex Section index
+   * @param tableIndex Table index within section
+   * @param row Row index (0-based)
+   * @param col Column index (0-based)
+   * @param paragraphIndex Paragraph index within cell (0-based)
+   * @param fontSize Font size in pt (default: 10)
+   * @returns Calculated indent value in pt, or 0 if no marker detected
+   */
+  setTableCellAutoHangingIndent(
+    sectionIndex: number,
+    tableIndex: number,
+    row: number,
+    col: number,
+    paragraphIndex: number,
+    fontSize?: number
+  ): number {
+    const table = this.findTable(sectionIndex, tableIndex);
+    if (!table) return 0;
+
+    const cell = table.rows[row]?.cells[col];
+    if (!cell) return 0;
+
+    const paragraph = cell.paragraphs[paragraphIndex];
+    if (!paragraph) return 0;
+
+    // Get paragraph text
+    const text = paragraph.runs?.map(r => r.text || '').join('') || '';
+    if (!text) return 0;
+
+    // If fontSize not provided, use default
+    const effectiveFontSize = fontSize ?? 10;
+
+    // Calculate indent using HangingIndentCalculator
+    const calculator = new HangingIndentCalculator();
+    const indentPt = calculator.calculateHangingIndent(text, effectiveFontSize);
+
+    if (indentPt > 0) {
+      this.setTableCellHangingIndent(sectionIndex, tableIndex, row, col, paragraphIndex, indentPt);
+    }
+
+    return indentPt;
+  }
+
+  /**
+   * Automatically set hanging indent on a paragraph inside a table cell
+   * with dynamic font size from document.
+   * Async version that reads actual font size from the document.
+   * @param sectionIndex Section index
+   * @param tableIndex Table index within section
+   * @param row Row index (0-based)
+   * @param col Column index (0-based)
+   * @param paragraphIndex Paragraph index within cell (0-based)
+   * @param fallbackFontSize Fallback font size in pt if document font size not found (default: 10)
+   * @returns Calculated indent value in pt, or 0 if no marker detected
+   */
+  async setTableCellAutoHangingIndentAsync(
+    sectionIndex: number,
+    tableIndex: number,
+    row: number,
+    col: number,
+    paragraphIndex: number,
+    fallbackFontSize: number = 10
+  ): Promise<number> {
+    const table = this.findTable(sectionIndex, tableIndex);
+    if (!table) return 0;
+
+    const cell = table.rows[row]?.cells[col];
+    if (!cell) return 0;
+
+    const paragraph = cell.paragraphs[paragraphIndex];
+    if (!paragraph) return 0;
+
+    // Get paragraph text
+    const text = paragraph.runs?.map(r => r.text || '').join('') || '';
+    if (!text) return 0;
+
+    // Try to get font size from document
+    const docFontSize = await this.getTableCellParagraphFontSize(
+      sectionIndex, tableIndex, row, col, paragraphIndex
+    );
+    const effectiveFontSize = docFontSize ?? fallbackFontSize;
+
+    // Calculate indent using HangingIndentCalculator
+    const calculator = new HangingIndentCalculator();
+    const indentPt = calculator.calculateHangingIndent(text, effectiveFontSize);
+
+    if (indentPt > 0) {
+      this.setTableCellHangingIndent(sectionIndex, tableIndex, row, col, paragraphIndex, indentPt);
+    }
+
+    return indentPt;
   }
 
   // ============================================================
@@ -1999,6 +2295,166 @@ export class HwpxDocument {
     this.markModified();
     return true;
   }
+
+  // ============================================================
+  // Table/Image Move Operations (XML-based)
+  // ============================================================
+
+  /**
+   * Move a table from one location to another within the document.
+   * Uses XML-based approach for accurate preservation of table structure.
+   */
+  moveTable(
+    sectionIndex: number,
+    tableIndex: number,
+    targetSectionIndex: number,
+    targetAfterIndex: number
+  ): { success: boolean; error?: string } {
+    // Validate source section
+    if (!this._content.sections[sectionIndex]) {
+      return { success: false, error: `Invalid source section index: ${sectionIndex}` };
+    }
+
+    // Validate target section
+    if (!this._content.sections[targetSectionIndex]) {
+      return { success: false, error: `Invalid target section index: ${targetSectionIndex}` };
+    }
+
+    // Table index validation will be done during XML processing
+    // since we need to read the actual XML to count tables
+
+    this.saveState();
+
+    // Add to pending moves for XML processing during save
+    if (!this._pendingTableMoves) {
+      this._pendingTableMoves = [];
+    }
+
+    this._pendingTableMoves.push({
+      type: 'move',
+      sourceSectionIndex: sectionIndex,
+      sourceTableIndex: tableIndex,
+      targetSectionIndex,
+      targetAfterIndex,
+    });
+
+    this.markModified();
+    return { success: true };
+  }
+
+  /**
+   * Copy a table to another location (preserving original).
+   * Generates new IDs for the copied table.
+   */
+  copyTable(
+    sectionIndex: number,
+    tableIndex: number,
+    targetSectionIndex: number,
+    targetAfterIndex: number
+  ): { success: boolean; error?: string } {
+    // Validate source section
+    if (!this._content.sections[sectionIndex]) {
+      return { success: false, error: `Invalid source section index: ${sectionIndex}` };
+    }
+
+    // Validate target section
+    if (!this._content.sections[targetSectionIndex]) {
+      return { success: false, error: `Invalid target section index: ${targetSectionIndex}` };
+    }
+
+    // Table index validation will be done during XML processing
+
+    this.saveState();
+
+    // Add to pending copies for XML processing during save
+    if (!this._pendingTableMoves) {
+      this._pendingTableMoves = [];
+    }
+
+    this._pendingTableMoves.push({
+      type: 'copy',
+      sourceSectionIndex: sectionIndex,
+      sourceTableIndex: tableIndex,
+      targetSectionIndex,
+      targetAfterIndex,
+    });
+
+    this.markModified();
+    return { success: true };
+  }
+
+  /**
+   * Validate XML tag balance for specified tags.
+   * Returns balanced status and any mismatches found.
+   */
+  validateTagBalance(xml: string): {
+    balanced: boolean;
+    mismatches: Array<{ tag: string; opens: number; closes: number }>;
+  } {
+    const tagsToCheck = [
+      'hp:tbl', 'hp:tr', 'hp:tc',
+      'hp:p', 'hp:run', 'hp:t',
+      'hp:pic', 'hp:subList',
+      'hs:sec'
+    ];
+
+    const mismatches: Array<{ tag: string; opens: number; closes: number }> = [];
+
+    for (const tag of tagsToCheck) {
+      // Count opening tags (including those that might be self-closing)
+      const allOpenRegex = new RegExp(`<${tag}(?:\\s[^>]*)?>`, 'g');
+      // Count self-closing tags
+      const selfCloseRegex = new RegExp(`<${tag}[^>]*/>`, 'g');
+      // Count closing tags
+      const closeRegex = new RegExp(`</${tag}>`, 'g');
+
+      const allOpens = (xml.match(allOpenRegex) || []).length;
+      const selfCloses = (xml.match(selfCloseRegex) || []).length;
+      const closes = (xml.match(closeRegex) || []).length;
+
+      // Real opens = all opens - self-closing tags
+      const opens = allOpens - selfCloses;
+
+      if (opens !== closes) {
+        mismatches.push({ tag, opens, closes });
+      }
+    }
+
+    return {
+      balanced: mismatches.length === 0,
+      mismatches,
+    };
+  }
+
+  /**
+   * Validate XML text content is properly escaped.
+   */
+  validateXmlEscaping(xml: string): { valid: boolean; issues?: string[] } {
+    const issues: string[] = [];
+
+    // Check for unescaped & (but not &amp;, &lt;, &gt;, &quot;, &apos;, or numeric entities)
+    const unescapedAmpersand = /&(?!amp;|lt;|gt;|quot;|apos;|#\d+;|#x[0-9a-fA-F]+;)/g;
+    if (unescapedAmpersand.test(xml)) {
+      issues.push('Found unescaped ampersand (&)');
+    }
+
+    // Check for unescaped < or > in text content is complex
+    // For now, assume escapeXml function handles this correctly
+
+    return {
+      valid: issues.length === 0,
+      issues: issues.length > 0 ? issues : undefined,
+    };
+  }
+
+  // Private: Pending table move/copy operations
+  private _pendingTableMoves: Array<{
+    type: 'move' | 'copy';
+    sourceSectionIndex: number;
+    sourceTableIndex: number;
+    targetSectionIndex: number;
+    targetAfterIndex: number;
+  }> = [];
 
   // ============================================================
   // Images
@@ -3266,7 +3722,20 @@ export class HwpxDocument {
   async save(): Promise<Buffer> {
     if (!this._zip) throw new Error('Cannot save HWP files');
     await this.syncContentToZip();
-    return await this._zip.generateAsync({ type: 'nodebuffer' });
+
+    // Ensure mimetype file is not compressed (required by HWPX format)
+    // HWPX follows ODF container format which requires uncompressed mimetype
+    const mimetypeFile = this._zip.file('mimetype');
+    if (mimetypeFile) {
+      const mimetypeContent = await mimetypeFile.async('string');
+      this._zip.file('mimetype', mimetypeContent, { compression: 'STORE' });
+    }
+
+    return await this._zip.generateAsync({
+      type: 'nodebuffer',
+      compression: 'DEFLATE',
+      compressionOptions: { level: 6 }
+    });
   }
 
   private async syncContentToZip(): Promise<void> {
@@ -3276,6 +3745,18 @@ export class HwpxDocument {
     if (this._pendingTableInserts && this._pendingTableInserts.length > 0) {
       await this.applyTableInsertsToXml();
       this._pendingTableInserts = [];
+    }
+
+    // Apply table moves/copies
+    if (this._pendingTableMoves && this._pendingTableMoves.length > 0) {
+      await this.applyTableMovesToXml();
+      this._pendingTableMoves = [];
+    }
+
+    // Apply paragraph inserts
+    if (this._pendingParagraphInserts && this._pendingParagraphInserts.length > 0) {
+      await this.applyParagraphInsertsToXml();
+      this._pendingParagraphInserts = [];
     }
 
     // Apply table cell updates (preserves original XML structure)
@@ -3672,6 +4153,293 @@ export class HwpxDocument {
           maxId++;
 
           xml = xml.substring(0, insertPosition) + wrapperXml + xml.substring(insertPosition);
+        }
+      }
+
+      this._zip.file(sectionPath, xml);
+    }
+  }
+
+  /**
+   * Apply table move/copy operations to XML.
+   * Extracts table XML from source and inserts at target position.
+   */
+  private async applyTableMovesToXml(): Promise<void> {
+    if (!this._zip || !this._pendingTableMoves || this._pendingTableMoves.length === 0) return;
+
+    // Process each move/copy operation
+    for (const op of this._pendingTableMoves) {
+      const sourceFile = `Contents/section${op.sourceSectionIndex}.xml`;
+      const targetFile = `Contents/section${op.targetSectionIndex}.xml`;
+
+      // Read source section XML
+      let sourceXml = await this._zip.file(sourceFile)?.async('string');
+      if (!sourceXml) {
+        console.error(`[HwpxDocument] applyTableMovesToXml: Source section ${op.sourceSectionIndex} not found`);
+        continue;
+      }
+
+      // Find all tables in source section
+      const tables = this.findAllTables(sourceXml);
+      if (op.sourceTableIndex >= tables.length) {
+        console.error(`[HwpxDocument] applyTableMovesToXml: Table index ${op.sourceTableIndex} out of range (${tables.length} tables)`);
+        continue;
+      }
+
+      const tableData = tables[op.sourceTableIndex];
+      let tableXml = tableData.xml;
+
+      // For copy operation, regenerate all IDs
+      if (op.type === 'copy') {
+        tableXml = this.regenerateIdsInXml(tableXml);
+      }
+
+      // Validate tag balance before proceeding
+      const balanceCheck = this.validateTagBalance(tableXml);
+      if (!balanceCheck.balanced) {
+        console.error(`[HwpxDocument] applyTableMovesToXml: Tag balance error in table XML:`, balanceCheck.mismatches);
+        continue;
+      }
+
+      // For move operation, remove from source
+      if (op.type === 'move') {
+        sourceXml = sourceXml.substring(0, tableData.startIndex) + sourceXml.substring(tableData.endIndex);
+        this._zip.file(sourceFile, sourceXml);
+      }
+
+      // Read target section XML (might be same as source after modification)
+      let targetXml = await this._zip.file(targetFile)?.async('string');
+      if (!targetXml) {
+        console.error(`[HwpxDocument] applyTableMovesToXml: Target section ${op.targetSectionIndex} not found`);
+        continue;
+      }
+
+      // Find insertion point in target section
+      // We need to find the element at targetAfterIndex and insert after it
+      const insertPosition = this.findInsertPositionForElement(targetXml, op.targetAfterIndex);
+      if (insertPosition < 0) {
+        // Insert at the end of the section (before </hs:sec>)
+        const secEndMatch = targetXml.match(/<\/hs:sec>\s*$/);
+        if (secEndMatch && secEndMatch.index !== undefined) {
+          targetXml = targetXml.substring(0, secEndMatch.index) + '\n  ' + tableXml + '\n' + targetXml.substring(secEndMatch.index);
+        }
+      } else {
+        targetXml = targetXml.substring(0, insertPosition) + '\n  ' + tableXml + targetXml.substring(insertPosition);
+      }
+
+      // Validate final XML tag balance
+      const finalBalanceCheck = this.validateTagBalance(targetXml);
+      if (!finalBalanceCheck.balanced) {
+        console.error(`[HwpxDocument] applyTableMovesToXml: Final tag balance error:`, finalBalanceCheck.mismatches);
+        continue;
+      }
+
+      this._zip.file(targetFile, targetXml);
+    }
+  }
+
+  /**
+   * Regenerate all IDs in XML to avoid duplicates.
+   */
+  private regenerateIdsInXml(xml: string): string {
+    // Regex to match id="..." attributes
+    const idRegex = /id="([^"]+)"/g;
+    const idMap = new Map<string, string>();
+
+    // First pass: collect all IDs and generate new ones
+    let match;
+    while ((match = idRegex.exec(xml)) !== null) {
+      const oldId = match[1];
+      if (!idMap.has(oldId)) {
+        const newId = Math.random().toString(36).substring(2, 11);
+        idMap.set(oldId, newId);
+      }
+    }
+
+    // Second pass: replace all IDs
+    let result = xml;
+    for (const [oldId, newId] of idMap) {
+      result = result.replace(new RegExp(`id="${oldId}"`, 'g'), `id="${newId}"`);
+    }
+
+    return result;
+  }
+
+  /**
+   * Find the position to insert an element after a given element index.
+   * Returns the position after the closing tag of the element.
+   */
+  private findInsertPositionForElement(xml: string, afterIndex: number): number {
+    if (afterIndex < 0) {
+      // Insert at the beginning of section content (after opening <hs:sec...>)
+      const secOpenMatch = xml.match(/<hs:sec[^>]*>/);
+      if (secOpenMatch && secOpenMatch.index !== undefined) {
+        return secOpenMatch.index + secOpenMatch[0].length;
+      }
+      return -1;
+    }
+
+    // Find all root-level elements (paragraphs, tables)
+    const elements: Array<{ start: number; end: number }> = [];
+
+    // Find paragraphs (not inside subList)
+    const pRegex = /<hp:p[^>]*>[\s\S]*?<\/hp:p>/g;
+    let match;
+
+    // Find tables
+    const tables = this.findAllTables(xml);
+    for (const table of tables) {
+      elements.push({ start: table.startIndex, end: table.endIndex });
+    }
+
+    // Find root-level paragraphs (simplified approach)
+    pRegex.lastIndex = 0;
+    while ((match = pRegex.exec(xml)) !== null) {
+      const start = match.index;
+      const end = start + match[0].length;
+
+      // Check if this paragraph is inside a table (inside subList)
+      const beforeMatch = xml.substring(0, start);
+      const subListOpen = (beforeMatch.match(/<hp:subList[^>]*>/g) || []).length;
+      const subListClose = (beforeMatch.match(/<\/hp:subList>/g) || []).length;
+
+      if (subListOpen === subListClose) {
+        // This is a root-level paragraph
+        elements.push({ start, end });
+      }
+    }
+
+    // Sort elements by start position
+    elements.sort((a, b) => a.start - b.start);
+
+    if (afterIndex >= elements.length) {
+      // Insert at the end
+      return -1;
+    }
+
+    // Return position after the element at afterIndex
+    return elements[afterIndex].end;
+  }
+
+  /**
+   * Apply paragraph inserts to XML.
+   * Inserts new paragraphs at the specified positions.
+   */
+  private async applyParagraphInsertsToXml(): Promise<void> {
+    if (!this._zip) return;
+
+    // Group inserts by section
+    const insertsBySection = new Map<number, Array<{
+      afterElementIndex: number;
+      paragraphId: string;
+      text: string;
+    }>>();
+
+    for (const insert of this._pendingParagraphInserts) {
+      const sectionInserts = insertsBySection.get(insert.sectionIndex) || [];
+      sectionInserts.push({
+        afterElementIndex: insert.afterElementIndex,
+        paragraphId: insert.paragraphId,
+        text: insert.text,
+      });
+      insertsBySection.set(insert.sectionIndex, sectionInserts);
+    }
+
+    // Process each section
+    for (const [sectionIndex, inserts] of insertsBySection) {
+      const sectionPath = `Contents/section${sectionIndex}.xml`;
+      const file = this._zip.file(sectionPath);
+      if (!file) continue;
+
+      let xml = await file.async('string');
+
+      // Sort inserts by afterElementIndex in descending order to avoid index shifting
+      const sortedInserts = [...inserts].sort((a, b) => b.afterElementIndex - a.afterElementIndex);
+
+      for (const insert of sortedInserts) {
+        // Escape text for XML
+        const escapedText = this.escapeXml(insert.text);
+
+        // Build paragraph XML
+        const paragraphXml = `<hp:p id="${insert.paragraphId}" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="0"><hp:t>${escapedText}</hp:t></hp:run></hp:p>`;
+
+        // Find the position to insert
+        let insertPosition = -1;
+        let elementCount = -1;
+        let searchPos = 0;
+
+        // Find paragraphs and tables at root level
+        while (searchPos < xml.length) {
+          // Look for next <hp:p or <hp:tbl
+          const nextP = xml.indexOf('<hp:p ', searchPos);
+          const nextTbl = xml.indexOf('<hp:tbl ', searchPos);
+
+          let nextPos = -1;
+          let isTable = false;
+
+          if (nextP !== -1 && (nextTbl === -1 || nextP < nextTbl)) {
+            nextPos = nextP;
+            isTable = false;
+          } else if (nextTbl !== -1) {
+            nextPos = nextTbl;
+            isTable = true;
+          }
+
+          if (nextPos === -1) break;
+
+          // Check if this is inside a subList (nested)
+          const beforeText = xml.substring(Math.max(0, nextPos - 500), nextPos);
+          const subListOpen = beforeText.lastIndexOf('<hp:subList');
+          const subListClose = beforeText.lastIndexOf('</hp:subList>');
+          const isNested = subListOpen > subListClose;
+
+          if (!isNested) {
+            elementCount++;
+
+            // Find the end of this element
+            let endPos;
+            if (isTable) {
+              const tblEnd = xml.indexOf('</hp:tbl>', nextPos);
+              endPos = tblEnd + '</hp:tbl>'.length;
+            } else {
+              const pEnd = xml.indexOf('</hp:p>', nextPos);
+              endPos = pEnd + '</hp:p>'.length;
+            }
+
+            if (elementCount === insert.afterElementIndex) {
+              insertPosition = endPos;
+              break;
+            }
+
+            searchPos = endPos;
+          } else {
+            searchPos = nextPos + 10;
+          }
+        }
+
+        // If afterElementIndex is -1, insert after the first paragraph (which contains secPr)
+        // IMPORTANT: <hp:secPr> must remain in the first paragraph for the document to be valid
+        if (insert.afterElementIndex === -1) {
+          // Find the end of the first <hp:p> element (which contains <hp:secPr>)
+          const firstPStart = xml.indexOf('<hp:p');
+          if (firstPStart !== -1) {
+            const firstPEnd = xml.indexOf('</hp:p>', firstPStart);
+            if (firstPEnd !== -1) {
+              insertPosition = firstPEnd + '</hp:p>'.length;
+            }
+          }
+        }
+
+        // If position not found, insert at end of section (before </hs:sec>)
+        if (insertPosition === -1) {
+          const secEnd = xml.lastIndexOf('</hs:sec>');
+          if (secEnd !== -1) {
+            insertPosition = secEnd;
+          }
+        }
+
+        if (insertPosition !== -1) {
+          xml = xml.substring(0, insertPosition) + paragraphXml + xml.substring(insertPosition);
         }
       }
 
@@ -7207,6 +7975,334 @@ export class HwpxDocument {
     return { success: true, message: 'Section XML updated successfully. Save and reopen to refresh internal state.' };
   }
 
+  // ============================================================
+  // Consolidated Tools (통합 도구)
+  // 기존 114개 도구의 기능을 유지하면서 LLM이 쉽게 사용할 수 있는 통합 인터페이스
+  // ============================================================
+
+  /**
+   * 위치 찾기 통합 도구
+   * @param type 찾을 대상 유형: 'table' | 'paragraph' | 'insert_point'
+   * @param query 검색할 텍스트
+   * @returns 찾은 위치 정보 또는 null
+   */
+  findPosition(
+    type: 'table' | 'paragraph' | 'insert_point',
+    query: string
+  ): {
+    type: string;
+    sectionIndex: number;
+    elementIndex?: number;
+    tableIndex?: number;
+    paragraphIndex?: number;
+    foundIn?: 'paragraph' | 'table_cell';
+    tableInfo?: { tableIndex: number; row: number; col: number };
+  } | null {
+    switch (type) {
+      case 'table': {
+        // findTableByHeader 기능 사용
+        const tables = this.getTableMap();
+        for (let i = 0; i < tables.length; i++) {
+          const table = tables[i];
+          if (table.header?.toLowerCase().includes(query.toLowerCase())) {
+            return {
+              type: 'table',
+              sectionIndex: table.section_index,
+              tableIndex: table.table_index,
+            };
+          }
+          // 테이블 내용에서도 검색
+          if (table.first_row_preview?.some(cell => cell.toLowerCase().includes(query.toLowerCase()))) {
+            return {
+              type: 'table',
+              sectionIndex: table.section_index,
+              tableIndex: table.table_index,
+            };
+          }
+        }
+        return null;
+      }
+
+      case 'paragraph': {
+        // findParagraphByText 기능 사용
+        const sections = this._content.sections;
+        for (let si = 0; si < sections.length; si++) {
+          const section = sections[si];
+          let paragraphIndex = 0;
+          for (let ei = 0; ei < section.elements.length; ei++) {
+            const element = section.elements[ei];
+            if (element.type === 'paragraph') {
+              const para = element.data as HwpxParagraph;
+              const text = para.runs.map(r => r.text).join('');
+              if (text.toLowerCase().includes(query.toLowerCase())) {
+                return {
+                  type: 'paragraph',
+                  sectionIndex: si,
+                  elementIndex: ei,
+                  paragraphIndex,
+                };
+              }
+              paragraphIndex++;
+            }
+          }
+        }
+        return null;
+      }
+
+      case 'insert_point': {
+        // findInsertPositionAfterHeader 기능 사용
+        const result = this.findInsertPositionAfterHeader(query);
+        if (!result) return null;
+        return {
+          type: 'insert_point',
+          sectionIndex: result.section_index,
+          elementIndex: result.insert_after,
+          foundIn: result.found_in,
+          tableInfo: result.table_info ? {
+            tableIndex: result.table_info.table_index,
+            row: result.table_info.row,
+            col: result.table_info.col,
+          } : undefined,
+        };
+      }
+
+      default:
+        return null;
+    }
+  }
+
+  /**
+   * 테이블 조회 통합 도구
+   * @param options 조회 옵션
+   * @returns 테이블 정보
+   */
+  queryTable(options: {
+    mode: 'list' | 'full' | 'cell' | 'map' | 'summary';
+    tableIndex?: number;
+    row?: number;
+    col?: number;
+    sectionIndex?: number;
+  }): {
+    tables?: Array<{ index: number; rowCount: number; colCount: number; sectionIndex: number }>;
+    table?: HwpxTable | null;
+    cell?: { text: string; paragraphs: HwpxParagraph[] } | null;
+    map?: Array<{ index: number; header: string; sectionIndex: number; elementIndex: number; firstRowPreview: string[] }>;
+  } {
+    const sectionIndex = options.sectionIndex ?? 0;
+
+    switch (options.mode) {
+      case 'list': {
+        // getTables 기능
+        const result = this.getTables();
+        return {
+          tables: result.map(t => ({
+            index: t.index,
+            rowCount: t.rows,
+            colCount: t.cols,
+            sectionIndex: t.section,
+          })),
+        };
+      }
+
+      case 'full': {
+        // getTable 기능
+        if (options.tableIndex === undefined) return { table: null };
+        const table = this.findTable(sectionIndex, options.tableIndex);
+        return { table };
+      }
+
+      case 'cell': {
+        // getTableCell 기능
+        if (options.tableIndex === undefined || options.row === undefined || options.col === undefined) {
+          return { cell: null };
+        }
+        const cellResult = this.getTableCell(sectionIndex, options.tableIndex, options.row, options.col);
+        if (!cellResult) return { cell: null };
+        return {
+          cell: {
+            text: cellResult.text,
+            paragraphs: cellResult.cell.paragraphs,
+          },
+        };
+      }
+
+      case 'map': {
+        // getTableMap 기능
+        const tableMap = this.getTableMap();
+        return {
+          map: tableMap.map((t) => ({
+            index: t.table_index,
+            header: t.header || '',
+            sectionIndex: t.section_index,
+            elementIndex: 0, // Not available from getTableMap
+            firstRowPreview: t.first_row_preview || [],
+          })),
+        };
+      }
+
+      case 'summary': {
+        // getTablesSummary 기능
+        const tables = this.getTables();
+        return {
+          tables: tables.map(t => ({
+            index: t.index,
+            rowCount: t.rows,
+            colCount: t.cols,
+            sectionIndex: t.section,
+          })),
+        };
+      }
+
+      default:
+        return {};
+    }
+  }
+
+  /**
+   * 내용 수정 통합 도구
+   * @param options 수정 옵션
+   * @returns 성공 여부
+   */
+  modifyContent(options: {
+    type: 'cell' | 'replace' | 'paragraph';
+    // cell 옵션
+    tableIndex?: number;
+    row?: number;
+    col?: number;
+    // paragraph 옵션
+    sectionIndex?: number;
+    paragraphIndex?: number;
+    runIndex?: number;  // paragraph 타입에서 run 인덱스 (기본값 0)
+    // 공통
+    text?: string;
+    // replace 옵션
+    oldText?: string;
+    newText?: string;
+    replaceAll?: boolean;
+    caseSensitive?: boolean;
+  }): boolean {
+    switch (options.type) {
+      case 'cell': {
+        if (options.tableIndex === undefined || options.row === undefined ||
+            options.col === undefined || options.text === undefined) {
+          return false;
+        }
+        const sectionIndex = options.sectionIndex ?? 0;
+        return this.updateTableCell(sectionIndex, options.tableIndex, options.row, options.col, options.text);
+      }
+
+      case 'replace': {
+        if (!options.oldText || options.newText === undefined) return false;
+        const count = this.replaceText(options.oldText, options.newText, {
+          replaceAll: options.replaceAll ?? true,
+          caseSensitive: options.caseSensitive ?? false,
+        });
+        return count > 0;
+      }
+
+      case 'paragraph': {
+        if (options.sectionIndex === undefined || options.paragraphIndex === undefined ||
+            options.text === undefined) {
+          return false;
+        }
+        const runIndex = options.runIndex ?? 0;
+        this.updateParagraphText(options.sectionIndex, options.paragraphIndex, runIndex, options.text);
+        return true;
+      }
+
+      default:
+        return false;
+    }
+  }
+
+  /**
+   * 스타일 적용 통합 도구
+   * 기존 applyStyle(sectionIndex, paragraphIndex, styleId)과 구분하기 위해 이름 변경
+   * @param options 스타일 옵션
+   * @returns 성공 여부
+   */
+  applyConsolidatedStyle(options: {
+    target: 'paragraph' | 'table_cell' | 'text';
+    sectionIndex?: number;
+    paragraphIndex?: number;
+    tableIndex?: number;
+    row?: number;
+    col?: number;
+    runIndex?: number;
+    style: {
+      hangingIndent?: number;  // 0 = 제거, >0 = 설정
+      align?: 'left' | 'center' | 'right' | 'justify';
+      lineSpacing?: number;
+      bold?: boolean;
+      italic?: boolean;
+      fontSize?: number;
+      fontColor?: string;
+    };
+  }): boolean {
+    const sectionIndex = options.sectionIndex ?? 0;
+
+    switch (options.target) {
+      case 'paragraph': {
+        if (options.paragraphIndex === undefined) return false;
+
+        // 내어쓰기 처리
+        if (options.style.hangingIndent !== undefined) {
+          if (options.style.hangingIndent === 0) {
+            return this.removeHangingIndent(sectionIndex, options.paragraphIndex);
+          } else {
+            return this.setHangingIndent(sectionIndex, options.paragraphIndex, options.style.hangingIndent);
+          }
+        }
+
+        // 단락 스타일 처리
+        const paraStyle: Partial<ParagraphStyle> = {};
+        if (options.style.align) paraStyle.align = options.style.align;
+        if (options.style.lineSpacing) paraStyle.lineSpacing = options.style.lineSpacing;
+
+        if (Object.keys(paraStyle).length > 0) {
+          this.applyParagraphStyle(sectionIndex, options.paragraphIndex, paraStyle);
+        }
+        return true;
+      }
+
+      case 'table_cell': {
+        if (options.tableIndex === undefined || options.row === undefined ||
+            options.col === undefined) {
+          return false;
+        }
+        const paragraphIndex = options.paragraphIndex ?? 0;
+
+        // 내어쓰기 처리
+        if (options.style.hangingIndent !== undefined) {
+          if (options.style.hangingIndent === 0) {
+            return this.removeTableCellHangingIndent(sectionIndex, options.tableIndex, options.row, options.col, paragraphIndex);
+          } else {
+            return this.setTableCellHangingIndent(sectionIndex, options.tableIndex, options.row, options.col, paragraphIndex, options.style.hangingIndent);
+          }
+        }
+        return true;
+      }
+
+      case 'text': {
+        if (options.paragraphIndex === undefined) return false;
+
+        const charStyle: Partial<CharacterStyle> = {};
+        if (options.style.bold !== undefined) charStyle.bold = options.style.bold;
+        if (options.style.italic !== undefined) charStyle.italic = options.style.italic;
+        if (options.style.fontSize !== undefined) charStyle.fontSize = options.style.fontSize;
+        if (options.style.fontColor !== undefined) charStyle.fontColor = options.style.fontColor;
+
+        if (Object.keys(charStyle).length > 0) {
+          this.applyCharacterStyle(sectionIndex, options.paragraphIndex, options.runIndex ?? 0, charStyle);
+        }
+        return true;
+      }
+
+      default:
+        return false;
+    }
+  }
+
   // ===== Agentic Document Reading System =====
 
   // In-memory position index storage
@@ -7776,7 +8872,7 @@ export class HwpxDocument {
 
       // Create new paraPr with hanging indent
       newParaPrXml += `\n      <hh:paraPr id="${newId}" tabPrIDRef="0">
-        <hh:align horizontal="JUSTIFY" vertical="BASELINE"/>
+        <hh:align horizontal="LEFT" vertical="BASELINE"/>
         <hh:margin>
           <hc:intent value="${intentValue}" unit="HWPUNIT"/>
           <hc:left value="${leftValue}" unit="HWPUNIT"/>
@@ -7818,44 +8914,32 @@ export class HwpxDocument {
       let sectionXml = await this._zip.file(sectionPath)?.async('string');
       if (!sectionXml) continue;
 
-      // Build map of elementIndex -> targetParaPrId (last change wins for duplicates)
-      const elementIndexToParaPrId = new Map<number, number>();
+      // Build map of paragraphId -> targetParaPrId (last change wins for duplicates)
+      // Use paragraphId instead of elementIndex to correctly match paragraphs after insertion
+      const paragraphIdToParaPrId = new Map<string, number>();
       for (const change of changes) {
         const targetParaPrId = change.indentPt === 0
           ? 0
           : (indentToParaPrId.get(change.indentPt) || 0);
-        elementIndexToParaPrId.set(change.elementIndex, targetParaPrId);
+        paragraphIdToParaPrId.set(change.paragraphId, targetParaPrId);
       }
 
-      // Find all table positions to exclude paragraphs inside tables
-      const tablePositions: Array<{ start: number; end: number }> = [];
-      const tblRegex = /<hp:tbl\b[^>]*>[\s\S]*?<\/hp:tbl>/g;
-      let tblMatch;
-      while ((tblMatch = tblRegex.exec(sectionXml)) !== null) {
-        tablePositions.push({ start: tblMatch.index, end: tblMatch.index + tblMatch[0].length });
-      }
-
-      // Process all paragraphs in a single pass
+      // Process all paragraphs by matching their id attribute
       const pRegex = /<hp:p\b([^>]*)>/g;
       let pMatch: RegExpExecArray | null;
       let newSectionXml = '';
       let lastIndex = 0;
-      let paragraphCount = 0;
 
       while ((pMatch = pRegex.exec(sectionXml)) !== null) {
-        const isInTable = tablePositions.some(
-          pos => pMatch!.index >= pos.start && pMatch!.index < pos.end
-        );
+        const attrs = pMatch[1];
+        // Extract paragraph id from attributes
+        const idMatch = attrs.match(/\bid="([^"]+)"/);
+        const paragraphId = idMatch ? idMatch[1] : null;
 
-        if (isInTable) {
-          continue; // Skip paragraphs inside tables
-        }
-
-        // Check if this paragraph needs updating
-        if (elementIndexToParaPrId.has(paragraphCount)) {
-          const targetParaPrId = elementIndexToParaPrId.get(paragraphCount)!;
+        // Check if this paragraph needs updating by paragraphId
+        if (paragraphId && paragraphIdToParaPrId.has(paragraphId)) {
+          const targetParaPrId = paragraphIdToParaPrId.get(paragraphId)!;
           newSectionXml += sectionXml.slice(lastIndex, pMatch.index);
-          const attrs = pMatch[1];
           const updatedAttrs = attrs.replace(
             /paraPrIDRef="\d+"/,
             `paraPrIDRef="${targetParaPrId}"`
@@ -7863,8 +8947,6 @@ export class HwpxDocument {
           newSectionXml += `<hp:p${updatedAttrs}>`;
           lastIndex = pMatch.index + pMatch[0].length;
         }
-
-        paragraphCount++;
       }
 
       // Only update if we made changes
@@ -7921,7 +9003,7 @@ export class HwpxDocument {
 
       // Create new paraPr with hanging indent
       newParaPrXml += `\n      <hh:paraPr id="${newId}" tabPrIDRef="0">
-        <hh:align horizontal="JUSTIFY" vertical="BASELINE"/>
+        <hh:align horizontal="LEFT" vertical="BASELINE"/>
         <hh:margin>
           <hc:intent value="${intentValue}" unit="HWPUNIT"/>
           <hc:left value="${leftValue}" unit="HWPUNIT"/>
