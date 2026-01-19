@@ -24,7 +24,16 @@ test_*.hwpx
 
 # IDE/Editor
 .mcp.json
+.vscode/settings.json
 
 # OS
 .DS_Store
 Thumbs.db
+
+# Claude Code
+.claude/
+.chat-history.md
+
+# pnpm
+pnpm-lock.yaml
+mcp-server/pnpm-lock.yaml
