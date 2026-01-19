@@ -310,5 +310,79 @@ describe('HwpxDocument - Table Cell Hanging Indent (테이블 셀 내어쓰기)'
       expect(headerXml).toContain('intent value="-1000"'); // 10pt
       expect(headerXml).toContain('intent value="-2000"'); // 20pt
     });
+
+    it('should use last value when same cell paragraph is changed multiple times', async () => {
+      const doc = await createTestFileWithTable();
+
+      // 같은 셀 단락에 여러 번 내어쓰기 변경
+      doc.setTableCellHangingIndent(0, 0, 0, 0, 0, 10);
+      doc.setTableCellHangingIndent(0, 0, 0, 0, 0, 15);
+      doc.setTableCellHangingIndent(0, 0, 0, 0, 0, 20); // 최종 값
+
+      // 메모리 상태 확인
+      expect(doc.getTableCellHangingIndent(0, 0, 0, 0, 0)).toBe(20);
+
+      // 저장
+      const savedBuffer = await doc.save();
+      const savedZip = await JSZip.loadAsync(savedBuffer);
+      const headerXml = await savedZip.file('Contents/header.xml')?.async('string');
+
+      // 최종 값인 20pt만 저장되어야 함
+      expect(headerXml).toContain('intent value="-2000"');
+      // 중간 값들은 저장되지 않아야 함 (최적화)
+      expect(headerXml).not.toContain('intent value="-1000"');
+      expect(headerXml).not.toContain('intent value="-1500"');
+    });
+  });
+
+  describe('edge cases (경계 케이스)', () => {
+    it('should reject invalid section index', async () => {
+      const doc = await createTestFileWithTable();
+
+      const result = doc.setTableCellHangingIndent(99, 0, 0, 0, 0, 15);
+
+      expect(result).toBe(false);
+    });
+
+    it('should persist removal after save', async () => {
+      const doc = await createTestFileWithTable();
+
+      // 내어쓰기 설정 후 제거
+      doc.setTableCellHangingIndent(0, 0, 0, 0, 0, 15);
+      doc.removeTableCellHangingIndent(0, 0, 0, 0, 0);
+
+      // 저장
+      const savedPath = path.join(tempDir, 'saved-removed-indent.hwpx');
+      const savedBuffer = await doc.save();
+      fs.writeFileSync(savedPath, savedBuffer);
+
+      // 저장된 파일의 section XML 확인 - paraPrIDRef가 0이어야 함
+      const savedData = fs.readFileSync(savedPath);
+      const savedZip = await JSZip.loadAsync(savedData);
+      const sectionXml = await savedZip.file('Contents/section0.xml')?.async('string');
+
+      // 테이블 내 첫 번째 셀의 첫 번째 단락(id="p1")의 paraPrIDRef가 0이어야 함
+      expect(sectionXml).toMatch(/<hp:p[^>]*id="p1"[^>]*paraPrIDRef="0"/);
+    });
+
+    it('should handle multiple paragraphs in same cell independently', async () => {
+      const doc = await createTestFileWithTable();
+
+      // 같은 셀의 다른 단락에 다른 내어쓰기
+      doc.setTableCellHangingIndent(0, 0, 0, 0, 0, 10); // 첫 번째 단락
+      doc.setTableCellHangingIndent(0, 0, 0, 0, 1, 20); // 두 번째 단락
+
+      expect(doc.getTableCellHangingIndent(0, 0, 0, 0, 0)).toBe(10);
+      expect(doc.getTableCellHangingIndent(0, 0, 0, 0, 1)).toBe(20);
+
+      // 저장
+      const savedBuffer = await doc.save();
+      const savedZip = await JSZip.loadAsync(savedBuffer);
+      const headerXml = await savedZip.file('Contents/header.xml')?.async('string');
+
+      // 두 개의 다른 paraPr이 생성되어야 함
+      expect(headerXml).toContain('intent value="-1000"');
+      expect(headerXml).toContain('intent value="-2000"');
+    });
   });
 });
