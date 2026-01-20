@@ -4099,7 +4099,7 @@ export class HwpxDocument {
         let elementCount = -1;
         let searchPos = 0;
 
-        // Find paragraphs and tables at root level
+        // Find paragraphs and tables at root level using balanced bracket matching
         while (searchPos < xml.length) {
           // Look for next <hp:p or <hp:tbl
           const nextP = xml.indexOf('<hp:p ', searchPos);
@@ -4127,14 +4127,51 @@ export class HwpxDocument {
           if (!isNested) {
             elementCount++;
 
-            // Find the end of this element
-            let endPos;
+            // Find the end of this element using balanced bracket matching
+            let endPos = -1;
             if (isTable) {
-              const tblEnd = xml.indexOf('</hp:tbl>', nextPos);
-              endPos = tblEnd + '</hp:tbl>'.length;
+              // Use balanced bracket matching for tables (handles nested tables)
+              let depth = 1;
+              let pos = nextPos + 1;
+              while (depth > 0 && pos < xml.length) {
+                const nextOpen = xml.indexOf('<hp:tbl', pos);
+                const nextClose = xml.indexOf('</hp:tbl>', pos);
+                if (nextClose === -1) break;
+                if (nextOpen !== -1 && nextOpen < nextClose) {
+                  depth++;
+                  pos = nextOpen + 1;
+                } else {
+                  depth--;
+                  if (depth === 0) {
+                    endPos = nextClose + '</hp:tbl>'.length;
+                  }
+                  pos = nextClose + 1;
+                }
+              }
             } else {
-              const pEnd = xml.indexOf('</hp:p>', nextPos);
-              endPos = pEnd + '</hp:p>'.length;
+              // Use balanced bracket matching for paragraphs (handles nested <hp:p>)
+              let depth = 1;
+              let pos = nextPos + 1;
+              while (depth > 0 && pos < xml.length) {
+                const nextOpen = xml.indexOf('<hp:p ', pos);
+                const nextClose = xml.indexOf('</hp:p>', pos);
+                if (nextClose === -1) break;
+                if (nextOpen !== -1 && nextOpen < nextClose) {
+                  depth++;
+                  pos = nextOpen + 1;
+                } else {
+                  depth--;
+                  if (depth === 0) {
+                    endPos = nextClose + '</hp:p>'.length;
+                  }
+                  pos = nextClose + 1;
+                }
+              }
+            }
+
+            if (endPos === -1) {
+              searchPos = nextPos + 10;
+              continue;
             }
 
             if (elementCount === insert.afterElementIndex) {
@@ -4377,7 +4414,7 @@ export class HwpxDocument {
         let elementCount = -1;
         let searchPos = 0;
 
-        // Find paragraphs and tables at root level
+        // Find paragraphs and tables at root level using balanced bracket matching
         while (searchPos < xml.length) {
           // Look for next <hp:p or <hp:tbl
           const nextP = xml.indexOf('<hp:p ', searchPos);
@@ -4405,14 +4442,51 @@ export class HwpxDocument {
           if (!isNested) {
             elementCount++;
 
-            // Find the end of this element
-            let endPos;
+            // Find the end of this element using balanced bracket matching
+            let endPos = -1;
             if (isTable) {
-              const tblEnd = xml.indexOf('</hp:tbl>', nextPos);
-              endPos = tblEnd + '</hp:tbl>'.length;
+              // Use balanced bracket matching for tables (handles nested tables)
+              let depth = 1;
+              let pos = nextPos + 1;
+              while (depth > 0 && pos < xml.length) {
+                const nextOpen = xml.indexOf('<hp:tbl', pos);
+                const nextClose = xml.indexOf('</hp:tbl>', pos);
+                if (nextClose === -1) break;
+                if (nextOpen !== -1 && nextOpen < nextClose) {
+                  depth++;
+                  pos = nextOpen + 1;
+                } else {
+                  depth--;
+                  if (depth === 0) {
+                    endPos = nextClose + '</hp:tbl>'.length;
+                  }
+                  pos = nextClose + 1;
+                }
+              }
             } else {
-              const pEnd = xml.indexOf('</hp:p>', nextPos);
-              endPos = pEnd + '</hp:p>'.length;
+              // Use balanced bracket matching for paragraphs (handles nested <hp:p>)
+              let depth = 1;
+              let pos = nextPos + 1;
+              while (depth > 0 && pos < xml.length) {
+                const nextOpen = xml.indexOf('<hp:p ', pos);
+                const nextClose = xml.indexOf('</hp:p>', pos);
+                if (nextClose === -1) break;
+                if (nextOpen !== -1 && nextOpen < nextClose) {
+                  depth++;
+                  pos = nextOpen + 1;
+                } else {
+                  depth--;
+                  if (depth === 0) {
+                    endPos = nextClose + '</hp:p>'.length;
+                  }
+                  pos = nextClose + 1;
+                }
+              }
+            }
+
+            if (endPos === -1) {
+              searchPos = nextPos + 10;
+              continue;
             }
 
             if (elementCount === insert.afterElementIndex) {
