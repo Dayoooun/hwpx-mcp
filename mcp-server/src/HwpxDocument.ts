@@ -278,7 +278,7 @@ export class HwpxDocument {
         <hh:font id="0" face="함초롬바탕" type="TTF"/>
       </hh:fontface>
     </hh:fontfaces>
-    <hh:borderFills itemCnt="1">
+    <hh:borderFills itemCnt="2">
       <hh:borderFill id="1" threeD="0" shadow="0" centerLine="NONE" breakCellSeparateLine="0">
         <hh:slash type="NONE"/>
         <hh:backSlash type="NONE"/>
@@ -287,6 +287,15 @@ export class HwpxDocument {
         <hh:topBorder type="NONE" width="0.1mm" color="#000000"/>
         <hh:bottomBorder type="NONE" width="0.1mm" color="#000000"/>
         <hh:diagonal type="NONE" width="0.1mm" color="#000000"/>
+      </hh:borderFill>
+      <hh:borderFill id="2" threeD="0" shadow="0" centerLine="NONE" breakCellSeparateLine="0">
+        <hh:slash type="NONE"/>
+        <hh:backSlash type="NONE"/>
+        <hh:leftBorder type="SOLID" width="0.12mm" color="#000000"/>
+        <hh:rightBorder type="SOLID" width="0.12mm" color="#000000"/>
+        <hh:topBorder type="SOLID" width="0.12mm" color="#000000"/>
+        <hh:bottomBorder type="SOLID" width="0.12mm" color="#000000"/>
+        <hh:diagonal type="NONE" width="0.12mm" color="#000000"/>
       </hh:borderFill>
     </hh:borderFills>
     <hh:charProperties itemCnt="1">
@@ -4068,7 +4077,7 @@ export class HwpxDocument {
         const tableHeight = rowHeight * insert.rows;
 
         // Build table XML
-        let tableXml = `<hp:tbl id="${tableId}" zOrder="0" numberingType="TABLE" textWrap="TOP_AND_BOTTOM" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" pageBreak="CELL" repeatHeader="0" rowCnt="${insert.rows}" colCnt="${insert.cols}" cellSpacing="0" borderFillIDRef="1" noAdjust="0">`;
+        let tableXml = `<hp:tbl id="${tableId}" zOrder="0" numberingType="TABLE" textWrap="TOP_AND_BOTTOM" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" pageBreak="CELL" repeatHeader="0" rowCnt="${insert.rows}" colCnt="${insert.cols}" cellSpacing="0" borderFillIDRef="2" noAdjust="0">`;
         tableXml += `<hp:sz width="${insert.width}" widthRelTo="ABSOLUTE" height="${tableHeight}" heightRelTo="ABSOLUTE" protect="0"/>`;
         tableXml += `<hp:pos treatAsChar="1" affectLSpacing="0" flowWithText="1" allowOverlap="0" holdAnchorAndSO="0" vertRelTo="PARA" horzRelTo="PARA" vertAlign="TOP" horzAlign="LEFT" vertOffset="0" horzOffset="0"/>`;
         tableXml += `<hp:outMargin left="141" right="141" top="141" bottom="141"/>`;
@@ -4080,7 +4089,7 @@ export class HwpxDocument {
           for (let c = 0; c < insert.cols; c++) {
             maxId++;
             const cellParaId = maxId;
-            tableXml += `<hp:tc name="" header="0" hasMargin="0" protect="0" editable="0" dirty="0" borderFillIDRef="1">`;
+            tableXml += `<hp:tc name="" header="0" hasMargin="0" protect="0" editable="0" dirty="0" borderFillIDRef="2">`;
             tableXml += `<hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="CENTER" linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="0">`;
             tableXml += `<hp:p id="${cellParaId}" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0">`;
             tableXml += `<hp:run charPrIDRef="0"><hp:t></hp:t></hp:run>`;
@@ -4670,7 +4679,7 @@ export class HwpxDocument {
     const tableWidth = cellWidth * cols;
     const tableHeight = cellHeight * rows;
 
-    let xml = `<hp:tbl id="${id}" zOrder="${zOrder}" numberingType="TABLE" textWrap="TOP_AND_BOTTOM" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" pageBreak="NONE" repeatHeader="0" rowCnt="${rows}" colCnt="${cols}" cellSpacing="0" borderFillIDRef="7" noAdjust="0">`;
+    let xml = `<hp:tbl id="${id}" zOrder="${zOrder}" numberingType="TABLE" textWrap="TOP_AND_BOTTOM" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" pageBreak="NONE" repeatHeader="0" rowCnt="${rows}" colCnt="${cols}" cellSpacing="0" borderFillIDRef="2" noAdjust="0">`;
 
     // Size element
     xml += `<hp:sz width="${tableWidth}" widthRelTo="ABSOLUTE" height="${tableHeight}" heightRelTo="ABSOLUTE" protect="0"/>`;
@@ -4687,7 +4696,7 @@ export class HwpxDocument {
     // Cell zone list (column widths)
     xml += `<hp:cellzoneList>`;
     for (let c = 0; c < cols; c++) {
-      xml += `<hp:cellzone startRowAddr="0" startColAddr="${c}" endRowAddr="${rows - 1}" endColAddr="${c}" borderFillIDRef="7"/>`;
+      xml += `<hp:cellzone startRowAddr="0" startColAddr="${c}" endRowAddr="${rows - 1}" endColAddr="${c}" borderFillIDRef="2"/>`;
     }
     xml += `</hp:cellzoneList>`;
 
@@ -4697,7 +4706,7 @@ export class HwpxDocument {
       for (let c = 0; c < cols; c++) {
         const cellText = (data[r] && data[r][c]) ? this.escapeXml(data[r][c]) : '';
 
-        xml += `<hp:tc name="" header="0" hasMargin="0" protect="0" editable="0" dirty="0" borderFillIDRef="7">`;
+        xml += `<hp:tc name="" header="0" hasMargin="0" protect="0" editable="0" dirty="0" borderFillIDRef="2">`;
         xml += `<hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="CENTER" linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="0">`;
         xml += `<hp:p id="0" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0">`;
         xml += `<hp:run charPrIDRef="0">`;
