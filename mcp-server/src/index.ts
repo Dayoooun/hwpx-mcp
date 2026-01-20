@@ -8,6 +8,7 @@ import {
 import * as fs from 'fs';
 import * as path from 'path';
 import { HwpxDocument, ImagePositionOptions } from './HwpxDocument';
+import { HangingIndentCalculator } from './HangingIndentCalculator';
 
 // Version marker for debugging
 const MCP_VERSION = 'v2-fixed-xml-replacement';
@@ -2596,19 +2597,33 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
 
         // Auto hanging indent (default: true)
+        // Apply to ALL lines in the text, not just the first paragraph
         const autoHangingIndent = args?.auto_hanging_indent !== false;
-        let indentPt = 0;
+        const appliedIndents: number[] = [];
+
         if (autoHangingIndent) {
-          // Use async version to read font size from document
-          indentPt = await doc.setTableCellAutoHangingIndentAsync(
-            sectionIndex, tableIndex, row, col, 0, 10
-          );
+          const text = args?.text as string;
+          const lines = text.split('\n');
+          const calculator = new HangingIndentCalculator();
+
+          // Apply hanging indent to each line that has a marker
+          for (let i = 0; i < lines.length; i++) {
+            const lineText = lines[i];
+            const indentPt = calculator.calculateHangingIndent(lineText, 10);
+
+            if (indentPt > 0) {
+              // Register hanging indent for this paragraph
+              // This will be applied when save() is called
+              doc.setTableCellHangingIndent(sectionIndex, tableIndex, row, col, i, indentPt);
+              appliedIndents.push(indentPt);
+            }
+          }
         }
 
-        if (indentPt > 0) {
+        if (appliedIndents.length > 0) {
           return success({
-            message: `Cell updated with hanging indent: ${indentPt.toFixed(2)}pt`,
-            indent_pt: indentPt
+            message: `Cell updated with hanging indent applied to ${appliedIndents.length} paragraph(s)`,
+            indent_pts: appliedIndents
           });
         }
         return success({ message: 'Cell updated' });

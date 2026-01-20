@@ -3284,6 +3284,10 @@ export class HwpxDocument {
     for (const insert of this._pendingImageInserts) {
       ids.add(insert.imageId);
     }
+    // Also include pending cell image inserts
+    for (const insert of this._pendingCellImageInserts) {
+      ids.add(insert.imageId);
+    }
     return ids;
   }
 
@@ -5123,14 +5127,44 @@ export class HwpxDocument {
         // Update the table XML with cell changes
         const updatedTableXml = this.updateTableCellsInXml(tableMatch.xml, tableUpdates);
 
-        // Safety check: ensure updated XML is not empty or drastically smaller
-        if (!updatedTableXml || updatedTableXml.length < tableMatch.xml.length * 0.5) {
-          console.warn(`[HwpxDocument] Suspicious table update result for table ${tableId}, skipping`);
+        // Safety check: ensure updated XML is not empty
+        // Note: Size reduction is normal when replacing complex content with simple text
+        if (!updatedTableXml || updatedTableXml.length === 0) {
+          console.warn(`[HwpxDocument] Empty table update result for table ${tableId}, skipping`);
+          continue;
+        }
+
+        // Log significant size changes for debugging (but don't skip)
+        const sizeRatio = updatedTableXml.length / tableMatch.xml.length;
+        if (sizeRatio < 0.3 || sizeRatio > 3.0) {
+          console.log(`[HwpxDocument] Table ${tableId} size changed significantly: ${tableMatch.xml.length} -> ${updatedTableXml.length} (ratio: ${sizeRatio.toFixed(2)})`);
+        }
+
+        // Verify endIndex points to correct position (should be right after </hp:tbl>)
+        // The tableMatch.xml should end with closing tbl tag
+        if (!tableMatch.xml.match(/<\/(?:hp|hs|hc):tbl>$/)) {
+          console.error(`[HwpxDocument] Table XML does not end with closing tag for table ${tableId}, skipping`);
+          continue;
+        }
+
+        // Verify that the remainder starts correctly (not with partial tag remnants)
+        const remainder = xml.substring(tableMatch.endIndex);
+        if (remainder.match(/^[a-z]>/)) {
+          console.error(`[HwpxDocument] Invalid remainder after table ${tableId}: starts with "${remainder.substring(0, 10)}"`);
+          console.error(`[HwpxDocument] endIndex=${tableMatch.endIndex}, xml.length=${xml.length}`);
           continue;
         }
 
         // Replace the old table XML with the updated one
-        xml = xml.substring(0, tableMatch.startIndex) + updatedTableXml + xml.substring(tableMatch.endIndex);
+        const newXml = xml.substring(0, tableMatch.startIndex) + updatedTableXml + remainder;
+
+        // Verify no corruption introduced
+        if (/<\/(?:hp|hs|hc):tbl>[a-z]>/.test(newXml)) {
+          console.error(`[HwpxDocument] Corruption would be introduced for table ${tableId}, skipping`);
+          continue;
+        }
+
+        xml = newXml;
       }
 
       // Validate modified XML before saving
@@ -5173,6 +5207,19 @@ export class HwpxDocument {
     if (xml.trim().length < 100) {
       console.warn(`[HwpxDocument] Suspiciously short XML content`);
       return false;
+    }
+
+    // Check for known corruption patterns (e.g., </hp:tbl>l> - endIndex off by 2)
+    const corruptionPatterns = [
+      { pattern: /<\/(?:hp|hs|hc):tbl>l>/g, desc: 'tbl close tag with trailing l>' },
+      { pattern: /<\/(?:hp|hs|hc):tr>r>/g, desc: 'tr close tag with trailing r>' },
+      { pattern: /<\/(?:hp|hs|hc):tc>c>/g, desc: 'tc close tag with trailing c>' },
+    ];
+    for (const { pattern, desc } of corruptionPatterns) {
+      if (pattern.test(xml)) {
+        console.error(`[HwpxDocument] Corruption detected: ${desc}`);
+        return false;
+      }
     }
 
     // Check tag balance for critical structural elements
@@ -5587,8 +5634,15 @@ export class HwpxDocument {
     // Find all cells in this row using depth tracking to handle nested tables correctly
     const cells = this.findAllElementsWithDepth(rowXml, 'tc');
 
+    // Deduplicate updates for the same cell (keep last value)
+    // This prevents stale index issues when the same cell is updated multiple times
+    const uniqueUpdates = new Map<number, { col: number; text: string; charShapeId?: number }>();
+    for (const update of updates) {
+      uniqueUpdates.set(update.col, update);
+    }
+
     // Sort updates by col descending to process from right to left (avoid index shifting)
-    const sortedUpdates = [...updates].sort((a, b) => b.col - a.col);
+    const sortedUpdates = Array.from(uniqueUpdates.values()).sort((a, b) => b.col - a.col);
 
     for (const update of sortedUpdates) {
       if (update.col >= cells.length) continue;
@@ -5666,6 +5720,12 @@ export class HwpxDocument {
     // Check if text contains newlines - if so, create multiple paragraphs
     if (newText.includes('\n')) {
       return this.updateTextInCellMultiline(cellXml, newText, charShapeId);
+    }
+
+    // For long text without newlines, use chunked processing to avoid XML issues
+    // This creates multiple <hp:run> elements within the same paragraph
+    if (newText.length > HwpxDocument.TEXT_CHUNK_SIZE) {
+      return this.updateTextInCellChunked(cellXml, newText, charShapeId);
     }
 
     const escapedText = this.escapeXml(newText);
@@ -5762,6 +5822,127 @@ export class HwpxDocument {
   }
 
   /**
+   * Update text content in a cell with chunked runs (for long text without newlines).
+   * Splits long text into multiple <hp:run> elements within a single paragraph.
+   */
+  private updateTextInCellChunked(cellXml: string, newText: string, charShapeId?: number): string {
+    const charAttr = charShapeId !== undefined ? ` charPrIDRef="${charShapeId}"` : ' charPrIDRef="0"';
+    let xml = cellXml;
+
+    // Find the subList element to replace paragraph content
+    const subListStartMatch = xml.match(/<(hp|hs|hc):subList[^>]*>/);
+    if (subListStartMatch) {
+      const prefix = subListStartMatch[1];
+      const startTag = subListStartMatch[0];
+      const startIndex = xml.indexOf(startTag);
+      const contentStartIndex = startIndex + startTag.length;
+
+      // Find matching closing tag using balanced bracket counting
+      const openTag = `<${prefix}:subList`;
+      const closeTag = `</${prefix}:subList>`;
+      let depth = 1;
+      let searchIndex = contentStartIndex;
+      let contentEndIndex = -1;
+
+      while (depth > 0 && searchIndex < xml.length) {
+        const nextOpen = xml.indexOf(openTag, searchIndex);
+        const nextClose = xml.indexOf(closeTag, searchIndex);
+
+        if (nextClose === -1) break;
+
+        if (nextOpen !== -1 && nextOpen < nextClose) {
+          depth++;
+          searchIndex = nextOpen + openTag.length;
+        } else {
+          depth--;
+          if (depth === 0) {
+            contentEndIndex = nextClose;
+          }
+          searchIndex = nextClose + closeTag.length;
+        }
+      }
+
+      if (contentEndIndex !== -1) {
+        const subListContent = xml.substring(contentStartIndex, contentEndIndex);
+
+        // Preserve nested tables
+        const nestedTables = this.extractNestedTables(subListContent, prefix);
+
+        // Extract paraPrIDRef and styleIDRef from existing paragraph
+        const existingPMatch = subListContent.match(/<(?:hp|hs|hc):p[^>]*paraPrIDRef="([^"]*)"[^>]*styleIDRef="([^"]*)"/);
+        const paraPrIDRef = existingPMatch?.[1] || '0';
+        const styleIDRef = existingPMatch?.[2] || '0';
+
+        const paraId = Math.floor(Math.random() * 2147483647);
+
+        // Generate chunked runs for long text
+        const runsXml = this.generateChunkedRuns(newText, prefix, charAttr);
+
+        const newParagraph = `<${prefix}:p id="${paraId}" paraPrIDRef="${paraPrIDRef}" styleIDRef="${styleIDRef}" pageBreak="0" columnBreak="0" merged="0">${runsXml}<${prefix}:linesegarray><${prefix}:lineseg textpos="0" vertpos="0" vertsize="1000" textheight="1000" baseline="850" spacing="600" horzpos="0" horzsize="0" flags="0"/></${prefix}:linesegarray></${prefix}:p>`;
+
+        const newContent = newParagraph + nestedTables;
+        return xml.substring(0, contentStartIndex) + newContent + xml.substring(contentEndIndex);
+      }
+    }
+
+    // Fallback: try to find paragraph directly
+    const pStartMatch = xml.match(/<(hp|hs|hc):p[^>]*>/);
+    if (pStartMatch) {
+      const prefix = pStartMatch[1];
+      const attrMatch = pStartMatch[0].match(/<(?:hp|hs|hc):p([^>]*)>/);
+      const attrs = attrMatch?.[1] || ' id="0" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0"';
+
+      // Find extent of all paragraphs
+      const openTag = `<${prefix}:p`;
+      const closeTag = `</${prefix}:p>`;
+      const firstPStart = xml.indexOf(pStartMatch[0]);
+      let depth = 0;
+      let searchIndex = firstPStart;
+      let lastParagraphEnd = -1;
+
+      while (searchIndex < xml.length) {
+        const nextOpen = xml.indexOf(openTag, searchIndex);
+        const nextClose = xml.indexOf(closeTag, searchIndex);
+
+        if (depth === 0 && (nextOpen === -1 || (nextClose !== -1 && nextClose < nextOpen && xml.indexOf(openTag, searchIndex) === -1))) {
+          break;
+        }
+
+        if (nextOpen !== -1 && (nextClose === -1 || nextOpen < nextClose)) {
+          depth++;
+          searchIndex = nextOpen + openTag.length;
+        } else if (nextClose !== -1) {
+          depth--;
+          searchIndex = nextClose + closeTag.length;
+          if (depth === 0) {
+            lastParagraphEnd = searchIndex;
+            const remainingXml = xml.substring(searchIndex);
+            const nextPMatch = remainingXml.match(/^\s*<(hp|hs|hc):p[^>]*>/);
+            if (!nextPMatch) break;
+          }
+        } else {
+          break;
+        }
+      }
+
+      if (lastParagraphEnd !== -1) {
+        const contentToReplace = xml.substring(firstPStart, lastParagraphEnd);
+        const nestedTables = this.extractNestedTables(contentToReplace, prefix);
+
+        // Generate chunked runs
+        const runsXml = this.generateChunkedRuns(newText, prefix, charAttr);
+        const newParagraph = `<${prefix}:p${attrs}>${runsXml}<${prefix}:linesegarray><${prefix}:lineseg textpos="0" vertpos="0" vertsize="1000" textheight="1000" baseline="850" spacing="600" horzpos="0" horzsize="0" flags="0"/></${prefix}:linesegarray></${prefix}:p>`;
+
+        const newContent = newParagraph + nestedTables;
+        return xml.substring(0, firstPStart) + newContent + xml.substring(lastParagraphEnd);
+      }
+    }
+
+    // Final fallback
+    return xml;
+  }
+
+  /**
    * Update text content in a cell with multiple paragraphs (for text with newlines).
    * Each line becomes a separate <hp:p> element, allowing independent styling.
    */
@@ -5819,11 +6000,12 @@ export class HwpxDocument {
         const paraPrIDRef = existingPMatch?.[1] || '0';
         const styleIDRef = existingPMatch?.[2] || '0';
 
-        // Generate multiple paragraphs
+        // Generate multiple paragraphs with chunked runs for long lines
         const paragraphs = lines.map((line, index) => {
-          const escapedLine = this.escapeXml(line);
           const paraId = Math.floor(Math.random() * 2147483647);
-          return `<${prefix}:p id="${paraId}" paraPrIDRef="${paraPrIDRef}" styleIDRef="${styleIDRef}" pageBreak="0" columnBreak="0" merged="0"><${prefix}:run${charAttr}><${prefix}:t>${escapedLine}</${prefix}:t></${prefix}:run><${prefix}:linesegarray><${prefix}:lineseg textpos="0" vertpos="0" vertsize="1000" textheight="1000" baseline="850" spacing="600" horzpos="0" horzsize="0" flags="0"/></${prefix}:linesegarray></${prefix}:p>`;
+          // Use chunked runs for long lines to prevent XML processing issues
+          const runsXml = this.generateChunkedRuns(line, prefix, charAttr);
+          return `<${prefix}:p id="${paraId}" paraPrIDRef="${paraPrIDRef}" styleIDRef="${styleIDRef}" pageBreak="0" columnBreak="0" merged="0">${runsXml}<${prefix}:linesegarray><${prefix}:lineseg textpos="0" vertpos="0" vertsize="1000" textheight="1000" baseline="850" spacing="600" horzpos="0" horzsize="0" flags="0"/></${prefix}:linesegarray></${prefix}:p>`;
         }).join('');
 
         // Append nested tables after paragraphs to preserve them
@@ -5890,15 +6072,16 @@ export class HwpxDocument {
         const contentToReplace = cellXml.substring(firstPStart, lastParagraphEnd);
         const nestedTables = this.extractNestedTables(contentToReplace, prefix);
 
-        // Generate multiple paragraphs
+        // Generate multiple paragraphs with chunked runs for long lines
         const paragraphs = lines.map((line, index) => {
-          const escapedLine = this.escapeXml(line);
           let attrs = existingAttrs;
           if (index > 0) {
             const newId = Math.floor(Math.random() * 2147483647);
             attrs = attrs.replace(/id="[^"]*"/, `id="${newId}"`);
           }
-          return `<${prefix}:p${attrs}><${prefix}:run${charAttr}><${prefix}:t>${escapedLine}</${prefix}:t></${prefix}:run><${prefix}:linesegarray><${prefix}:lineseg textpos="0" vertpos="0" vertsize="1000" textheight="1000" baseline="850" spacing="600" horzpos="0" horzsize="0" flags="0"/></${prefix}:linesegarray></${prefix}:p>`;
+          // Use chunked runs for long lines to prevent XML processing issues
+          const runsXml = this.generateChunkedRuns(line, prefix, charAttr);
+          return `<${prefix}:p${attrs}>${runsXml}<${prefix}:linesegarray><${prefix}:lineseg textpos="0" vertpos="0" vertsize="1000" textheight="1000" baseline="850" spacing="600" horzpos="0" horzsize="0" flags="0"/></${prefix}:linesegarray></${prefix}:p>`;
         }).join('');
 
         // Append nested tables after paragraphs to preserve them
@@ -6620,6 +6803,79 @@ export class HwpxDocument {
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&apos;');
+  }
+
+  /**
+   * Default chunk size for splitting long text (in characters).
+   * Texts longer than this will be split into multiple <hp:run> elements.
+   */
+  private static readonly TEXT_CHUNK_SIZE = 2000;
+
+  /**
+   * Split long text into chunks for safer XML processing.
+   * Attempts to split at word boundaries (spaces, punctuation) when possible.
+   * @param text The text to split
+   * @param maxChunkSize Maximum characters per chunk (default: TEXT_CHUNK_SIZE)
+   * @returns Array of text chunks
+   */
+  private splitTextIntoChunks(text: string, maxChunkSize: number = HwpxDocument.TEXT_CHUNK_SIZE): string[] {
+    if (text.length <= maxChunkSize) {
+      return [text];
+    }
+
+    const chunks: string[] = [];
+    let remaining = text;
+
+    while (remaining.length > 0) {
+      if (remaining.length <= maxChunkSize) {
+        chunks.push(remaining);
+        break;
+      }
+
+      // Try to find a good break point (space, comma, period, etc.)
+      let breakPoint = maxChunkSize;
+
+      // Look for word boundary within last 20% of chunk
+      const searchStart = Math.floor(maxChunkSize * 0.8);
+      const searchRegion = remaining.substring(searchStart, maxChunkSize);
+
+      // Find last space or punctuation in search region
+      const lastSpace = searchRegion.lastIndexOf(' ');
+      const lastComma = searchRegion.lastIndexOf(',');
+      const lastPeriod = searchRegion.lastIndexOf('.');
+      const lastNewline = searchRegion.lastIndexOf('\n');
+
+      // Pick the best break point
+      const breakPoints = [lastSpace, lastComma, lastPeriod, lastNewline].filter(p => p >= 0);
+      if (breakPoints.length > 0) {
+        breakPoint = searchStart + Math.max(...breakPoints) + 1;
+      }
+
+      chunks.push(remaining.substring(0, breakPoint));
+      remaining = remaining.substring(breakPoint);
+    }
+
+    return chunks;
+  }
+
+  /**
+   * Generate multiple <hp:run> elements for chunked text.
+   * Used when text is too long to be in a single run.
+   */
+  private generateChunkedRuns(text: string, prefix: string, charAttr: string, maxChunkSize?: number): string {
+    const chunks = this.splitTextIntoChunks(text, maxChunkSize);
+
+    if (chunks.length === 1) {
+      // Single chunk - normal case
+      const escapedText = this.escapeXml(chunks[0]);
+      return `<${prefix}:run${charAttr}><${prefix}:t>${escapedText}</${prefix}:t></${prefix}:run>`;
+    }
+
+    // Multiple chunks - generate multiple runs
+    return chunks.map(chunk => {
+      const escapedChunk = this.escapeXml(chunk);
+      return `<${prefix}:run${charAttr}><${prefix}:t>${escapedChunk}</${prefix}:t></${prefix}:run>`;
+    }).join('');
   }
 
   /**
