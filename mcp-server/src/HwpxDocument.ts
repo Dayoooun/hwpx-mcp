@@ -136,7 +136,9 @@ export class HwpxDocument {
     cols: number;
     width: number;
     cellWidth: number;
+    insertOrder: number;  // Track insertion order for proper sequencing
   }> = [];
+  private _tableInsertCounter = 0;  // Counter for insertion order
   private _pendingImageDeletes: Array<{
     imageId: string;
     binaryId: string;
@@ -2528,6 +2530,7 @@ export class HwpxDocument {
     }
 
     // Add to pending table inserts for XML generation
+    // Store the original afterElementIndex and insertOrder for proper sequencing
     this._pendingTableInserts.push({
       sectionIndex,
       afterElementIndex,
@@ -2535,6 +2538,7 @@ export class HwpxDocument {
       cols,
       width: defaultWidth,
       cellWidth,
+      insertOrder: this._tableInsertCounter++,
     });
 
     this.markModified();
@@ -4016,6 +4020,7 @@ export class HwpxDocument {
       cols: number;
       width: number;
       cellWidth: number;
+      insertOrder: number;
     }>>();
 
     for (const insert of this._pendingTableInserts) {
@@ -4026,6 +4031,7 @@ export class HwpxDocument {
         cols: insert.cols,
         width: insert.width,
         cellWidth: insert.cellWidth,
+        insertOrder: insert.insertOrder,
       });
       insertsBySection.set(insert.sectionIndex, sectionInserts);
     }
@@ -4045,8 +4051,12 @@ export class HwpxDocument {
         maxId = Math.max(maxId, parseInt(m[1], 10));
       }
 
-      // Sort inserts by afterElementIndex in descending order to avoid index shifting
-      const sortedInserts = [...inserts].sort((a, b) => b.afterElementIndex - a.afterElementIndex);
+      // Sort inserts by insertOrder (ascending) - process in the order they were added
+      // This ensures tables are inserted sequentially, building on each other
+      const sortedInserts = [...inserts].sort((a, b) => a.insertOrder - b.insertOrder);
+
+      // Track how many elements we've inserted so far (offset for position calculation)
+      let insertedCount = 0;
 
       for (const insert of sortedInserts) {
         // Generate unique IDs
