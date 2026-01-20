@@ -109,6 +109,26 @@ AI: [insert_table 도구 사용]
 
 ## 변경 이력
 
+### 0.2.0
+- **신규 기능**: 테이블 셀 내 내어쓰기(Hanging Indent) 자동 적용
+  - `update_table_cell` 시 마커(○, 1., 가., (1) 등) 감지하여 자동 내어쓰기
+  - 멀티라인 텍스트의 각 줄에 독립적으로 내어쓰기 적용
+  - `set_table_cell_hanging_indent`, `get_table_cell_hanging_indent` 도구 추가
+
+- **버그 수정**: 병렬 테이블 업데이트 시 XML 손상 문제 해결
+  - 문서별 Lock 추가로 병렬 요청 직렬화 (race condition 방지)
+  - `findTableCellInXml()` 중첩 테이블 처리 개선 (balanced bracket 매칭)
+  - 여러 테이블 동시 수정 후 저장 시 "Broken tag structure" 오류 수정
+
+- **버그 수정**: 여러 테이블에 내어쓰기 적용 시 stale position 문제 해결
+  - 테이블 인덱스 내림차순 처리로 위치 변경 영향 방지
+  - 각 테이블 처리 시 위치 정보 재계산
+
+- **테스트 강화**: Red Team 스트레스 테스트 추가 (238개 테스트)
+  - 50~200개 테이블 대량 수정 테스트
+  - 중첩 테이블 + 내어쓰기 + 이미지 복합 테스트
+  - 병렬 업데이트 시나리오 테스트
+
 ### 0.1.1
 - **버그 수정**: `update_table_cell` 후 `save_document` 시 빈 셀 변경사항이 저장되지 않던 문제 수정
   - Self-closing XML run 태그 (`<hp:run ... />`) 처리 지원 추가

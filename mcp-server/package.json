@@ -1,6 +1,6 @@
 {
   "name": "hwpx-mcp-server",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "MCP Server for HWPX document manipulation",
   "main": "dist/index.js",
   "bin": {
@@ -21,6 +21,7 @@
   "devDependencies": {
     "@types/node": "^20.0.0",
     "@types/pako": "^2.0.4",
+    "ts-node": "^10.9.2",
     "typescript": "^5.0.0",
     "vitest": "^4.0.17"
   }

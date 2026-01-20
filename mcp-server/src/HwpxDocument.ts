@@ -927,17 +927,22 @@ export class HwpxDocument {
     const cell = table.rows[row]?.cells[col];
     if (!cell) return false;
 
+    // Note: We don't strictly require the paragraph to exist in memory because:
+    // - Multi-line text in updateTableCell() creates multiple paragraphs in XML during save()
+    // - But the in-memory model only maintains a single paragraph representation
+    // - The actual paragraph validation happens during XML processing in applyTableCellHangingIndentsToXml()
     const paragraph = cell.paragraphs[paragraphIndex];
-    if (!paragraph) return false;
 
     this.saveState();
 
-    // Set paragraph style with hanging indent
-    paragraph.paraStyle = {
-      ...paragraph.paraStyle,
-      firstLineIndent: -indentPt,
-      marginLeft: indentPt,
-    };
+    // If the paragraph exists in memory, update its style
+    if (paragraph) {
+      paragraph.paraStyle = {
+        ...paragraph.paraStyle,
+        firstLineIndent: -indentPt,
+        marginLeft: indentPt,
+      };
+    }
 
     // Track for XML update during save (update existing entry if present)
     const existingIdx = this._pendingTableCellHangingIndents.findIndex(
@@ -956,7 +961,7 @@ export class HwpxDocument {
         row,
         col,
         paragraphIndex,
-        paragraphId: paragraph.id,
+        paragraphId: paragraph?.id || '',
         indentPt,
       });
     }
@@ -9309,12 +9314,18 @@ export class HwpxDocument {
         changesByTable.set(change.tableIndex, existing);
       }
 
-      // Find all tables in the section
-      const tables = this.findAllTables(sectionXml);
+      // CRITICAL: Sort table indices in DESCENDING order to avoid stale position bug
+      // When we modify a table, sectionXml length changes. If we process tables
+      // in ascending order, the position indices for later tables become stale.
+      // By processing from end to start, earlier table positions remain valid.
+      const sortedTableIndices = [...changesByTable.keys()].sort((a, b) => b - a);
 
-      for (const [tableIndex, tableChanges] of changesByTable) {
+      for (const tableIndex of sortedTableIndices) {
+        // Re-find tables for each iteration to get fresh positions
+        const tables = this.findAllTables(sectionXml);
         if (tableIndex >= tables.length) continue;
 
+        const tableChanges = changesByTable.get(tableIndex)!;
         const tableData = tables[tableIndex];
         let tableXml = tableData.xml;
 
@@ -9374,6 +9385,7 @@ export class HwpxDocument {
 
   /**
    * Find a specific cell in table XML by row and column index.
+   * Uses balanced bracket matching to correctly handle nested tables.
    * @returns Cell XML content and its position, or null if not found
    */
   private findTableCellInXml(tableXml: string, targetRow: number, targetCol: number): {
@@ -9381,40 +9393,51 @@ export class HwpxDocument {
     startIndex: number;
     endIndex: number;
   } | null {
-    // Find all rows
-    const trRegex = /<hp:tr\b[^>]*>([\s\S]*?)<\/hp:tr>/g;
-    let trMatch: RegExpExecArray | null;
-    let rowIndex = 0;
+    // Use balanced bracket matching to find top-level rows (handles nested tables correctly)
+    const rows = this.findAllElementsWithDepth(tableXml, 'tr');
 
-    while ((trMatch = trRegex.exec(tableXml)) !== null) {
-      if (rowIndex === targetRow) {
-        const rowContent = trMatch[1];
-        const rowStart = trMatch.index + trMatch[0].indexOf('>') + 1;
+    if (targetRow >= rows.length) return null;
 
-        // Find all cells in this row
-        const tcRegex = /<hp:tc\b[^>]*>([\s\S]*?)<\/hp:tc>/g;
-        let tcMatch: RegExpExecArray | null;
-        let colIndex = 0;
+    const targetRowData = rows[targetRow];
 
-        while ((tcMatch = tcRegex.exec(rowContent)) !== null) {
-          if (colIndex === targetCol) {
-            const cellContent = tcMatch[1];
-            const absoluteStart = rowStart + tcMatch.index + tcMatch[0].indexOf('>') + 1;
-            const absoluteEnd = absoluteStart + cellContent.length;
+    // Extract content inside the row (between <hp:tr...> and </hp:tr>)
+    const rowOpenTagMatch = targetRowData.xml.match(/^<(?:hp|hs|hc):tr[^>]*>/);
+    if (!rowOpenTagMatch) return null;
 
-            return {
-              xml: cellContent,
-              startIndex: absoluteStart,
-              endIndex: absoluteEnd,
-            };
-          }
-          colIndex++;
-        }
-        break;
-      }
-      rowIndex++;
-    }
+    const rowContentStart = rowOpenTagMatch[0].length;
+    const rowContentEnd = targetRowData.xml.lastIndexOf('</');
+    if (rowContentEnd <= rowContentStart) return null;
 
-    return null;
+    const rowContent = targetRowData.xml.substring(rowContentStart, rowContentEnd);
+
+    // Use balanced bracket matching to find top-level cells in this row
+    const cells = this.findAllElementsWithDepth(rowContent, 'tc');
+
+    if (targetCol >= cells.length) return null;
+
+    const targetCellData = cells[targetCol];
+
+    // Extract content inside the cell (between <hp:tc...> and </hp:tc>)
+    const cellOpenTagMatch = targetCellData.xml.match(/^<(?:hp|hs|hc):tc[^>]*>/);
+    if (!cellOpenTagMatch) return null;
+
+    const cellContentStart = cellOpenTagMatch[0].length;
+    const cellContentEnd = targetCellData.xml.lastIndexOf('</');
+    if (cellContentEnd <= cellContentStart) return null;
+
+    const cellContent = targetCellData.xml.substring(cellContentStart, cellContentEnd);
+
+    // Calculate absolute position in the original tableXml
+    // rowData.startIndex is relative to tableXml
+    // cellData.startIndex is relative to rowContent
+    // cellContent starts at cellOpenTagMatch[0].length within the cell
+    const absoluteStart = targetRowData.startIndex + rowContentStart + targetCellData.startIndex + cellContentStart;
+    const absoluteEnd = absoluteStart + cellContent.length;
+
+    return {
+      xml: cellContent,
+      startIndex: absoluteStart,
+      endIndex: absoluteEnd,
+    };
   }
 }

@@ -17,6 +17,42 @@ console.error(`[HWPX MCP] Server starting - ${MCP_VERSION} - ${new Date().toISOS
 // Document storage
 const openDocuments = new Map<string, HwpxDocument>();
 
+// Document-level locks to prevent race conditions during parallel updates
+// Each document has a promise chain that serializes operations
+const documentLocks = new Map<string, Promise<void>>();
+
+/**
+ * Acquire a lock for a document operation.
+ * All operations on the same document will be serialized.
+ */
+async function withDocumentLock<T>(docId: string, operation: () => Promise<T>): Promise<T> {
+  // Get the current lock promise (or resolved if none)
+  const currentLock = documentLocks.get(docId) || Promise.resolve();
+
+  // Create a new promise that will resolve when our operation completes
+  let releaseLock: () => void;
+  const newLock = new Promise<void>((resolve) => {
+    releaseLock = resolve;
+  });
+
+  // Set our lock as the new pending lock
+  documentLocks.set(docId, newLock);
+
+  try {
+    // Wait for any previous operation to complete
+    await currentLock;
+    // Execute our operation
+    return await operation();
+  } finally {
+    // Release the lock
+    releaseLock!();
+    // Clean up if this is the last lock
+    if (documentLocks.get(docId) === newLock) {
+      documentLocks.delete(docId);
+    }
+  }
+}
+
 function generateId(): string {
   return Math.random().toString(36).substring(2, 11);
 }
@@ -1909,113 +1945,117 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'save_document': {
-        const doc = getDoc(args?.doc_id as string);
+        const docId = args?.doc_id as string;
+        const doc = getDoc(docId);
         if (!doc) return error('Document not found');
         if (doc.format === 'hwp') return error('HWP files are read-only');
 
-        const savePath = (args?.output_path as string) || doc.path;
-        const createBackup = args?.create_backup !== false; // default: true
-        const verifyIntegrity = args?.verify_integrity !== false; // default: true
-        let backupPath: string | null = null;
-        const tempPath = savePath + '.tmp';
+        // Use document lock to ensure all pending updates complete before save
+        return await withDocumentLock(docId, async () => {
+          const savePath = (args?.output_path as string) || doc.path;
+          const createBackup = args?.create_backup !== false; // default: true
+          const verifyIntegrity = args?.verify_integrity !== false; // default: true
+          let backupPath: string | null = null;
+          const tempPath = savePath + '.tmp';
 
-        // Create backup if file exists and backup is enabled
-        if (createBackup && fs.existsSync(savePath)) {
-          backupPath = savePath + '.bak';
-          try {
-            fs.copyFileSync(savePath, backupPath);
-          } catch (backupErr) {
-            return error(`Failed to create backup: ${backupErr}`);
-          }
-        }
-
-        try {
-          const data = await doc.save();
-
-          // Phase 1: Write to temp file first (atomic write pattern)
-          fs.writeFileSync(tempPath, data);
-
-          // Verify integrity on temp file before moving
-          if (verifyIntegrity) {
+          // Create backup if file exists and backup is enabled
+          if (createBackup && fs.existsSync(savePath)) {
+            backupPath = savePath + '.bak';
             try {
-              const JSZip = require('jszip');
-              const savedData = fs.readFileSync(tempPath);
-              const zip = await JSZip.loadAsync(savedData);
-
-              // Check essential HWPX structure files
-              const requiredFiles = [
-                'mimetype',
-                'Contents/content.hpf',
-                'Contents/header.xml',
-                'Contents/section0.xml'
-              ];
-
-              const missingFiles: string[] = [];
-              for (const requiredFile of requiredFiles) {
-                if (!zip.file(requiredFile)) {
-                  missingFiles.push(requiredFile);
-                }
-              }
-
-              if (missingFiles.length > 0) {
-                throw new Error(`Missing required files: ${missingFiles.join(', ')}`);
-              }
-
-              // Verify all section XML files are valid
-              const sectionFiles = Object.keys(zip.files).filter(f => f.match(/^Contents\/section\d+\.xml$/));
-              for (const sectionFile of sectionFiles) {
-                const file = zip.file(sectionFile);
-                if (file) {
-                  const xmlContent = await file.async('string');
-                  if (!xmlContent || !xmlContent.includes('<?xml')) {
-                    throw new Error(`Invalid XML in ${sectionFile}`);
-                  }
-                  // Check for truncated XML (incomplete tag at end)
-                  if (xmlContent.match(/<[^>]*$/)) {
-                    throw new Error(`Truncated XML in ${sectionFile}`);
-                  }
-                  // Check for broken opening tags (< followed by < without >)
-                  if (xmlContent.match(/<[^>]*</)) {
-                    throw new Error(`Broken tag structure in ${sectionFile}`);
-                  }
-                }
-              }
-            } catch (verifyErr) {
-              // Clean up temp file
-              if (fs.existsSync(tempPath)) {
-                fs.unlinkSync(tempPath);
-              }
-              // Restore from backup if exists
-              if (backupPath && fs.existsSync(backupPath)) {
-                return error(`Save verification failed, backup preserved: ${verifyErr}`);
-              }
-              return error(`Save verification failed: ${verifyErr}`);
+              fs.copyFileSync(savePath, backupPath);
+            } catch (backupErr) {
+              return error(`Failed to create backup: ${backupErr}`);
             }
           }
 
-          // Phase 2: Atomic move - rename temp to final (atomic on same filesystem)
-          if (fs.existsSync(savePath)) {
-            fs.unlinkSync(savePath);
-          }
-          fs.renameSync(tempPath, savePath);
+          try {
+            const data = await doc.save();
 
-          return success({
-            message: `Saved to ${savePath}`,
-            backup_created: backupPath ? true : false,
-            integrity_verified: verifyIntegrity
-          });
-        } catch (saveErr) {
-          // Clean up temp file if exists
-          if (fs.existsSync(tempPath)) {
-            try { fs.unlinkSync(tempPath); } catch {}
+            // Phase 1: Write to temp file first (atomic write pattern)
+            fs.writeFileSync(tempPath, data);
+
+            // Verify integrity on temp file before moving
+            if (verifyIntegrity) {
+              try {
+                const JSZip = require('jszip');
+                const savedData = fs.readFileSync(tempPath);
+                const zip = await JSZip.loadAsync(savedData);
+
+                // Check essential HWPX structure files
+                const requiredFiles = [
+                  'mimetype',
+                  'Contents/content.hpf',
+                  'Contents/header.xml',
+                  'Contents/section0.xml'
+                ];
+
+                const missingFiles: string[] = [];
+                for (const requiredFile of requiredFiles) {
+                  if (!zip.file(requiredFile)) {
+                    missingFiles.push(requiredFile);
+                  }
+                }
+
+                if (missingFiles.length > 0) {
+                  throw new Error(`Missing required files: ${missingFiles.join(', ')}`);
+                }
+
+                // Verify all section XML files are valid
+                const sectionFiles = Object.keys(zip.files).filter(f => f.match(/^Contents\/section\d+\.xml$/));
+                for (const sectionFile of sectionFiles) {
+                  const file = zip.file(sectionFile);
+                  if (file) {
+                    const xmlContent = await file.async('string');
+                    if (!xmlContent || !xmlContent.includes('<?xml')) {
+                      throw new Error(`Invalid XML in ${sectionFile}`);
+                    }
+                    // Check for truncated XML (incomplete tag at end)
+                    if (xmlContent.match(/<[^>]*$/)) {
+                      throw new Error(`Truncated XML in ${sectionFile}`);
+                    }
+                    // Check for broken opening tags (< followed by < without >)
+                    if (xmlContent.match(/<[^>]*</)) {
+                      throw new Error(`Broken tag structure in ${sectionFile}`);
+                    }
+                  }
+                }
+              } catch (verifyErr) {
+                // Clean up temp file
+                if (fs.existsSync(tempPath)) {
+                  fs.unlinkSync(tempPath);
+                }
+                // Restore from backup if exists
+                if (backupPath && fs.existsSync(backupPath)) {
+                  return error(`Save verification failed, backup preserved: ${verifyErr}`);
+                }
+                return error(`Save verification failed: ${verifyErr}`);
+              }
+            }
+
+            // Phase 2: Atomic move - rename temp to final (atomic on same filesystem)
+            if (fs.existsSync(savePath)) {
+              fs.unlinkSync(savePath);
+            }
+            fs.renameSync(tempPath, savePath);
+
+            return success({
+              message: `Saved to ${savePath}`,
+              backup_created: backupPath ? true : false,
+              integrity_verified: verifyIntegrity
+            });
+          } catch (saveErr) {
+            // Clean up temp file if exists
+            if (fs.existsSync(tempPath)) {
+              try { fs.unlinkSync(tempPath); } catch {}
+            }
+            // Restore from backup if save fails
+            if (backupPath && fs.existsSync(backupPath)) {
+              fs.copyFileSync(backupPath, savePath);
+              return error(`Save failed, restored from backup: ${saveErr}`);
+            }
+            return error(`Save failed: ${saveErr}`);
           }
-          // Restore from backup if save fails
-          if (backupPath && fs.existsSync(backupPath)) {
-            fs.copyFileSync(backupPath, savePath);
-            return error(`Save failed, restored from backup: ${saveErr}`);
-          }
-          return error(`Save failed: ${saveErr}`);
-        }
+        });
       }
 
       case 'list_open_documents': {
@@ -2575,58 +2615,62 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'update_table_cell': {
-        const doc = getDoc(args?.doc_id as string);
+        const docId = args?.doc_id as string;
+        const doc = getDoc(docId);
         if (!doc) return error('Document not found');
         if (doc.format === 'hwp') return error('HWP files are read-only');
 
-        const sectionIndex = args?.section_index as number;
-        const tableIndex = args?.table_index as number;
-        const row = args?.row as number;
-        const col = args?.col as number;
-        const charShapeId = args?.char_shape_id as number | undefined;
+        // Use document lock to prevent race conditions during parallel updates
+        return await withDocumentLock(docId, async () => {
+          const sectionIndex = args?.section_index as number;
+          const tableIndex = args?.table_index as number;
+          const row = args?.row as number;
+          const col = args?.col as number;
+          const charShapeId = args?.char_shape_id as number | undefined;
 
-        if (!doc.updateTableCell(
-          sectionIndex,
-          tableIndex,
-          row,
-          col,
-          args?.text as string,
-          charShapeId
-        )) {
-          return error('Failed to update cell');
-        }
+          if (!doc.updateTableCell(
+            sectionIndex,
+            tableIndex,
+            row,
+            col,
+            args?.text as string,
+            charShapeId
+          )) {
+            return error('Failed to update cell');
+          }
 
-        // Auto hanging indent (default: true)
-        // Apply to ALL lines in the text, not just the first paragraph
-        const autoHangingIndent = args?.auto_hanging_indent !== false;
-        const appliedIndents: number[] = [];
+          // Auto hanging indent (default: true)
+          // Apply to ALL lines in the text, not just the first paragraph
+          const autoHangingIndent = args?.auto_hanging_indent !== false;
+          const appliedIndents: number[] = [];
 
-        if (autoHangingIndent) {
-          const text = args?.text as string;
-          const lines = text.split('\n');
-          const calculator = new HangingIndentCalculator();
+          if (autoHangingIndent) {
+            const text = args?.text as string;
+            const lines = text.split('\n');
+            const calculator = new HangingIndentCalculator();
 
-          // Apply hanging indent to each line that has a marker
-          for (let i = 0; i < lines.length; i++) {
-            const lineText = lines[i];
-            const indentPt = calculator.calculateHangingIndent(lineText, 10);
+            // Apply hanging indent to each line that has a marker
+            for (let i = 0; i < lines.length; i++) {
+              const lineText = lines[i];
+              const indentPt = calculator.calculateHangingIndent(lineText, 10);
 
-            if (indentPt > 0) {
-              // Register hanging indent for this paragraph
-              // This will be applied when save() is called
-              doc.setTableCellHangingIndent(sectionIndex, tableIndex, row, col, i, indentPt);
-              appliedIndents.push(indentPt);
+              if (indentPt > 0) {
+                // Register hanging indent for this paragraph
+                // This will be applied when save() is called
+                doc.setTableCellHangingIndent(sectionIndex, tableIndex, row, col, i, indentPt);
+                appliedIndents.push(indentPt);
+              }
             }
           }
-        }
 
-        if (appliedIndents.length > 0) {
-          return success({
-            message: `Cell updated with hanging indent applied to ${appliedIndents.length} paragraph(s)`,
-            indent_pts: appliedIndents
-          });
-        }
-        return success({ message: 'Cell updated' });
+          if (appliedIndents.length > 0) {
+            return success({
+              message: `Cell updated with hanging indent applied to ${appliedIndents.length} paragraph(s)`,
+              indent_pts: appliedIndents
+            });
+          }
+          return success({ message: 'Cell updated' });
+        });
       }
 
       case 'set_cell_properties': {

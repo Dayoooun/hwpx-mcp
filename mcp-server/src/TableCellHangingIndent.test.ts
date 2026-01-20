@@ -211,13 +211,18 @@ describe('HwpxDocument - Table Cell Hanging Indent (테이블 셀 내어쓰기)'
       expect(doc.setTableCellHangingIndent(0, 0, 0, 99, 0, 15)).toBe(false);
     });
 
-    it('should reject invalid paragraph index', async () => {
+    it('should accept paragraph index that does not exist in memory model (for multi-line text support)', async () => {
       const doc = await createTestFileWithTable();
 
-      // 셀 (0,0)에는 2개의 단락만 있음
+      // 메모리 모델에는 paragraph가 없어도 pending에 추가됩니다.
+      // 이는 updateTableCell()로 여러 줄 텍스트를 입력할 때,
+      // 메모리 모델에는 1개의 paragraph만 유지되지만
+      // XML에는 여러 paragraph가 생성되기 때문입니다.
+      // 실제 paragraph 존재 검증은 save() 시 XML 처리에서 수행됩니다.
       const result = doc.setTableCellHangingIndent(0, 0, 0, 0, 99, 15);
 
-      expect(result).toBe(false);
+      // pending에 추가되었으므로 true 반환
+      expect(result).toBe(true);
     });
 
     it('should reject zero or negative indent', async () => {
