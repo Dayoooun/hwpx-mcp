@@ -2611,27 +2611,44 @@ export class HwpxDocument {
     nestedRows: number,
     nestedCols: number,
     options?: { data?: string[][] }
-  ): boolean {
+  ): { success: boolean; error?: string } {
     const section = this._content.sections[sectionIndex];
-    if (!section) return false;
-    if (nestedRows <= 0 || nestedCols <= 0) return false;
+    if (!section) {
+      return { success: false, error: `Section ${sectionIndex} does not exist. Document has ${this._content.sections.length} section(s). Valid range: 0-${this._content.sections.length - 1}` };
+    }
+    if (nestedRows <= 0 || nestedCols <= 0) {
+      return { success: false, error: `Invalid nested table size: ${nestedRows}x${nestedCols}. Both rows and columns must be greater than 0.` };
+    }
 
-    // Find the parent table
+    // Find the parent table and count total tables
     let tableCount = 0;
     let parentTable: HwpxTable | null = null;
+    let totalTables = 0;
     for (const element of section.elements) {
       if (element.type === 'table') {
         if (tableCount === parentTableIndex) {
           parentTable = element.data as HwpxTable;
-          break;
         }
         tableCount++;
+        totalTables++;
       }
     }
 
-    if (!parentTable) return false;
-    if (row >= parentTable.rows.length) return false;
-    if (col >= parentTable.rows[row].cells.length) return false;
+    if (!parentTable) {
+      return { success: false, error: `Table ${parentTableIndex} does not exist in section ${sectionIndex}. Section has ${totalTables} table(s). Valid range: 0-${totalTables > 0 ? totalTables - 1 : 0}` };
+    }
+
+    const tableRows = parentTable.rows.length;
+    const tableCols = parentTable.rows[0]?.cells.length || 0;
+
+    if (row >= tableRows) {
+      return { success: false, error: `Row ${row} does not exist. Table size: ${tableRows}x${tableCols} (${tableRows} rows, ${tableCols} cols). Valid row range: 0-${tableRows - 1}` };
+    }
+
+    const rowCols = parentTable.rows[row].cells.length;
+    if (col >= rowCols) {
+      return { success: false, error: `Column ${col} does not exist in row ${row}. Row has ${rowCols} column(s). Valid column range: 0-${rowCols - 1}` };
+    }
 
     this.saveState();
 
@@ -2651,7 +2668,7 @@ export class HwpxDocument {
     });
 
     this.markModified();
-    return true;
+    return { success: true };
   }
 
   // ============================================================

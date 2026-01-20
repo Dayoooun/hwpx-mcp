@@ -3016,7 +3016,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (!doc) return error('Document not found');
         if (doc.format === 'hwp') return error('HWP files are read-only');
 
-        const success_result = doc.insertNestedTable(
+        const result = doc.insertNestedTable(
           args?.section_index as number,
           args?.parent_table_index as number,
           args?.row as number,
@@ -3025,7 +3025,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           args?.nested_cols as number,
           { data: args?.data as string[][] | undefined }
         );
-        if (!success_result) return error('Failed to insert nested table');
+        if (!result.success) return error(result.error || 'Failed to insert nested table');
         return success({ message: 'Nested table inserted successfully' });
       }
 
