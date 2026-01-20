@@ -69,13 +69,14 @@ describe('RED TEAM - 복잡한 테이블 삽입', () => {
   const testFilePath = path.join(__dirname, '../test-fixtures/test-document.hwpx');
 
   beforeEach(async () => {
-    if (!fs.existsSync(testFilePath)) {
-      console.log('테스트 파일 없음, 새 문서 생성');
-      doc = new HwpxDocument();
-      await doc.create({ title: 'Table Insert Test' });
+    // HwpxDocument.createNew()를 사용하여 새 문서 생성
+    // 테스트 fixture 파일이 있으면 로드, 없으면 새 문서 생성
+    if (fs.existsSync(testFilePath)) {
+      const buffer = fs.readFileSync(testFilePath);
+      doc = await HwpxDocument.createFromBuffer('test-doc', testFilePath, buffer);
     } else {
-      doc = new HwpxDocument();
-      await doc.load(testFilePath);
+      console.log('테스트 파일 없음, 새 문서 생성');
+      doc = HwpxDocument.createNew('test-doc', 'Table Insert Test');
     }
   });
 

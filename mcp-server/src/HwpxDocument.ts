@@ -192,6 +192,45 @@ export class HwpxDocument {
     this._format = format;
   }
 
+  // Constants for magic numbers
+  private static readonly NESTED_CHECK_LOOKBACK = 500;
+  private static readonly SEARCH_SKIP_OFFSET = 10;
+
+  /**
+   * Find the closing tag position using balanced bracket matching.
+   * Handles nested elements of the same type correctly.
+   * @param xml The XML string to search in
+   * @param startPos Position right after the opening tag
+   * @param openTag Opening tag pattern (e.g., '<hp:tbl')
+   * @param closeTag Closing tag (e.g., '</hp:tbl>')
+   * @returns Position after the closing tag, or -1 if not found
+   */
+  private static findClosingTagPosition(
+    xml: string,
+    startPos: number,
+    openTag: string,
+    closeTag: string
+  ): number {
+    let depth = 1;
+    let pos = startPos;
+    while (depth > 0 && pos < xml.length) {
+      const nextOpen = xml.indexOf(openTag, pos);
+      const nextClose = xml.indexOf(closeTag, pos);
+      if (nextClose === -1) return -1;
+      if (nextOpen !== -1 && nextOpen < nextClose) {
+        depth++;
+        pos = nextOpen + 1;
+      } else {
+        depth--;
+        if (depth === 0) {
+          return nextClose + closeTag.length;
+        }
+        pos = nextClose + 1;
+      }
+    }
+    return -1;
+  }
+
   public static async createFromBuffer(id: string, path: string, data: Buffer): Promise<HwpxDocument> {
     const extension = path.toLowerCase();
 
@@ -4064,9 +4103,6 @@ export class HwpxDocument {
       // This ensures tables are inserted sequentially, building on each other
       const sortedInserts = [...inserts].sort((a, b) => a.insertOrder - b.insertOrder);
 
-      // Track how many elements we've inserted so far (offset for position calculation)
-      let insertedCount = 0;
-
       for (const insert of sortedInserts) {
         // Generate unique IDs
         maxId++;
@@ -4138,7 +4174,7 @@ export class HwpxDocument {
           if (nextPos === -1) break;
 
           // Check if this is inside a subList (nested)
-          const beforeText = xml.substring(Math.max(0, nextPos - 500), nextPos);
+          const beforeText = xml.substring(Math.max(0, nextPos - HwpxDocument.NESTED_CHECK_LOOKBACK), nextPos);
           const subListOpen = beforeText.lastIndexOf('<hp:subList');
           const subListClose = beforeText.lastIndexOf('</hp:subList>');
           const isNested = subListOpen > subListClose;
@@ -4147,49 +4183,12 @@ export class HwpxDocument {
             elementCount++;
 
             // Find the end of this element using balanced bracket matching
-            let endPos = -1;
-            if (isTable) {
-              // Use balanced bracket matching for tables (handles nested tables)
-              let depth = 1;
-              let pos = nextPos + 1;
-              while (depth > 0 && pos < xml.length) {
-                const nextOpen = xml.indexOf('<hp:tbl', pos);
-                const nextClose = xml.indexOf('</hp:tbl>', pos);
-                if (nextClose === -1) break;
-                if (nextOpen !== -1 && nextOpen < nextClose) {
-                  depth++;
-                  pos = nextOpen + 1;
-                } else {
-                  depth--;
-                  if (depth === 0) {
-                    endPos = nextClose + '</hp:tbl>'.length;
-                  }
-                  pos = nextClose + 1;
-                }
-              }
-            } else {
-              // Use balanced bracket matching for paragraphs (handles nested <hp:p>)
-              let depth = 1;
-              let pos = nextPos + 1;
-              while (depth > 0 && pos < xml.length) {
-                const nextOpen = xml.indexOf('<hp:p ', pos);
-                const nextClose = xml.indexOf('</hp:p>', pos);
-                if (nextClose === -1) break;
-                if (nextOpen !== -1 && nextOpen < nextClose) {
-                  depth++;
-                  pos = nextOpen + 1;
-                } else {
-                  depth--;
-                  if (depth === 0) {
-                    endPos = nextClose + '</hp:p>'.length;
-                  }
-                  pos = nextClose + 1;
-                }
-              }
-            }
+            const endPos = isTable
+              ? HwpxDocument.findClosingTagPosition(xml, nextPos + 1, '<hp:tbl', '</hp:tbl>')
+              : HwpxDocument.findClosingTagPosition(xml, nextPos + 1, '<hp:p ', '</hp:p>');
 
             if (endPos === -1) {
-              searchPos = nextPos + 10;
+              searchPos = nextPos + HwpxDocument.SEARCH_SKIP_OFFSET;
               continue;
             }
 
@@ -4200,7 +4199,7 @@ export class HwpxDocument {
 
             searchPos = endPos;
           } else {
-            searchPos = nextPos + 10;
+            searchPos = nextPos + HwpxDocument.SEARCH_SKIP_OFFSET;
           }
         }
 
@@ -4453,7 +4452,7 @@ export class HwpxDocument {
           if (nextPos === -1) break;
 
           // Check if this is inside a subList (nested)
-          const beforeText = xml.substring(Math.max(0, nextPos - 500), nextPos);
+          const beforeText = xml.substring(Math.max(0, nextPos - HwpxDocument.NESTED_CHECK_LOOKBACK), nextPos);
           const subListOpen = beforeText.lastIndexOf('<hp:subList');
           const subListClose = beforeText.lastIndexOf('</hp:subList>');
           const isNested = subListOpen > subListClose;
@@ -4462,49 +4461,12 @@ export class HwpxDocument {
             elementCount++;
 
             // Find the end of this element using balanced bracket matching
-            let endPos = -1;
-            if (isTable) {
-              // Use balanced bracket matching for tables (handles nested tables)
-              let depth = 1;
-              let pos = nextPos + 1;
-              while (depth > 0 && pos < xml.length) {
-                const nextOpen = xml.indexOf('<hp:tbl', pos);
-                const nextClose = xml.indexOf('</hp:tbl>', pos);
-                if (nextClose === -1) break;
-                if (nextOpen !== -1 && nextOpen < nextClose) {
-                  depth++;
-                  pos = nextOpen + 1;
-                } else {
-                  depth--;
-                  if (depth === 0) {
-                    endPos = nextClose + '</hp:tbl>'.length;
-                  }
-                  pos = nextClose + 1;
-                }
-              }
-            } else {
-              // Use balanced bracket matching for paragraphs (handles nested <hp:p>)
-              let depth = 1;
-              let pos = nextPos + 1;
-              while (depth > 0 && pos < xml.length) {
-                const nextOpen = xml.indexOf('<hp:p ', pos);
-                const nextClose = xml.indexOf('</hp:p>', pos);
-                if (nextClose === -1) break;
-                if (nextOpen !== -1 && nextOpen < nextClose) {
-                  depth++;
-                  pos = nextOpen + 1;
-                } else {
-                  depth--;
-                  if (depth === 0) {
-                    endPos = nextClose + '</hp:p>'.length;
-                  }
-                  pos = nextClose + 1;
-                }
-              }
-            }
+            const endPos = isTable
+              ? HwpxDocument.findClosingTagPosition(xml, nextPos + 1, '<hp:tbl', '</hp:tbl>')
+              : HwpxDocument.findClosingTagPosition(xml, nextPos + 1, '<hp:p ', '</hp:p>');
 
             if (endPos === -1) {
-              searchPos = nextPos + 10;
+              searchPos = nextPos + HwpxDocument.SEARCH_SKIP_OFFSET;
               continue;
             }
 
@@ -4515,7 +4477,7 @@ export class HwpxDocument {
 
             searchPos = endPos;
           } else {
-            searchPos = nextPos + 10;
+            searchPos = nextPos + HwpxDocument.SEARCH_SKIP_OFFSET;
           }
         }
 
