@@ -1,6 +1,6 @@
 # HWPX MCP Server - Enhanced Edition
 
-[![GitHub](https://img.shields.io/badge/GitHub-Dayoooun%2Fhwp--extension-blue?logo=github)](https://github.com/Dayoooun/hwp-extension)
+[![GitHub](https://img.shields.io/badge/GitHub-Dayoooun%2Fhwp--extension-blue?logo=github)](https://github.com/Dayoooun/hwpx-mcp)
 [![Fork](https://img.shields.io/badge/Forked%20from-mjyoo2%2Fhwp--extension-gray?logo=github)](https://github.com/mjyoo2/hwp-extension)
 
 > 🚀 **Original 프로젝트를 Fork하여 안정성과 기능을 대폭 개선한 버전입니다.**
@@ -50,29 +50,143 @@ AI 도구(Claude 등)와 연동하여 한글(HWPX) 문서를 자동으로 편집
 
 ## 📦 Installation
 
-### MCP 서버 설치
+### 1. MCP 서버 설치
 
 ```bash
-git clone https://github.com/Dayoooun/hwp-extension.git
-cd hwp-extension/mcp-server
+git clone https://github.com/Dayoooun/hwpx-mcp.git
+cd hwpx-mcp/mcp-server
 npm install
 npm run build
 ```
 
-### Claude Code 연동
+### 2. MCP 클라이언트 설정
 
-`~/.claude/claude_desktop_config.json` 또는 `.vscode/mcp.json`에 추가:
+아래에서 사용하는 클라이언트를 선택하세요.
 
+---
+
+#### 🖥️ Claude Desktop
+
+**설정 파일 위치:**
+| OS | 경로 |
+|----|------|
+| Windows | `%APPDATA%\Claude\claude_desktop_config.json` |
+| macOS | `~/Library/Application Support/Claude/claude_desktop_config.json` |
+| Linux | `~/.config/Claude/claude_desktop_config.json` |
+
+**설정 내용:**
 ```json
 {
   "mcpServers": {
-    "hwpx": {
+    "hwpx-mcp": {
       "command": "node",
-      "args": ["/path/to/hwp-extension/mcp-server/dist/index.js"]
+      "args": ["C:/path/to/hwpx-mcp/mcp-server/dist/index.js"]
     }
   }
 }
 ```
+
+> ⚠️ Windows에서는 경로에 `\\` 또는 `/` 사용 (예: `C:/Users/username/hwpx-mcp/...`)
+
+---
+
+#### 💻 Claude Code (CLI)
+
+**방법 1: 프로젝트별 설정** (`.mcp.json` 파일을 프로젝트 루트에 생성)
+```json
+{
+  "mcpServers": {
+    "hwpx-mcp": {
+      "command": "node",
+      "args": ["/path/to/hwpx-mcp/mcp-server/dist/index.js"]
+    }
+  }
+}
+```
+
+**방법 2: 전역 설정** (`~/.claude/settings.json`)
+```json
+{
+  "mcpServers": {
+    "hwpx-mcp": {
+      "command": "node",
+      "args": ["/path/to/hwpx-mcp/mcp-server/dist/index.js"]
+    }
+  }
+}
+```
+
+**방법 3: CLI 명령어로 추가**
+```bash
+claude mcp add hwpx-mcp node /path/to/hwpx-mcp/mcp-server/dist/index.js
+```
+
+---
+
+#### 🔷 Cursor
+
+**설정 파일:** `~/.cursor/mcp.json` (없으면 생성)
+
+```json
+{
+  "mcpServers": {
+    "hwpx-mcp": {
+      "command": "node",
+      "args": ["/path/to/hwpx-mcp/mcp-server/dist/index.js"]
+    }
+  }
+}
+```
+
+또는 **Cursor Settings > MCP** 에서 직접 추가 가능
+
+---
+
+#### 🆚 VS Code (MCP 확장 사용 시)
+
+**설정 파일:** `.vscode/mcp.json` (프로젝트 폴더 내)
+
+```json
+{
+  "servers": {
+    "hwpx-mcp": {
+      "command": "node",
+      "args": ["${workspaceFolder}/../hwpx-mcp/mcp-server/dist/index.js"]
+    }
+  }
+}
+```
+
+> `${workspaceFolder}` 변수를 활용하면 상대 경로 지정 가능
+
+---
+
+#### 🛠️ 기타 MCP 클라이언트
+
+일반적인 MCP 설정 형식:
+```json
+{
+  "mcpServers": {
+    "hwpx-mcp": {
+      "command": "node",
+      "args": ["/absolute/path/to/hwpx-mcp/mcp-server/dist/index.js"]
+    }
+  }
+}
+```
+
+**경로 예시:**
+| OS | 경로 예시 |
+|----|----------|
+| Windows | `C:/Users/username/hwpx-mcp/mcp-server/dist/index.js` |
+| macOS | `/Users/username/hwpx-mcp/mcp-server/dist/index.js` |
+| Linux | `/home/username/hwpx-mcp/mcp-server/dist/index.js` |
+
+---
+
+### 3. 설치 확인
+
+클라이언트 재시작 후 MCP 도구 목록에서 `hwpx-mcp` 서버와 77개 도구가 표시되면 성공!
 
 ---
 
@@ -386,4 +500,4 @@ MIT
 
 ## 🤝 Contributing
 
-버그 리포트 및 기능 요청: [GitHub Issues](https://github.com/Dayoooun/hwp-extension/issues)
+버그 리포트 및 기능 요청: [GitHub Issues](https://github.com/Dayoooun/hwpx-mcp/issues)
