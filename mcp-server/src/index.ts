@@ -211,7 +211,19 @@ const tools = [
   },
   {
     name: 'update_paragraph_text',
-    description: 'Update paragraph text content (HWPX only)',
+    description: `⭐ RECOMMENDED for template work. Update paragraph text content while PRESERVING existing styles (font, alignment, size).
+
+When working with templates/forms:
+- Use this tool to change text content only
+- Original paraPrIDRef (paragraph style) is kept intact
+- Existing formatting (alignment, font, size) remains unchanged
+
+Example workflow for templates:
+1. Open template file with pre-set styles
+2. Use update_paragraph_text to fill in content
+3. Save - all original formatting preserved
+
+⚠️ If you need to CHANGE alignment/style, use set_paragraph_style instead.`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -315,7 +327,14 @@ const tools = [
   // === Hanging Indent (내어쓰기) ===
   {
     name: 'set_hanging_indent',
-    description: 'Set hanging indent on a paragraph (HWPX only). Hanging indent pulls the first line left while indenting the rest of the lines.',
+    description: `Set hanging indent with MANUAL pt value (HWPX only).
+
+💡 In most cases, use set_auto_hanging_indent instead - it automatically detects markers and calculates the correct indent.
+
+Use this manual version only when:
+- You need a specific indent value (e.g., exactly 20pt)
+- Auto-detection doesn't work for your marker type
+- You want custom indentation regardless of marker`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -452,7 +471,18 @@ const tools = [
   },
   {
     name: 'replace_text',
-    description: 'Replace text in the document (HWPX only)',
+    description: `Find and replace text throughout the ENTIRE document (HWPX only).
+
+⚠️ This searches ALL paragraphs and table cells in the document.
+
+When to use:
+- Bulk replacement (e.g., change "2024" to "2025" everywhere)
+- Fix typos across the document
+- Replace placeholder text (e.g., "[NAME]" → "홍길동")
+
+When NOT to use:
+- Updating a specific paragraph → use update_paragraph_text
+- Updating a specific table cell → use update_table_cell or replace_text_in_cell`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -523,7 +553,21 @@ const tools = [
   },
   {
     name: 'get_table_map',
-    description: 'Get table map with headers - maps table indices to their header paragraphs. Returns table info including header text from preceding paragraph, size, empty status, and first row preview.',
+    description: `⭐ RECOMMENDED for finding tables. Returns ALL tables with their headers and metadata.
+
+Returns for each table:
+- table_index: Global index (use this for other table operations)
+- header: Text from the paragraph BEFORE the table (usually the table title)
+- size: rows × cols
+- is_empty: Whether table has content
+- first_row_preview: Preview of first row data
+
+Use this FIRST when working with tables, then use the table_index for:
+- get_table, update_table_cell, insert_image_in_cell, etc.
+
+Alternative tools:
+- find_table_by_header: Search by header text
+- get_tables: Raw table list without headers`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -698,7 +742,16 @@ NOTE: This inserts AFTER the table, not inside it. To insert an image INSIDE a t
   },
   {
     name: 'update_table_cell',
-    description: 'Update content of a table cell (HWPX only). Preserves existing charPrIDRef by default. Automatically applies hanging indent if text contains a marker.',
+    description: `⭐ RECOMMENDED for template work with tables. Update cell content while PRESERVING existing styles.
+
+Features:
+- Preserves existing charPrIDRef (font styles) by default
+- Automatically applies hanging indent if text contains markers (○, 1., 가., etc.)
+- Resets lineseg for proper text layout
+
+For template/form work:
+- Use this to fill in table cell content
+- Original cell formatting remains unchanged`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -1695,7 +1748,7 @@ Positioning within cell:
   },
   {
     name: 'get_raw_section_xml',
-    description: 'Get the raw XML content of a section for manual inspection or editing.',
+    description: `⚠️ DEPRECATED: Use get_section_xml instead. This tool is kept for backward compatibility only.`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -1707,7 +1760,7 @@ Positioning within cell:
   },
   {
     name: 'set_raw_section_xml',
-    description: 'Set the raw XML content of a section. Use with caution - validates XML structure by default.',
+    description: `⚠️ DEPRECATED: Use set_section_xml instead. This tool is kept for backward compatibility only.`,
     inputSchema: {
       type: 'object',
       properties: {
