@@ -1051,19 +1051,6 @@ NOTE: This inserts AFTER the table, not inside it. To insert an image INSIDE a t
     },
   },
 
-  // === Screenshot Verification ===
-  {
-    name: 'verify_screenshot',
-    description: 'Capture screenshot of recently modified element using Hancom Office (Windows + Hancom Office 2020+ only). Returns Base64 image for verification.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        doc_id: { type: 'string', description: 'Document ID' },
-      },
-      required: ['doc_id'],
-    },
-  },
-
   // === Header/Footer ===
   {
     name: 'get_header',
@@ -3040,23 +3027,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         );
         if (!result.success) return error(result.error || 'Failed to insert nested table');
         return success({ message: 'Nested table inserted successfully' });
-      }
-
-      // === Screenshot Verification ===
-      case 'verify_screenshot': {
-        const doc = getDoc(args?.doc_id as string);
-        if (!doc) return error('Document not found');
-
-        const result = await doc.verifyScreenshot();
-        if (!result.success) {
-          return error(result.error || 'Screenshot capture failed');
-        }
-
-        return success({
-          message: 'Screenshot captured successfully',
-          image: result.image,
-          element: result.element
-        });
       }
 
       // === Header/Footer ===

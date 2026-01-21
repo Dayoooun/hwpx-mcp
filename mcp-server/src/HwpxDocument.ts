@@ -88,34 +88,6 @@ export interface PositionIndexEntry {
   };
 }
 
-// Last modified element tracking for screenshot verification
-export interface LastModifiedElement {
-  type: 'table' | 'table_cell' | 'nested_table' | 'paragraph' | 'image';
-  sectionIndex: number;
-  elementIndex?: number;
-  tableIndex?: number;
-  parentTableIndex?: number;
-  row?: number;
-  col?: number;
-  description: string;
-  timestamp: number;
-}
-
-// Screenshot verification result
-export interface VerifyScreenshotResult {
-  success: boolean;
-  image?: string;  // Base64 encoded image data
-  element?: {
-    type: string;
-    sectionIndex: number;
-    tableIndex?: number;
-    row?: number;
-    col?: number;
-    description: string;
-  };
-  error?: string;
-}
-
 export class HwpxDocument {
   private _id: string;
   private _path: string;
@@ -167,7 +139,6 @@ export class HwpxDocument {
     insertOrder: number;  // Track insertion order for proper sequencing
   }> = [];
   private _tableInsertCounter = 0;  // Counter for insertion order
-  private _lastModifiedElement: LastModifiedElement | null = null;  // Track last modified element for screenshot verification
   private _pendingImageDeletes: Array<{
     imageId: string;
     binaryId: string;
@@ -1987,18 +1958,6 @@ export class HwpxDocument {
       cell.paragraphs = [{ id: Math.random().toString(36).substring(2, 11), runs: [{ text }] }];
     }
 
-    // Track last modified element for screenshot verification
-    const previewText = text.length > 20 ? text.substring(0, 20) + '...' : text;
-    this._lastModifiedElement = {
-      type: 'table_cell',
-      sectionIndex,
-      tableIndex,
-      row,
-      col,
-      description: `테이블 ${tableIndex} 셀 [${row},${col}]: "${previewText}"`,
-      timestamp: Date.now()
-    };
-
     this.markModified();
     return true;
   }
@@ -2631,16 +2590,6 @@ export class HwpxDocument {
       insertOrder: this._tableInsertCounter++,
     });
 
-    // Track last modified element for screenshot verification
-    this._lastModifiedElement = {
-      type: 'table',
-      sectionIndex,
-      elementIndex: afterElementIndex + 1,
-      tableIndex,
-      description: `테이블 ${tableIndex} (${rows}x${cols})`,
-      timestamp: Date.now()
-    };
-
     this.markModified();
     return { tableIndex };
   }
@@ -2718,18 +2667,6 @@ export class HwpxDocument {
       nestedCols,
       data: options?.data || []
     });
-
-    // Track last modified element for screenshot verification
-    this._lastModifiedElement = {
-      type: 'nested_table',
-      sectionIndex,
-      parentTableIndex,
-      tableIndex: parentTableIndex,
-      row,
-      col,
-      description: `중첩 테이블 (${nestedRows}x${nestedCols}) in 테이블 ${parentTableIndex} 셀 [${row},${col}]`,
-      timestamp: Date.now()
-    };
 
     this.markModified();
     return { success: true };
@@ -9575,242 +9512,5 @@ export class HwpxDocument {
       startIndex: absoluteStart,
       endIndex: absoluteEnd,
     };
-  }
-
-  // ============================================================
-  // Screenshot Verification
-  // ============================================================
-
-  /**
-   * Get the last modified element for screenshot verification.
-   */
-  getLastModifiedElement(): LastModifiedElement | null {
-    return this._lastModifiedElement;
-  }
-
-  /**
-   * Set the last modified element (internal use).
-   */
-  private setLastModifiedElement(element: LastModifiedElement): void {
-    this._lastModifiedElement = element;
-  }
-
-  /**
-   * Get document content as a Buffer (alias for save()).
-   */
-  async toBuffer(): Promise<Buffer> {
-    return await this.save();
-  }
-
-  /**
-   * Capture screenshot of the last modified element using Hancom Office.
-   * Windows + Hancom Office 2020+ only.
-   *
-   * @returns VerifyScreenshotResult with Base64 image or error
-   */
-  async verifyScreenshot(): Promise<VerifyScreenshotResult> {
-    // Check if there's a recent modification to screenshot
-    if (!this._lastModifiedElement) {
-      return {
-        success: false,
-        error: 'No recent modification to capture. Make changes to the document first.'
-      };
-    }
-
-    // Check platform
-    if (process.platform !== 'win32') {
-      return {
-        success: false,
-        error: 'Screenshot verification is only available on Windows with Hancom Office installed.'
-      };
-    }
-
-    try {
-      // Save document to a temporary file
-      const tempDir = process.env.TEMP || process.env.TMP || '/tmp';
-      const tempFileName = `hwpx_verify_${Date.now()}.hwpx`;
-      const tempFilePath = `${tempDir}\\${tempFileName}`;
-
-      const buffer = await this.save();
-      const fs = await import('fs');
-      fs.writeFileSync(tempFilePath, buffer);
-
-      // Try to capture screenshot using Hancom Office COM automation
-      const result = await this.captureWithHancomOffice(tempFilePath);
-
-      // Clean up temp file
-      try {
-        fs.unlinkSync(tempFilePath);
-      } catch {
-        // Ignore cleanup errors
-      }
-
-      if (result.success && result.image) {
-        return {
-          success: true,
-          image: result.image,
-          element: {
-            type: this._lastModifiedElement.type,
-            sectionIndex: this._lastModifiedElement.sectionIndex,
-            tableIndex: this._lastModifiedElement.tableIndex,
-            row: this._lastModifiedElement.row,
-            col: this._lastModifiedElement.col,
-            description: this._lastModifiedElement.description
-          }
-        };
-      }
-
-      return result;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      return {
-        success: false,
-        error: `Screenshot capture failed: ${message}`
-      };
-    }
-  }
-
-  /**
-   * Capture screenshot using Hancom Office COM automation via PowerShell.
-   */
-  private async captureWithHancomOffice(filePath: string): Promise<VerifyScreenshotResult> {
-    const { exec } = await import('child_process');
-    const { promisify } = await import('util');
-    const execAsync = promisify(exec);
-    const fs = await import('fs');
-    const path = await import('path');
-
-    const tempDir = process.env.TEMP || process.env.TMP || 'C:\\Temp';
-    const timestamp = Date.now();
-    const pdfPath = path.join(tempDir, `hwpx_verify_${timestamp}.pdf`);
-    const pngPath = path.join(tempDir, `hwpx_verify_${timestamp}.png`);
-    const psScriptPath = path.join(tempDir, `hwpx_verify_${timestamp}.ps1`);
-
-    // PowerShell script to open file in Hancom Office and export as PDF
-    const psScript = `
-$ErrorActionPreference = "Continue"
-try {
-    # Create Hancom Office COM object
-    $hwp = New-Object -ComObject HWPFrame.HwpObject
-    if (-not $hwp) {
-        Write-Output "ERROR: Failed to create HWPFrame.HwpObject"
-        exit 1
-    }
-
-    # Register security module to allow file operations
-    $hwp.RegisterModule("FilePathCheckDLL", "FilePathCheckerModule")
-
-    # Open the document
-    $result = $hwp.Open("${filePath.replace(/\\/g, '\\\\')}")
-    if (-not $result) {
-        Write-Output "ERROR: Failed to open file"
-        $hwp.Quit()
-        exit 1
-    }
-
-    Start-Sleep -Milliseconds 1000
-
-    # Export as PDF using HAction
-    $hwp.HAction.GetDefault("FileSaveAsPdf", $hwp.HParameterSet.HFileOpenSave.HSet)
-    $hwp.HParameterSet.HFileOpenSave.filename = "${pdfPath.replace(/\\/g, '\\\\')}"
-    $hwp.HParameterSet.HFileOpenSave.Format = "PDF"
-    $hwp.HAction.Execute("FileSaveAsPdf", $hwp.HParameterSet.HFileOpenSave.HSet)
-
-    Start-Sleep -Milliseconds 500
-
-    $hwp.Quit()
-    Write-Output "SUCCESS"
-} catch {
-    Write-Output "ERROR: $($_.Exception.Message)"
-    try { $hwp.Quit() } catch {}
-}
-`;
-
-    try {
-      // Write PowerShell script to temp file and execute
-      fs.writeFileSync(psScriptPath, psScript, 'utf8');
-      const { stdout } = await execAsync(
-        `powershell -ExecutionPolicy Bypass -File "${psScriptPath}"`,
-        { timeout: 30000 }
-      );
-
-      if (!stdout.includes('SUCCESS')) {
-        // Check if it's because Hancom Office is not installed
-        if (stdout.includes('New-Object') || stdout.includes('ComObject') || stdout.includes('CLSID')) {
-          return {
-            success: false,
-            error: 'Hancom Office is not installed or COM automation is not available.'
-          };
-        }
-        return {
-          success: false,
-          error: `Hancom Office automation failed: ${stdout}`
-        };
-      }
-
-      // Check if PDF was created
-      if (!fs.existsSync(pdfPath)) {
-        return {
-          success: false,
-          error: 'PDF export failed - file not created'
-        };
-      }
-
-      // Convert PDF to PNG using pdftoppm or similar
-      // For now, we'll use a simple approach with pdf2pic or return the PDF as base64
-      try {
-        // Try to convert PDF to PNG using poppler (pdftoppm)
-        await execAsync(`pdftoppm -png -f 1 -l 1 -singlefile "${pdfPath}" "${pngPath.replace('.png', '')}"`, { timeout: 10000 });
-
-        if (fs.existsSync(pngPath)) {
-          const imageBuffer = fs.readFileSync(pngPath);
-          const base64Image = `data:image/png;base64,${imageBuffer.toString('base64')}`;
-
-          // Cleanup
-          fs.unlinkSync(pdfPath);
-          fs.unlinkSync(pngPath);
-          try { fs.unlinkSync(psScriptPath); } catch { /* ignore */ }
-
-          return {
-            success: true,
-            image: base64Image
-          };
-        }
-      } catch {
-        // pdftoppm not available, try alternative approach
-      }
-
-      // Fallback: return PDF as base64 (Claude can still process it)
-      const pdfBuffer = fs.readFileSync(pdfPath);
-      const base64Pdf = `data:application/pdf;base64,${pdfBuffer.toString('base64')}`;
-
-      fs.unlinkSync(pdfPath);
-      try { fs.unlinkSync(psScriptPath); } catch { /* ignore */ }
-
-      return {
-        success: true,
-        image: base64Pdf
-      };
-
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-
-      // Clean up any temp files
-      try { fs.unlinkSync(pdfPath); } catch { /* ignore */ }
-      try { fs.unlinkSync(pngPath); } catch { /* ignore */ }
-      try { fs.unlinkSync(psScriptPath); } catch { /* ignore */ }
-
-      if (message.includes('timeout')) {
-        return {
-          success: false,
-          error: 'Hancom Office automation timed out. The program may be unresponsive.'
-        };
-      }
-
-      return {
-        success: false,
-        error: `Hancom Office automation error: ${message}`
-      };
-    }
   }
 }
