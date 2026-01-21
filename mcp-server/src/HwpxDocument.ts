@@ -180,6 +180,11 @@ export class HwpxDocument {
     paragraphId: string;
     text: string;
   }> = [];
+  private _pendingParagraphStyles: Array<{
+    sectionIndex: number;
+    elementIndex: number;
+    style: Partial<ParagraphStyle>;
+  }> = [];
 
   // Cache for character properties (id → font size in pt)
   private _charPrCache: Map<number, number> | null = null;
@@ -635,6 +640,14 @@ export class HwpxDocument {
 
     this.saveState();
     paragraph.paraStyle = { ...paragraph.paraStyle, ...style };
+
+    // Add to pending list for XML sync
+    this._pendingParagraphStyles.push({
+      sectionIndex,
+      elementIndex,
+      style,
+    });
+
     this.markModified();
   }
 
@@ -3904,6 +3917,12 @@ export class HwpxDocument {
       this._pendingTableCellHangingIndents = [];
     }
 
+    // Apply paragraph style changes (alignment, etc.)
+    if (this._pendingParagraphStyles && this._pendingParagraphStyles.length > 0) {
+      await this.applyParagraphStylesToXml();
+      this._pendingParagraphStyles = [];
+    }
+
     // NOTE: Do NOT call syncCharShapesToZip() here.
     // The current serialization is incomplete and loses critical attributes
     // (textColor, shadeColor, symMark, underline, strikeout, outline, shadow).
@@ -6401,6 +6420,10 @@ export class HwpxDocument {
         // Also try simple text replacement for cases where text is standalone
         xml = xml.replace(new RegExp(`>${this.escapeRegex(escapedOld)}<`, 'g'), `>${escapedNew}<`);
       }
+
+      // Reset lineseg in updated paragraphs (same as table cell updates)
+      // This allows Korean word processor to recalculate line layout
+      xml = this.resetLinesegInXml(xml);
 
       this._zip.file(sectionPath, xml);
       sectionIndex++;
@@ -9154,6 +9177,156 @@ export class HwpxDocument {
     this._documentChunks = [];
     this._positionIndex = [];
     this._lastChunkTime = 0;
+  }
+
+  // ============================================================
+  // Paragraph Style XML Operations
+  // ============================================================
+
+  /**
+   * Apply paragraph style changes (alignment, etc.) to XML files.
+   * Creates new paraPr elements in header.xml and updates paragraph references in section XML.
+   */
+  private async applyParagraphStylesToXml(): Promise<void> {
+    if (!this._zip || this._pendingParagraphStyles.length === 0) return;
+
+    // Read header.xml to find existing paraPr elements and their max ID
+    const headerPath = 'Contents/header.xml';
+    let headerXml = await this._zip.file(headerPath)?.async('string');
+    if (!headerXml) return;
+
+    // Find the maximum paraPr ID
+    const paraPrIdMatches = headerXml.matchAll(/<hh:paraPr[^>]*\sid="(\d+)"/g);
+    let maxParaPrId = 0;
+    for (const match of paraPrIdMatches) {
+      const id = parseInt(match[1], 10);
+      if (id > maxParaPrId) maxParaPrId = id;
+    }
+
+    // Map align values to HWPML values
+    const alignMap: Record<string, string> = {
+      'left': 'LEFT',
+      'center': 'CENTER',
+      'right': 'RIGHT',
+      'justify': 'JUSTIFY',
+      'distribute': 'DISTRIBUTE',
+    };
+
+    // Group updates by section
+    const updatesBySection = new Map<number, Array<{ elementIndex: number; style: Partial<ParagraphStyle>; newParaPrId: number }>>();
+
+    // Create new paraPr elements for each style change
+    const newParaPrs: string[] = [];
+    for (const update of this._pendingParagraphStyles) {
+      const newId = ++maxParaPrId;
+
+      // Build paraPr element with alignment
+      const align = update.style.align ? alignMap[update.style.align] || 'LEFT' : 'LEFT';
+      const lineSpacing = update.style.lineSpacing ?? 160; // default 160%
+
+      // Build paraPr element with hp:switch structure for Hangul compatibility
+      // Korean word processor requires this structure to properly recognize paragraph styles
+      const paraPrXml = `<hh:paraPr id="${newId}" tabPrIDRef="0" condense="0" fontLineHeight="0" snapToGrid="1" suppressLineNumbers="0" checked="0" textDir="AUTO">
+        <hh:align horizontal="${align}" vertical="BASELINE"/>
+        <hh:heading type="NONE" idRef="0" level="0"/>
+        <hh:breakSetting breakLatinWord="KEEP_WORD" breakNonLatinWord="BREAK_WORD" widowOrphan="0" keepWithNext="0" keepLines="0" pageBreakBefore="0" lineWrap="BREAK"/>
+        <hh:autoSpacing eAsianEng="0" eAsianNum="0"/>
+        <hp:switch>
+          <hp:case hp:required-namespace="http://www.hancom.co.kr/hwpml/2016/HwpUnitChar">
+            <hh:margin>
+              <hc:intent value="0" unit="HWPUNIT"/>
+              <hc:left value="0" unit="HWPUNIT"/>
+              <hc:right value="0" unit="HWPUNIT"/>
+              <hc:prev value="0" unit="HWPUNIT"/>
+              <hc:next value="0" unit="HWPUNIT"/>
+            </hh:margin>
+            <hh:lineSpacing type="PERCENT" value="${lineSpacing}" unit="HWPUNIT"/>
+          </hp:case>
+          <hp:default>
+            <hh:margin>
+              <hc:intent value="0" unit="HWPUNIT"/>
+              <hc:left value="0" unit="HWPUNIT"/>
+              <hc:right value="0" unit="HWPUNIT"/>
+              <hc:prev value="0" unit="HWPUNIT"/>
+              <hc:next value="0" unit="HWPUNIT"/>
+            </hh:margin>
+            <hh:lineSpacing type="PERCENT" value="${lineSpacing}" unit="HWPUNIT"/>
+          </hp:default>
+        </hp:switch>
+        <hh:border borderFillIDRef="1" offsetLeft="0" offsetRight="0" offsetTop="0" offsetBottom="0" connect="0" ignoreMargin="0"/>
+      </hh:paraPr>`;
+
+      newParaPrs.push(paraPrXml);
+
+      // Add to section updates map
+      if (!updatesBySection.has(update.sectionIndex)) {
+        updatesBySection.set(update.sectionIndex, []);
+      }
+      updatesBySection.get(update.sectionIndex)!.push({
+        elementIndex: update.elementIndex,
+        style: update.style,
+        newParaPrId: newId,
+      });
+    }
+
+    // Insert new paraPr elements into header.xml
+    if (newParaPrs.length > 0) {
+      // Update itemCnt in <hh:paraProperties>
+      // Korean word processor uses itemCnt to determine how many paraPr elements to read
+      const newItemCnt = maxParaPrId + 1; // maxParaPrId was incremented for each new paraPr
+      headerXml = headerXml.replace(
+        /<hh:paraProperties\s+itemCnt="(\d+)"/,
+        `<hh:paraProperties itemCnt="${newItemCnt}"`
+      );
+
+      // Find </hh:paraProperties> and insert before it
+      const insertPoint = headerXml.indexOf('</hh:paraProperties>');
+      if (insertPoint !== -1) {
+        headerXml = headerXml.substring(0, insertPoint) +
+          newParaPrs.join('\n') + '\n' +
+          headerXml.substring(insertPoint);
+      }
+      this._zip.file(headerPath, headerXml);
+    }
+
+    // Update section XMLs
+    for (const [sectionIndex, updates] of updatesBySection) {
+      const sectionPath = `Contents/section${sectionIndex}.xml`;
+      let sectionXml = await this._zip.file(sectionPath)?.async('string');
+      if (!sectionXml) continue;
+
+      // Find all paragraph elements
+      const paragraphElements: Array<{ start: number; end: number; content: string }> = [];
+      const pRegex = /<hp:p\s[^>]*>/g;
+      let match;
+      while ((match = pRegex.exec(sectionXml)) !== null) {
+        paragraphElements.push({
+          start: match.index,
+          end: match.index + match[0].length,
+          content: match[0],
+        });
+      }
+
+      // Update paraPrIDRef for each affected paragraph
+      // Sort updates by elementIndex in reverse order to avoid offset issues
+      const sortedUpdates = [...updates].sort((a, b) => b.elementIndex - a.elementIndex);
+
+      for (const update of sortedUpdates) {
+        if (update.elementIndex < paragraphElements.length) {
+          const para = paragraphElements[update.elementIndex];
+          // Replace paraPrIDRef in the paragraph element
+          const updatedContent = para.content.replace(
+            /paraPrIDRef="(\d+)"/,
+            `paraPrIDRef="${update.newParaPrId}"`
+          );
+          sectionXml = sectionXml.substring(0, para.start) +
+            updatedContent +
+            sectionXml.substring(para.end);
+        }
+      }
+
+      this._zip.file(sectionPath, sectionXml);
+    }
   }
 
   // ============================================================
