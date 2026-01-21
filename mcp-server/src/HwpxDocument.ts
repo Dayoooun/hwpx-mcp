@@ -9688,18 +9688,41 @@ export class HwpxDocument {
 
     // PowerShell script to open file in Hancom Office and export as PDF
     const psScript = `
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Continue"
 try {
+    # Create Hancom Office COM object
     $hwp = New-Object -ComObject HWPFrame.HwpObject
+    if (-not $hwp) {
+        Write-Output "ERROR: Failed to create HWPFrame.HwpObject"
+        exit 1
+    }
+
+    # Register security module to allow file operations
     $hwp.RegisterModule("FilePathCheckDLL", "FilePathCheckerModule")
-    $hwp.XHwpWindows.Item(0).Visible = $false
-    $hwp.Open("${filePath.replace(/\\/g, '\\\\')}", "HWP", "")
+
+    # Open the document
+    $result = $hwp.Open("${filePath.replace(/\\/g, '\\\\')}")
+    if (-not $result) {
+        Write-Output "ERROR: Failed to open file"
+        $hwp.Quit()
+        exit 1
+    }
+
+    Start-Sleep -Milliseconds 1000
+
+    # Export as PDF using HAction
+    $hwp.HAction.GetDefault("FileSaveAsPdf", $hwp.HParameterSet.HFileOpenSave.HSet)
+    $hwp.HParameterSet.HFileOpenSave.filename = "${pdfPath.replace(/\\/g, '\\\\')}"
+    $hwp.HParameterSet.HFileOpenSave.Format = "PDF"
+    $hwp.HAction.Execute("FileSaveAsPdf", $hwp.HParameterSet.HFileOpenSave.HSet)
+
     Start-Sleep -Milliseconds 500
-    $hwp.SaveAs("${pdfPath.replace(/\\/g, '\\\\')}", "PDF")
+
     $hwp.Quit()
     Write-Output "SUCCESS"
 } catch {
     Write-Output "ERROR: $($_.Exception.Message)"
+    try { $hwp.Quit() } catch {}
 }
 `;
 
