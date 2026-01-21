@@ -29,16 +29,24 @@ HWP/HWPX Editor - A VSCode extension for editing Hangul Word Processor documents
 
 **VSCode Extension (root directory):**
 ```bash
-npm run compile        # Build extension with esbuild
-npm run watch          # Watch mode for development
-npm run package        # Package as VSIX (requires vsce)
+pnpm compile           # Build extension with esbuild
+pnpm watch             # Watch mode for development
+pnpm package           # Package as VSIX (requires vsce)
 ```
 
 **MCP Server (mcp-server directory):**
 ```bash
 cd mcp-server
-npm run build          # Compile TypeScript
-npm run start          # Run the server
+pnpm build             # Compile TypeScript
+pnpm start             # Run the server
+```
+
+**Testing (MCP Server only):**
+```bash
+cd mcp-server
+pnpm test              # Run all tests (vitest)
+pnpm test:watch        # Watch mode for tests
+pnpm vitest run <file> # Run specific test file (e.g., pnpm vitest run src/HwpxDocument.test.ts)
 ```
 
 **Development:** Press F5 in VSCode to launch the extension in debug mode (uses `.vscode/launch.json`).
@@ -67,7 +75,23 @@ src/
 
 ### 2. MCP Server (mcp-server/)
 
-Standalone Model Context Protocol server for AI integration. Provides tools for document operations: `open_document`, `get_document_text`, `get_paragraphs`, `get_tables`, `search_text`, `replace_text`, `save_document`.
+Standalone Model Context Protocol server for AI integration. Provides 77+ tools for document operations.
+
+```
+mcp-server/src/
+├── index.ts               # MCP server entry point, tool definitions
+├── HwpxDocument.ts        # Core document model (open, save, edit operations)
+├── HwpxParser.ts          # HWPX format parser
+├── HangingIndentCalculator.ts  # Calculates hanging indent widths
+├── types.ts               # Shared type definitions
+└── *.test.ts              # Test files (vitest)
+```
+
+**Key methods in HwpxDocument.ts:**
+- `open()` / `save()` - File I/O with atomic writes
+- `getParagraphs()` / `updateParagraphText()` - Paragraph manipulation
+- `getTables()` / `updateTableCell()` - Table editing with lineseg reset
+- `insertImage()` / `renderMermaid()` - Image insertion with BinData registration
 
 ## Key Dependencies
 
@@ -80,6 +104,25 @@ Standalone Model Context Protocol server for AI integration. Provides tools for 
 - **HWPX files** are ZIP archives containing XML files following the HWPML specification
 - **HWP files** are binary OLE compound documents (read-only support via hwp.js)
 - Type definitions in `src/hwpx/types.ts` are based on the official Korean HWPML specification
+
+### HWPX ZIP Structure
+```
+*.hwpx (ZIP archive)
+├── Contents/
+│   ├── section0.xml      # Main document content (paragraphs, tables)
+│   ├── header.xml        # Document settings (styles, charShapes, paraShapes)
+│   └── content.hpf       # Manifest (lists all files)
+├── BinData/              # Embedded files (images)
+├── Preview/              # Thumbnail images
+└── version.xml           # Format version info
+```
+
+### Unit Conversion
+HWPML uses "hwpunit" where **1 point = 100 hwpunit**:
+```
+hwpunit = points × 100
+10pt font → 1000 hwpunit
+```
 
 ## Reference Documentation
 
