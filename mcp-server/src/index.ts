@@ -62,6 +62,34 @@ function generateId(): string {
 // ============================================================
 
 const tools = [
+  // === 🎯 Tool Guide (START HERE) ===
+  {
+    name: 'get_tool_guide',
+    description: `🎯 START HERE! Get recommended tools for your task. Call this FIRST to understand which tools to use.
+
+Available workflows:
+- "template": Fill content into existing template/form (preserving styles)
+- "table": Work with tables (find, read, modify)
+- "image": Insert images or diagrams
+- "search": Find and replace text
+- "read": Read and analyze document content
+- "create": Create new document from scratch
+- "all": Get complete tool reference
+
+Example: get_tool_guide({ workflow: "template" })`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        workflow: {
+          type: 'string',
+          description: 'Workflow type: template, table, image, search, read, create, or all',
+          enum: ['template', 'table', 'image', 'search', 'read', 'create', 'all']
+        },
+      },
+      required: ['workflow'],
+    },
+  },
+
   // === Document Management ===
   {
     name: 'open_document',
@@ -998,10 +1026,10 @@ For template/form work:
     },
   },
 
-  // === Images ===
+  // === Image Info (see "Image Operations" section for insert/render) ===
   {
     name: 'get_images',
-    description: 'Get all images in the document',
+    description: 'Get all images in the document. For inserting images, see insert_image or insert_image_in_cell.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1968,6 +1996,165 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   try {
     switch (name) {
+      // === 🎯 Tool Guide ===
+      case 'get_tool_guide': {
+        const workflow = args?.workflow as string;
+
+        const guides: Record<string, string> = {
+          template: `📋 TEMPLATE/FORM WORKFLOW (양식 작업)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+⭐ CORE TOOLS (these preserve existing styles):
+1. open_document - Open the template file
+2. get_table_map - Find all tables with their headers
+3. update_table_cell - Fill table cells (keeps formatting!)
+4. update_paragraph_text - Fill paragraphs (keeps formatting!)
+5. save_document - Save changes
+
+💡 KEY INSIGHT:
+When working with templates, use update_* tools instead of replace_*.
+They preserve the original formatting (font, alignment, size).
+
+📝 EXAMPLE WORKFLOW:
+1. open_document({ file_path: "template.hwpx" })
+2. get_table_map({ doc_id: "..." }) → find target table
+3. update_table_cell({ ..., text: "새 내용" }) → fill cells
+4. save_document({ doc_id: "...", output_path: "filled.hwpx" })`,
+
+          table: `📊 TABLE WORKFLOW (테이블 작업)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+⭐ FINDING TABLES:
+- get_table_map ⭐ - Best! Returns all tables with headers
+- find_table_by_header - Search by header text
+- get_tables - Raw table list
+
+⭐ READING TABLE DATA:
+- get_table - Get full table data
+- get_table_cell - Get specific cell content
+- get_table_as_csv - Export as CSV
+
+⭐ MODIFYING TABLES:
+- update_table_cell ⭐ - Update cell content (preserves style)
+- replace_text_in_cell - Find/replace within cell
+- set_cell_properties - Change cell formatting
+- merge_cells / split_cell - Merge or split cells
+
+⭐ CREATING TABLES:
+- insert_table - Create new table
+- insert_table_row / insert_table_column - Add rows/columns
+- delete_table_row / delete_table_column - Remove rows/columns`,
+
+          image: `🖼️ IMAGE WORKFLOW (이미지 삽입)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+⚠️ CRITICAL: Choose the RIGHT tool based on location!
+
+📍 OUTSIDE tables (between paragraphs):
+- insert_image - Insert image file
+- render_mermaid - Insert Mermaid diagram
+
+📍 INSIDE table cells:
+- insert_image_in_cell ⭐ - Insert image INTO a cell
+- render_mermaid_in_cell - Insert diagram INTO a cell
+
+🔍 FINDING THE RIGHT POSITION:
+1. find_insert_position_after_header({ header_text: "..." })
+2. Check the 'found_in' field in result:
+   - found_in='paragraph' → use insert_image
+   - found_in='table_cell' → use insert_image_in_cell with table_info
+
+💡 COMMON MISTAKE:
+Using insert_image when text is inside a table cell.
+The image will appear AFTER the table, not inside the cell!`,
+
+          search: `🔍 SEARCH & REPLACE WORKFLOW
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+⭐ SEARCHING:
+- search_text - Find text in document (paragraphs + tables)
+- find_paragraph_by_text - Find paragraph by content
+- find_table_by_header - Find table by header
+
+⭐ REPLACING:
+- replace_text - Replace throughout ENTIRE document
+- replace_text_in_cell - Replace within specific cell
+- batch_replace - Multiple replacements at once
+
+💡 WHEN TO USE WHICH:
+- Bulk replacement (2024→2025 everywhere) → replace_text
+- Specific cell only → replace_text_in_cell
+- Specific paragraph → update_paragraph_text`,
+
+          read: `📖 READING/ANALYZING WORKFLOW
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+⭐ QUICK OVERVIEW:
+- get_document_text - Get all text content
+- get_document_structure - See sections, paragraphs, tables count
+- get_document_outline - Hierarchical TOC-like view
+- extract_toc - Extract table of contents
+
+⭐ DETAILED READING:
+- get_paragraphs - Get all paragraphs with details
+- get_table_map - Get all tables with headers
+- get_table - Get specific table data
+
+⭐ LARGE DOCUMENT ANALYSIS (Agentic):
+- chunk_document - Split into chunks for analysis
+- search_chunks - Search within chunks
+- build_position_index - Create searchable index`,
+
+          create: `📝 CREATE NEW DOCUMENT WORKFLOW
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+⭐ BASIC CREATION:
+1. create_document({ title: "..." }) - Create empty document
+2. insert_paragraph - Add paragraphs
+3. insert_table - Add tables
+4. save_document - Save to file
+
+⭐ STYLING:
+- set_paragraph_style - Set alignment, line spacing
+- set_text_style - Set font, size, color
+- set_auto_hanging_indent - Auto hanging indent for markers
+
+⚠️ NOTE:
+Creating styled documents from scratch is complex.
+For best results, start with a template file instead.`,
+
+          all: `📚 COMPLETE TOOL REFERENCE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🎯 TOP 10 MOST USED TOOLS:
+1. open_document / save_document / close_document
+2. get_table_map ⭐ - Find tables
+3. update_table_cell ⭐ - Fill table cells
+4. update_paragraph_text ⭐ - Fill paragraphs
+5. search_text / replace_text - Find/replace
+6. insert_image / insert_image_in_cell - Add images
+7. get_document_text - Read content
+8. set_auto_hanging_indent - Format lists
+9. render_mermaid / render_mermaid_in_cell - Add diagrams
+10. get_document_outline - Document structure
+
+📁 CATEGORIES:
+- Document: open, save, close, create
+- Paragraphs: get, insert, update, delete, style
+- Tables: get_table_map, get_table, update_cell, insert
+- Images: insert_image, insert_image_in_cell, render_mermaid
+- Search: search_text, replace_text, batch_replace
+- Formatting: set_paragraph_style, set_text_style, hanging_indent
+- Advanced: XML operations, chunking, position index
+
+💡 WORKFLOW GUIDES:
+Call get_tool_guide with: template, table, image, search, read, create`
+        };
+
+        const guide = guides[workflow] || guides['all'];
+        return success({ workflow, guide });
+      }
+
       // === Document Management ===
       case 'open_document': {
         const filePath = args?.file_path as string;
