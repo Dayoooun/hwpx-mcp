@@ -6639,289 +6639,272 @@ export class HwpxDocument {
     const escapedOld = this.escapeXml(oldText);
     const escapedNew = this.escapeXml(newText);
 
-    // Step 1: Find all table ranges first (like HwpxParser does)
-    const tableRanges: { start: number; end: number }[] = [];
-    const tableRegex = /<hp:tbl\b/g;
-    let tableMatch;
+    // CRITICAL: Match HwpxParser.parseSection logic EXACTLY
+    // Step 1: Clean XML first (remove MEMO, footnote, endnote content) - same as HwpxParser
+    let cleanedXml = xml.replace(/<hp:fieldBegin[^>]*type="MEMO"[^>]*>[\s\S]*?<\/hp:fieldBegin>/gi, '');
+    cleanedXml = cleanedXml.replace(/<hp:footNote\b[^>]*>[\s\S]*?<\/hp:footNote>/gi, '');
+    cleanedXml = cleanedXml.replace(/<hp:endNote\b[^>]*>[\s\S]*?<\/hp:endNote>/gi, '');
 
-    while ((tableMatch = tableRegex.exec(xml)) !== null) {
-      const tableStart = tableMatch.index;
-      // Find the matching closing tag
-      let depth = 1;
-      let searchPos = tableStart + tableMatch[0].length;
-      let tableEnd = -1;
+    // Step 2: Extract all paragraphs from cleaned XML (same as HwpxParser.extractAllParagraphs)
+    const extractAllParagraphs = (xmlStr: string): { xml: string; start: number; end: number }[] => {
+      const results: { xml: string; start: number; end: number }[] = [];
+      const closeTag = '</hp:p>';
+      const pOpenRegex = /<hp:p\b[^>]*>/g;
+      const pOpenSearchRegex = /<hp:p[\s>]/g;
+      let match;
 
-      while (depth > 0 && searchPos < xml.length) {
-        const nextOpen = xml.indexOf('<hp:tbl', searchPos);
-        const nextClose = xml.indexOf('</hp:tbl>', searchPos);
-
-        if (nextClose === -1) break;
-
-        if (nextOpen !== -1 && nextOpen < nextClose) {
-          depth++;
-          searchPos = nextOpen + 1;
-        } else {
-          depth--;
-          if (depth === 0) {
-            tableEnd = nextClose + '</hp:tbl>'.length;
-          }
-          searchPos = nextClose + 1;
-        }
-      }
-
-      if (tableEnd !== -1) {
-        tableRanges.push({ start: tableStart, end: tableEnd });
-      }
-    }
-
-    // Step 2: Find all <hp:p> tags and filter out those inside tables
-    const paragraphRegex = /<hp:p\b/g;
-    const topLevelParagraphs: { start: number; end: number }[] = [];
-    let paraMatch;
-
-    while ((paraMatch = paragraphRegex.exec(xml)) !== null) {
-      const paraStart = paraMatch.index;
-
-      // Check if this paragraph is inside any table
-      const isInsideTable = tableRanges.some(
-        range => paraStart > range.start && paraStart < range.end
-      );
-
-      if (!isInsideTable) {
-        // Find the matching closing tag
+      while ((match = pOpenRegex.exec(xmlStr)) !== null) {
+        const startPos = match.index;
         let depth = 1;
-        let searchPos = paraStart + paraMatch[0].length;
-        let paraEnd = -1;
+        let searchPos = startPos + match[0].length;
 
-        while (depth > 0 && searchPos < xml.length) {
-          const nextOpen = xml.indexOf('<hp:p', searchPos);
-          const nextClose = xml.indexOf('</hp:p>', searchPos);
+        while (depth > 0 && searchPos < xmlStr.length) {
+          pOpenSearchRegex.lastIndex = searchPos;
+          const nextOpenMatch = pOpenSearchRegex.exec(xmlStr);
+          const nextOpen = nextOpenMatch ? nextOpenMatch.index : -1;
+          const nextClose = xmlStr.indexOf(closeTag, searchPos);
 
           if (nextClose === -1) break;
 
           if (nextOpen !== -1 && nextOpen < nextClose) {
             depth++;
-            searchPos = nextOpen + 1;
+            searchPos = nextOpen + 6;
           } else {
             depth--;
             if (depth === 0) {
-              paraEnd = nextClose + '</hp:p>'.length;
+              const endPos = nextClose + closeTag.length;
+              results.push({
+                xml: xmlStr.substring(startPos, endPos),
+                start: startPos,
+                end: endPos
+              });
             }
-            searchPos = nextClose + 1;
+            searchPos = nextClose + closeTag.length;
           }
         }
+      }
+      return results;
+    };
 
-        if (paraEnd !== -1) {
-          topLevelParagraphs.push({ start: paraStart, end: paraEnd });
+    // Step 3: Extract balanced tags helper (same as HwpxParser.extractBalancedTags)
+    const extractBalancedTags = (xmlStr: string, tagName: string): string[] => {
+      const results: string[] = [];
+      const openTag = `<${tagName}`;
+      const closeTag = `</${tagName}>`;
+      let searchStart = 0;
+
+      while (true) {
+        const openIndex = xmlStr.indexOf(openTag, searchStart);
+        if (openIndex === -1) break;
+
+        let depth = 1;
+        let pos = openIndex + openTag.length;
+
+        while (depth > 0 && pos < xmlStr.length) {
+          const nextOpen = xmlStr.indexOf(openTag, pos);
+          const nextClose = xmlStr.indexOf(closeTag, pos);
+
+          if (nextClose === -1) break;
+
+          if (nextOpen !== -1 && nextOpen < nextClose) {
+            depth++;
+            pos = nextOpen + openTag.length;
+          } else {
+            depth--;
+            if (depth === 0) {
+              results.push(xmlStr.substring(openIndex, nextClose + closeTag.length));
+            }
+            pos = nextClose + closeTag.length;
+          }
         }
+        searchStart = openIndex + 1;
+      }
+      return results;
+    };
+
+    // Step 4: Build element list from CLEANED XML (same logic as HwpxParser.parseSection)
+    const paragraphs = extractAllParagraphs(cleanedXml);
+    const tables = extractBalancedTags(cleanedXml, 'hp:tbl');
+
+    const tableRanges: { start: number; end: number }[] = [];
+    for (const tableXml of tables) {
+      const tableIndex = cleanedXml.indexOf(tableXml);
+      if (tableIndex !== -1) {
+        tableRanges.push({ start: tableIndex, end: tableIndex + tableXml.length });
       }
     }
 
-    // Step 2b: Find all other element types (images, shapes, etc.)
-    const otherElements: { type: string; start: number; end: number }[] = [];
-
-    // Images
-    const picRegex = /<hp:pic\b[^>]*>[\s\S]*?<\/hp:pic>/g;
-    let picMatch;
-    while ((picMatch = picRegex.exec(xml)) !== null) {
-      otherElements.push({ type: 'pic', start: picMatch.index, end: picMatch.index + picMatch[0].length });
-    }
-
-    // Line
-    const lineRegex = /<hp:line\b[^>]*(?:\/>|>[\s\S]*?<\/hp:line>)/g;
-    let lineMatch;
-    while ((lineMatch = lineRegex.exec(xml)) !== null) {
-      otherElements.push({ type: 'line', start: lineMatch.index, end: lineMatch.index + lineMatch[0].length });
-    }
-
-    // Rectangle
-    const rectRegex = /<hp:rect\b[^>]*(?:\/>|>[\s\S]*?<\/hp:rect>)/g;
-    let rectMatch;
-    while ((rectMatch = rectRegex.exec(xml)) !== null) {
-      otherElements.push({ type: 'rect', start: rectMatch.index, end: rectMatch.index + rectMatch[0].length });
-    }
-
-    // Ellipse
-    const ellipseRegex = /<hp:ellipse\b[^>]*(?:\/>|>[\s\S]*?<\/hp:ellipse>)/g;
-    let ellipseMatch;
-    while ((ellipseMatch = ellipseRegex.exec(xml)) !== null) {
-      otherElements.push({ type: 'ellipse', start: ellipseMatch.index, end: ellipseMatch.index + ellipseMatch[0].length });
-    }
-
-    // Arc
-    const arcRegex = /<hp:arc\b[^>]*(?:\/>|>[\s\S]*?<\/hp:arc>)/g;
-    let arcMatch;
-    while ((arcMatch = arcRegex.exec(xml)) !== null) {
-      otherElements.push({ type: 'arc', start: arcMatch.index, end: arcMatch.index + arcMatch[0].length });
-    }
-
-    // Polygon
-    const polygonRegex = /<hp:polygon\b[^>]*(?:\/>|>[\s\S]*?<\/hp:polygon>)/g;
-    let polygonMatch;
-    while ((polygonMatch = polygonRegex.exec(xml)) !== null) {
-      otherElements.push({ type: 'polygon', start: polygonMatch.index, end: polygonMatch.index + polygonMatch[0].length });
-    }
-
-    // Curve
-    const curveRegex = /<hp:curve\b[^>]*(?:\/>|>[\s\S]*?<\/hp:curve>)/g;
-    let curveMatch;
-    while ((curveMatch = curveRegex.exec(xml)) !== null) {
-      otherElements.push({ type: 'curve', start: curveMatch.index, end: curveMatch.index + curveMatch[0].length });
-    }
-
-    // ConnectLine
-    const connectLineRegex = /<hp:connectLine\b[^>]*(?:\/>|>[\s\S]*?<\/hp:connectLine>)/g;
-    let connectLineMatch;
-    while ((connectLineMatch = connectLineRegex.exec(xml)) !== null) {
-      otherElements.push({ type: 'connectline', start: connectLineMatch.index, end: connectLineMatch.index + connectLineMatch[0].length });
-    }
-
-    // Container
-    const containerRegex = /<hp:container\b[^>]*>[\s\S]*?<\/hp:container>/g;
-    let containerMatch;
-    while ((containerMatch = containerRegex.exec(xml)) !== null) {
-      otherElements.push({ type: 'container', start: containerMatch.index, end: containerMatch.index + containerMatch[0].length });
-    }
-
-    // OLE
-    const oleRegex = /<hp:ole\b[^>]*(?:\/>|>[\s\S]*?<\/hp:ole>)/g;
-    let oleMatch;
-    while ((oleMatch = oleRegex.exec(xml)) !== null) {
-      otherElements.push({ type: 'ole', start: oleMatch.index, end: oleMatch.index + oleMatch[0].length });
-    }
-
-    // Equation
-    const equationRegex = /<hp:equation\b[^>]*(?:\/>|>[\s\S]*?<\/hp:equation>)/g;
-    let equationMatch;
-    while ((equationMatch = equationRegex.exec(xml)) !== null) {
-      otherElements.push({ type: 'equation', start: equationMatch.index, end: equationMatch.index + equationMatch[0].length });
-    }
-
-    // TextArt
-    const textArtRegex = /<hp:textArt\b[^>]*(?:\/>|>[\s\S]*?<\/hp:textArt>)/g;
-    let textArtMatch;
-    while ((textArtMatch = textArtRegex.exec(xml)) !== null) {
-      otherElements.push({ type: 'textart', start: textArtMatch.index, end: textArtMatch.index + textArtMatch[0].length });
-    }
-
-    // UnknownObject
-    const unknownObjRegex = /<hp:unknownObj\b[^>]*(?:\/>|>[\s\S]*?<\/hp:unknownObj>)/g;
-    let unknownObjMatch;
-    while ((unknownObjMatch = unknownObjRegex.exec(xml)) !== null) {
-      otherElements.push({ type: 'unknownobject', start: unknownObjMatch.index, end: unknownObjMatch.index + unknownObjMatch[0].length });
-    }
-
-    // Button
-    const buttonRegex = /<hp:button\b[^>]*(?:\/>|>[\s\S]*?<\/hp:button>)/g;
-    let buttonMatch;
-    while ((buttonMatch = buttonRegex.exec(xml)) !== null) {
-      otherElements.push({ type: 'button', start: buttonMatch.index, end: buttonMatch.index + buttonMatch[0].length });
-    }
-
-    // RadioButton
-    const radioButtonRegex = /<hp:radioButton\b[^>]*(?:\/>|>[\s\S]*?<\/hp:radioButton>)/g;
-    let radioButtonMatch;
-    while ((radioButtonMatch = radioButtonRegex.exec(xml)) !== null) {
-      otherElements.push({ type: 'radiobutton', start: radioButtonMatch.index, end: radioButtonMatch.index + radioButtonMatch[0].length });
-    }
-
-    // CheckButton
-    const checkButtonRegex = /<hp:checkButton\b[^>]*(?:\/>|>[\s\S]*?<\/hp:checkButton>)/g;
-    let checkButtonMatch;
-    while ((checkButtonMatch = checkButtonRegex.exec(xml)) !== null) {
-      otherElements.push({ type: 'checkbutton', start: checkButtonMatch.index, end: checkButtonMatch.index + checkButtonMatch[0].length });
-    }
-
-    // ComboBox
-    const comboBoxRegex = /<hp:comboBox\b[^>]*(?:\/>|>[\s\S]*?<\/hp:comboBox>)/g;
-    let comboBoxMatch;
-    while ((comboBoxMatch = comboBoxRegex.exec(xml)) !== null) {
-      otherElements.push({ type: 'combobox', start: comboBoxMatch.index, end: comboBoxMatch.index + comboBoxMatch[0].length });
-    }
-
-    // Edit
-    const editRegex = /<hp:edit\b[^>]*(?:\/>|>[\s\S]*?<\/hp:edit>)/g;
-    let editMatch;
-    while ((editMatch = editRegex.exec(xml)) !== null) {
-      otherElements.push({ type: 'edit', start: editMatch.index, end: editMatch.index + editMatch[0].length });
-    }
-
-    // ListBox
-    const listBoxRegex = /<hp:listBox\b[^>]*(?:\/>|>[\s\S]*?<\/hp:listBox>)/g;
-    let listBoxMatch;
-    while ((listBoxMatch = listBoxRegex.exec(xml)) !== null) {
-      otherElements.push({ type: 'listbox', start: listBoxMatch.index, end: listBoxMatch.index + listBoxMatch[0].length });
-    }
-
-    // ScrollBar
-    const scrollBarRegex = /<hp:scrollBar\b[^>]*(?:\/>|>[\s\S]*?<\/hp:scrollBar>)/g;
-    let scrollBarMatch;
-    while ((scrollBarMatch = scrollBarRegex.exec(xml)) !== null) {
-      otherElements.push({ type: 'scrollbar', start: scrollBarMatch.index, end: scrollBarMatch.index + scrollBarMatch[0].length });
-    }
-
-    // Video
-    const videoRegex = /<hp:video\b[^>]*(?:\/>|>[\s\S]*?<\/hp:video>)/g;
-    let videoMatch;
-    while ((videoMatch = videoRegex.exec(xml)) !== null) {
-      otherElements.push({ type: 'video', start: videoMatch.index, end: videoMatch.index + videoMatch[0].length });
-    }
-
-    // Chart
-    const chartRegex = /<hp:chart\b[^>]*(?:\/>|>[\s\S]*?<\/hp:chart>)/g;
-    let chartMatch;
-    while ((chartMatch = chartRegex.exec(xml)) !== null) {
-      otherElements.push({ type: 'chart', start: chartMatch.index, end: chartMatch.index + chartMatch[0].length });
-    }
-
-    // Step 3: Combine tables, top-level paragraphs, and all other elements, sort by position
-    interface TopLevelElement {
-      type: 'p' | 'tbl' | 'pic' | 'line' | 'rect' | 'ellipse' | 'arc' | 'polygon' | 'curve' |
-            'connectline' | 'container' | 'ole' | 'equation' | 'textart' | 'unknownobject' |
-            'button' | 'radiobutton' | 'checkbutton' | 'combobox' | 'edit' | 'listbox' |
-            'scrollbar' | 'video' | 'chart';
+    interface CleanedElement {
+      type: string;
       start: number;
       end: number;
+      xml: string;
+    }
+    const elements: CleanedElement[] = [];
+
+    // Add tables
+    for (const range of tableRanges) {
+      elements.push({ type: 'tbl', start: range.start, end: range.end, xml: cleanedXml.substring(range.start, range.end) });
     }
 
-    const topLevelElements: TopLevelElement[] = [
-      ...topLevelParagraphs.map(p => ({ type: 'p' as const, ...p })),
-      ...tableRanges.map(t => ({ type: 'tbl' as const, ...t })),
-      ...otherElements.map(e => ({ type: e.type as any, start: e.start, end: e.end })),
-    ].sort((a, b) => a.start - b.start);
+    // Add paragraphs - same logic as HwpxParser.parseSection lines 1283-1314
+    for (const para of paragraphs) {
+      const isInsideTable = tableRanges.some(
+        range => para.start > range.start && para.start < range.end
+      );
+      const containsTable = tableRanges.some(
+        range => range.start >= para.start && range.end <= para.end
+      );
 
-    // Step 4: First try to find the element at the specified index
-    let targetElement: TopLevelElement | undefined;
-
-    if (elementIndex >= 0 && elementIndex < topLevelElements.length) {
-      const element = topLevelElements[elementIndex];
-      if (element.type === 'p') {
-        const elementContent = xml.slice(element.start, element.end);
-        // Check if this paragraph contains the oldText
-        if (elementContent.includes(escapedOld)) {
-          targetElement = element;
+      if (!isInsideTable) {
+        if (containsTable) {
+          // Paragraph contains a table - remove the table XML and parse the remaining content
+          let paraXmlWithoutTable = para.xml;
+          for (const range of tableRanges) {
+            if (range.start >= para.start && range.end <= para.start + para.xml.length) {
+              const tableStartInPara = range.start - para.start;
+              const tableEndInPara = range.end - para.start;
+              const tableXmlInPara = para.xml.substring(tableStartInPara, tableEndInPara);
+              paraXmlWithoutTable = paraXmlWithoutTable.replace(tableXmlInPara, '');
+            }
+          }
+          // Only add if there's remaining content besides lineseg
+          const hasTextContent = /<hp:t\b[^>]*>/.test(paraXmlWithoutTable);
+          if (hasTextContent) {
+            elements.push({ type: 'p', start: para.start, end: para.end, xml: paraXmlWithoutTable });
+          }
+        } else {
+          elements.push({ type: 'p', start: para.start, end: para.end, xml: para.xml });
         }
       }
     }
 
-    // Step 5: Perform the replacement if target was found
-    if (targetElement) {
-      const elementContent = xml.slice(targetElement.start, targetElement.end);
+    // Add other element types (line, rect, ellipse, arc, polygon, curve, connectline)
+    const addShapeElements = (pattern: RegExp, typeName: string) => {
+      let match;
+      while ((match = pattern.exec(cleanedXml)) !== null) {
+        elements.push({ type: typeName, start: match.index, end: match.index + match[0].length, xml: match[0] });
+      }
+    };
 
-      // Replace text within <hp:t> tags (first match only within this element)
-      const pattern1 = new RegExp(`(<hp:t[^>]*>)${this.escapeRegex(escapedOld)}`);
-      let newElementContent = elementContent.replace(pattern1, `$1${escapedNew}`);
+    addShapeElements(/<hp:line\b[^>]*(?:\/>|>[\s\S]*?<\/hp:line>)/g, 'line');
+    addShapeElements(/<hp:rect\b[^>]*(?:\/>|>[\s\S]*?<\/hp:rect>)/g, 'rect');
+    addShapeElements(/<hp:ellipse\b[^>]*(?:\/>|>[\s\S]*?<\/hp:ellipse>)/g, 'ellipse');
+    addShapeElements(/<hp:arc\b[^>]*(?:\/>|>[\s\S]*?<\/hp:arc>)/g, 'arc');
+    addShapeElements(/<hp:polygon\b[^>]*(?:\/>|>[\s\S]*?<\/hp:polygon>)/g, 'polygon');
+    addShapeElements(/<hp:curve\b[^>]*(?:\/>|>[\s\S]*?<\/hp:curve>)/g, 'curve');
+    addShapeElements(/<hp:connectLine\b[^>]*(?:\/>|>[\s\S]*?<\/hp:connectLine>)/g, 'connectline');
 
-      // Also try standalone text replacement
-      const pattern2 = new RegExp(`>${this.escapeRegex(escapedOld)}<`);
-      newElementContent = newElementContent.replace(pattern2, `>${escapedNew}<`);
+    // Sort by position (same as HwpxParser)
+    elements.sort((a, b) => a.start - b.start);
 
-      // Reconstruct XML with updated element
-      return xml.slice(0, targetElement.start) + newElementContent + xml.slice(targetElement.end);
+    // Step 5: Find target element at specified index
+    if (elementIndex < 0 || elementIndex >= elements.length) {
+      return xml; // Index out of bounds
     }
 
-    // Element not found, return unchanged
-    return xml;
+    const targetElement = elements[elementIndex];
+    if (targetElement.type !== 'p') {
+      return xml; // Not a paragraph, can't replace text
+    }
+
+    // Step 6: Now we need to find the SAME paragraph in the ORIGINAL XML
+    // The paragraph might be at a different position due to MEMO/footnote/endnote removal
+    // Strategy: Find paragraph in original XML that contains the oldText and is at approximately the same position
+
+    // First, try to find by unique text content
+    const originalParagraphs = extractAllParagraphs(xml);
+    const originalTableRanges: { start: number; end: number }[] = [];
+    const originalTables = extractBalancedTags(xml, 'hp:tbl');
+    for (const tableXml of originalTables) {
+      const tableIndex = xml.indexOf(tableXml);
+      if (tableIndex !== -1) {
+        originalTableRanges.push({ start: tableIndex, end: tableIndex + tableXml.length });
+      }
+    }
+
+    // Build list of top-level paragraphs in original XML (same logic)
+    const originalTopLevelParas: { start: number; end: number; xml: string }[] = [];
+    for (const para of originalParagraphs) {
+      const isInsideTable = originalTableRanges.some(
+        range => para.start > range.start && para.start < range.end
+      );
+      const containsTable = originalTableRanges.some(
+        range => range.start >= para.start && range.end <= para.end
+      );
+
+      if (!isInsideTable) {
+        if (containsTable) {
+          let paraXmlWithoutTable = para.xml;
+          for (const range of originalTableRanges) {
+            if (range.start >= para.start && range.end <= para.start + para.xml.length) {
+              const tableStartInPara = range.start - para.start;
+              const tableEndInPara = range.end - para.start;
+              const tableXmlInPara = para.xml.substring(tableStartInPara, tableEndInPara);
+              paraXmlWithoutTable = paraXmlWithoutTable.replace(tableXmlInPara, '');
+            }
+          }
+          const hasTextContent = /<hp:t\b[^>]*>/.test(paraXmlWithoutTable);
+          if (hasTextContent) {
+            originalTopLevelParas.push({ start: para.start, end: para.end, xml: para.xml });
+          }
+        } else {
+          originalTopLevelParas.push({ start: para.start, end: para.end, xml: para.xml });
+        }
+      }
+    }
+
+    // Find the paragraph in original XML that contains the escapedOld text
+    // and matches the relative position
+    let targetInOriginal: { start: number; end: number; xml: string } | undefined;
+
+    // Count paragraph elements up to elementIndex in the cleaned element list
+    let paraCountUpToIndex = 0;
+    for (let i = 0; i <= elementIndex; i++) {
+      if (elements[i].type === 'p') {
+        paraCountUpToIndex++;
+      }
+    }
+
+    // Find the nth paragraph in original that contains the text
+    let parasSeen = 0;
+    for (const para of originalTopLevelParas) {
+      if (para.xml.includes(escapedOld)) {
+        parasSeen++;
+        if (parasSeen === paraCountUpToIndex) {
+          targetInOriginal = para;
+          break;
+        }
+      }
+    }
+
+    // Fallback: just find any paragraph with the text
+    if (!targetInOriginal) {
+      for (const para of originalTopLevelParas) {
+        if (para.xml.includes(escapedOld)) {
+          targetInOriginal = para;
+          break;
+        }
+      }
+    }
+
+    if (!targetInOriginal) {
+      return xml; // Paragraph not found
+    }
+
+    // Step 7: Perform the replacement in original XML
+    const elementContent = xml.slice(targetInOriginal.start, targetInOriginal.end);
+
+    // Replace text within <hp:t> tags (first match only within this element)
+    const pattern1 = new RegExp(`(<hp:t[^>]*>)${this.escapeRegex(escapedOld)}`);
+    let newElementContent = elementContent.replace(pattern1, `$1${escapedNew}`);
+
+    // Also try standalone text replacement
+    const pattern2 = new RegExp(`>${this.escapeRegex(escapedOld)}<`);
+    newElementContent = newElementContent.replace(pattern2, `>${escapedNew}<`);
+
+    // Reconstruct XML with updated element
+    return xml.slice(0, targetInOriginal.start) + newElementContent + xml.slice(targetInOriginal.end);
   }
 
   private escapeRegex(str: string): string {
