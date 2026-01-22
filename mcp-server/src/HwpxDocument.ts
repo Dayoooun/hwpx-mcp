@@ -6539,13 +6539,10 @@ export class HwpxDocument {
       let xml = await file.async('string');
 
       for (const update of updates) {
-        // Try ID-based lookup first (stable and reliable)
-        if (update.paragraphId) {
-          xml = this.replaceTextInParagraphById(xml, update.paragraphId, update.runIndex, update.oldText, update.newText);
-        } else {
-          // Fallback: use element index (for backward compatibility)
-          xml = this.replaceTextInElementByIndex(xml, update.elementIndex, update.oldText, update.newText);
-        }
+        // Always use index-based lookup since paragraph IDs are NOT unique
+        // (many paragraphs share IDs like "2147483648" or "0")
+        // ID-based lookup finds the FIRST paragraph with that ID, which is often wrong
+        xml = this.replaceTextInElementByIndex(xml, update.elementIndex, update.oldText, update.newText);
       }
 
       // Reset lineseg in updated paragraphs (same as table cell updates)
@@ -6821,28 +6818,50 @@ export class HwpxDocument {
       ...otherElements.map(e => ({ type: e.type as any, start: e.start, end: e.end })),
     ].sort((a, b) => a.start - b.start);
 
-    // Step 4: Find the element at the specified index and replace text
+    // Step 4: First try to find the element at the specified index
+    let targetElement: TopLevelElement | undefined;
+
     if (elementIndex >= 0 && elementIndex < topLevelElements.length) {
       const element = topLevelElements[elementIndex];
-
       if (element.type === 'p') {
         const elementContent = xml.slice(element.start, element.end);
-
-        // Replace text within <hp:t> tags (first match only within this element)
-        const pattern1 = new RegExp(`(<hp:t[^>]*>)${this.escapeRegex(escapedOld)}`);
-        let newElementContent = elementContent.replace(pattern1, `$1${escapedNew}`);
-
-        // Also try standalone text replacement
-        const pattern2 = new RegExp(`>${this.escapeRegex(escapedOld)}<`);
-        newElementContent = newElementContent.replace(pattern2, `>${escapedNew}<`);
-
-        // Reconstruct XML with updated element
-        return xml.slice(0, element.start) + newElementContent + xml.slice(element.end);
+        // Check if this paragraph contains the oldText
+        if (elementContent.includes(escapedOld)) {
+          targetElement = element;
+        }
       }
-      // For tables, we don't replace text at this level (table cells have separate handling)
     }
 
-    // Element not found at specified index, return unchanged
+    // Step 5: If not found at specified index, search all paragraphs for the text
+    if (!targetElement) {
+      for (const element of topLevelElements) {
+        if (element.type === 'p') {
+          const elementContent = xml.slice(element.start, element.end);
+          if (elementContent.includes(escapedOld)) {
+            targetElement = element;
+            break; // Found the first matching paragraph
+          }
+        }
+      }
+    }
+
+    // Step 6: Perform the replacement if target was found
+    if (targetElement) {
+      const elementContent = xml.slice(targetElement.start, targetElement.end);
+
+      // Replace text within <hp:t> tags (first match only within this element)
+      const pattern1 = new RegExp(`(<hp:t[^>]*>)${this.escapeRegex(escapedOld)}`);
+      let newElementContent = elementContent.replace(pattern1, `$1${escapedNew}`);
+
+      // Also try standalone text replacement
+      const pattern2 = new RegExp(`>${this.escapeRegex(escapedOld)}<`);
+      newElementContent = newElementContent.replace(pattern2, `>${escapedNew}<`);
+
+      // Reconstruct XML with updated element
+      return xml.slice(0, targetElement.start) + newElementContent + xml.slice(targetElement.end);
+    }
+
+    // Element not found, return unchanged
     return xml;
   }
 

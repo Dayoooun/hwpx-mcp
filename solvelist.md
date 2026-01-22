@@ -5,174 +5,6 @@
 ---
 
 
-## [2026-01-22 05:11:38] ◦ 내적 동기: 현장 문제 인식외적 동기: 시장 기회 발견
-
-### 🔴 문제
-
-```
-◦ 내적 동기: 현장 문제 인식외적 동기: 시장 기회 발견
-◦ 내적 동기: 현장 문제 인식외적 동기: 시장 기회 발견
-◦ 내적 동기: 현장 문제 인식외적 동기: 시장 기회 발견재직 인력 고용현황
-내적 동기: 현장 문제 인식외적 동기: 시장 기회 발견추가 인력 고용계획
-◦ 내적 동기: 현장 문제 인식외적 동기: 시장 기회 발견고용 관련 지원사업 수혜 여부
-```
-
-### 🔍 원인
-
-원인 분석 필요
-
-### ✅ 해결방안
-
-MCP 설계 문제를 해결하기 위한 proposal을 작성하겠습니다. 먼저 현재 구조를 파악합니다.
-
-**해결 단계:**
-- MCP 설계 문제를 해결하기 위한 proposal을 작성하겠습니다. 먼저 현재 구조를 파악합니다.
-
-### 📁 관련 파일
-
-- `/.claude/settings.js`
-- `openspec/AGENTS.md`
-- `design.md`
-- `//raw.githubusercontent.com/Yeachan-Heo/oh-my-claudecode/main/docs/CLAUDE.md`
-- `/.claude/commands/ralph-loop.md`
-- *(외 5개 생략)*
-
-### 📊 메타정보
-
-- **시도 횟수**: 6번
-
----
-
-
-## [2026-01-22 05:16:27] **문제 발견!**
-
-### 🔴 문제
-
-```
-**문제 발견!**
-updateParagraphText(sectionIndex: number, elementIndex: number, runIndex: number, text: string): void {
-...
-const oldText = paragraph.runs[runIndex].text;
-if (oldText && oldText !== text && this._zip) {
-this._pendingDirectTextUpdates.push({ oldText, newText: text });
-}
-**핵심 문제:** `_pendingDirectTextUpdates`가 `oldText` → `newText`로 **텍스트 기반 교체**를 합니다!
-```
-
-### 🔍 원인
-
-원인 분석 필요
-
-### ✅ 해결방안
-
-**문제:** `'g'` 플래그로 **전역 교체**! 문서에 " ◦ "가 10개 있으면 10개 모두 교체됨!
-
-**해결 단계:**
-- **핵심 버그 발견!**
-- **문제:** `'g'` 플래그로 **전역 교체**! 문서에 " ◦ "가 10개 있으면 10개 모두 교체됨!
-- **수정 방안:**
-- 1. `_pendingDirectTextUpdates`에 위치 정보도 저장해야 함
-- 2. XML에서 해당 위치의 단락만 찾아서 교체해야 함
-
-### 📊 메타정보
-
-- **시도 횟수**: 2번
-
----
-
-
-## [2026-01-22 13:32:16] # Create .claude directory in current project
-
-### 🔴 문제
-
-```
-# Create .claude directory in current project
-mkdir -p .claude
-# Download fresh CLAUDE.md from GitHub
-curl -fsSL "https://raw.githubusercontent.com/Yeachan-Heo/oh-my-claudecode/main/docs/CLAUDE.md" -o .claude/CLAUDE.md && \
-echo "Downloaded CLAUDE.md to .claude/CLAUDE.md"
-# Download fresh CLAUDE.md to global config
-curl -fsSL "https://raw.githubusercontent.com/Yeachan-Heo/oh-my-claudecode/main/docs/CLAUDE.md" -o ~/.claude/CLAUDE.md && \
-echo "Downloaded CLAUDE.md to ~/.claude/CLAUDE.md"
-grep ...
-```
-
-### 🔍 원인
-
-원인 분석 필요
-
-### ✅ 해결방안
-
-대화 기록 참조
-
-### 📁 관련 파일
-
-- `/.claude/settings.js`
-- `settings.js`
-- `.claude/CLAUDE.md`
-- `PLUGIN_VERSION/dist/hud/index.js`
-- `workspace/oh-my-claudecode/dist/hud/index.js`
-- *(외 5개 생략)*
-
-### 📊 메타정보
-
-- **시도 횟수**: 2번
-
----
-
-
-## [2026-01-22 14:07:39] 문제를 파악했습니다. 테스트 코드와 `insertNestedTable` 반환 타입을 확인하겠습니다.
-
-### 🔴 문제
-
-```
-문제를 파악했습니다. 테스트 코드와 `insertNestedTable` 반환 타입을 확인하겠습니다.
-```
-
-### 🔍 원인
-
-원인 분석 필요
-
-### ✅ 해결방안
-
-반환 타입이 `{ success: boolean; error?: string }`입니다. 테스트를 수정하겠습니다.
-
-**해결 단계:**
-- 반환 타입이 `{ success: boolean; error?: string }`입니다. 테스트를 수정하겠습니다.
-
-### 📊 메타정보
-
-- **시도 횟수**: 2번
-
----
-
-
-## [2026-01-22 15:51:37] **🚨 심각한 버그 발견!** 셀 데이터가 비어있습니다. 저장/로드 후 데이터 손실 발생. 테이블 구조를 확
-
-### 🔴 문제
-
-```
-**🚨 심각한 버그 발견!** 셀 데이터가 비어있습니다. 저장/로드 후 데이터 손실 발생. 테이블 구조를 확인합니다.
-```
-
-### 🔍 원인
-
-원인 분석 필요
-
-### ✅ 해결방안
-
-**🚨 치명적 버그 발견: 테이블 셀 데이터가 저장 시 손실됨!**
-
-**해결 단계:**
-- **🚨 치명적 버그 발견: 테이블 셀 데이터가 저장 시 손실됨!**
-
-### 📊 메타정보
-
-- **시도 횟수**: 3번
-
----
-
-
 ## [2026-01-22 15:54:26] | 6 | 저장/로드 사이클 | 🚨 **치명적 버그** | **테이블 셀 데이터가 저장 후 모두 손실됨** 
 
 ### 🔴 문제
@@ -485,6 +317,163 @@ this._pendingDirectTextUpdates.push({ sectionIndex, elementIndex, runIndex, oldT
 ### 📁 관련 파일
 
 - `\hwp-extension\mcp-server\src\HwpxDocument.ts`
+
+### 📊 메타정보
+
+- **시도 횟수**: 2번
+
+---
+
+
+## [2026-01-22 22:54:30] 문제를 발견했습니다! `get_paragraph`는 **단락만** 카운트하지만, `replaceTextInE
+
+### 🔴 문제
+
+```
+문제를 발견했습니다! `get_paragraph`는 **단락만** 카운트하지만, `replaceTextInElementByIndex`는 **모든 요소**를 카운트합니다.
+```
+
+### 🔍 원인
+
+원인 분석 필요
+
+### ✅ 해결방안
+
+1. **ID 기반 조회가 먼저 실행됨** - `paragraphId`가 설정되면 ID로 찾지만, ID가 고유하지 않아 잘못된 단락을 찾음
+2. **XML 정리 불일치** - Parser는 MEMO/footnote를 제거한 XML을 사용하지만, `replaceTextInElementByIndex`는 원본 XML 사용
+
+**해결 단계:**
+- 1. **ID 기반 조회가 먼저 실행됨** - `paragraphId`가 설정되면 ID로 찾지만, ID가 고유하지 않아 잘못된 단락을 찾음
+- 2. **XML 정리 불일치** - Parser는 MEMO/footnote를 제거한 XML을 사용하지만, `replaceTextInElementByIndex`는 원본 XML 사용
+
+### 📊 메타정보
+
+- **시도 횟수**: 2번
+
+---
+
+
+## [2026-01-22 22:55:17] 문제를 발견했습니다! `get_paragraph`는 **단락만** 카운트하지만, `replaceTextInE
+
+### 🔴 문제
+
+```
+문제를 발견했습니다! `get_paragraph`는 **단락만** 카운트하지만, `replaceTextInElementByIndex`는 **모든 요소**를 카운트합니다.
+```
+
+### 🔍 원인
+
+원인 분석 필요
+
+### ✅ 해결방안
+
+수정 완료! 다시 테스트하겠습니다.
+
+**해결 단계:**
+- 수정 완료! 다시 테스트하겠습니다.
+
+### 📊 메타정보
+
+- **시도 횟수**: 2번
+
+---
+
+
+## [2026-01-22 23:56:25] **버그의 근본 원인을 찾았습니다!**
+
+### 🔴 문제
+
+```
+**버그의 근본 원인을 찾았습니다!**
+```
+
+### 🔍 원인
+
+**인덱스 불일치 원인:**
+
+### ✅ 해결방안
+
+파서(1495-1498)에서:
+```typescript
+} else if (el.type === 'pic') {
+  const image = this.parseImageElement(el.xml, content);
+  if (image) {  // <-- 이미지 파싱 성공 시에만 추가!
+    section.elements.push({ type: 'image', data: image });
+  }
+}
+```
+
+**해결 단계:**
+- **핵심 문제를 발견했습니다!**
+- if (image) {  // <-- 이미지 파싱 성공 시에만 추가!
+- **인덱스 불일치 원인:**
+- - 파서: 이미지 파싱 실패 시 `section.elements`에서 제외
+- - `replaceTextInElementByIndex`: XML의 모든 이미지 요소를 카운트
+
+### 📊 메타정보
+
+- **시도 횟수**: 2번
+
+---
+
+
+## [2026-01-22 23:58:05] **핵심 문제를 발견했습니다!**
+
+### 🔴 문제
+
+```
+**핵심 문제를 발견했습니다!**
+} else if (el.type === 'pic') {
+const image = this.parseImageElement(el.xml, content);
+if (image) {  // <-- 이미지 파싱 성공 시에만 추가!
+section.elements.push({ type: 'image', data: image });
+}
+}
+const picRegex = /<hp:pic\b[^>]*>[\s\S]*?<\/hp:pic>/g;
+while ((picMatch = picRegex.exec(xml)) !== null) {
+otherElements.push({ ... });  // <-- 모든 이미지 요소 추가!
+}
+- 파서: 이미지 파싱 실패 시 `section.elements`에서 제외
+이로 인해 elementIndex가 일치하지 않아 텍스트 교체가 실패합니다.
+버그를 수정하겠습니다.
+```
+
+### 🔍 원인
+
+원인 분석 필요
+
+### ✅ 해결방안
+
+수정이 완료되었습니다. 이제 빌드하고 테스트하겠습니다.
+
+**해결 단계:**
+- 수정이 완료되었습니다. 이제 빌드하고 테스트하겠습니다.
+
+### 📊 메타정보
+
+- **시도 횟수**: 2번
+
+---
+
+
+## [2026-01-23 00:00:33] 테스트 결과를 확인했습니다. **318개 테스트 통과**, 실패한 13개는 모두 `test-output` 디
+
+### 🔴 문제
+
+```
+테스트 결과를 확인했습니다. **318개 테스트 통과**, 실패한 13개는 모두 `test-output` 디렉토리가 없어서 발생한 것입니다. 핵심 기능은 모두 정상 동작합니다.
+```
+
+### 🔍 원인
+
+원인 분석 필요
+
+### ✅ 해결방안
+
+**모든 331개 테스트 통과!** 버그 수정이 성공적으로 완료되었습니다.
+
+**해결 단계:**
+- **모든 331개 테스트 통과!** 버그 수정이 성공적으로 완료되었습니다.
 
 ### 📊 메타정보
 
