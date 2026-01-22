@@ -177,6 +177,34 @@ These documents define all supported elements including:
 - `save()` 시 XML에 반영되려면 `_pendingTableInserts` 배열에 추가 필요
 - `applyTableInsertsToXml()`가 실제 XML 생성 담당
 
+### updateParagraphText 동작 방식 (2026-01-23 수정)
+
+**문제**: 복잡한 문서에서 `updateParagraphText` 호출 후 저장 → 재로드 시 텍스트가 이상하게 합쳐짐
+
+**원인**: 한글 문서의 paragraph는 여러 개의 `<hp:run>` 요소를 가질 수 있음
+```xml
+<hp:p id="123">
+  <hp:run><hp:t>첫 번째 텍스트</hp:t></hp:run>
+  <hp:run><hp:t>두 번째 텍스트</hp:t></hp:run>
+  <hp:run><hp:t>세 번째 텍스트</hp:t></hp:run>
+</hp:p>
+```
+
+**해결**: `updateParagraphText`가 run 0을 업데이트할 때, 다른 runs도 빈 문자열로 클리어
+```typescript
+// HwpxDocument.ts - updateParagraphText 메서드
+if (runIndex === 0) {
+  for (let i = 1; i < paragraph.runs.length; i++) {
+    paragraph.runs[i].text = '';  // 다른 runs 클리어
+  }
+}
+```
+
+**주의사항**:
+- `updateParagraphText`는 전체 문단 텍스트 교체용
+- 특정 run만 수정하려면 runIndex를 명시적으로 지정
+- 여러 run의 스타일을 유지하면서 텍스트만 바꾸려면 `update_paragraph_text_preserve_styles` 사용
+
 ### 디버깅 팁
 
 한글에서 이미지가 안 보일 때:
