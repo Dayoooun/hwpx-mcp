@@ -560,10 +560,35 @@ export class HwpxDocument {
         oldText,
         newText: text
       });
+
+      // When updating run 0, clear other runs (full paragraph replacement)
+      if (runIndex === 0) {
+        for (let i = 1; i < paragraph.runs.length; i++) {
+          const otherOldText = paragraph.runs[i].text || '';
+          if (otherOldText) {
+            this._pendingDirectTextUpdates.push({
+              sectionIndex,
+              elementIndex,
+              paragraphId: paragraph.id || '',
+              runIndex: i,
+              oldText: otherOldText,
+              newText: ''  // Clear other runs
+            });
+          }
+        }
+      }
     }
 
     this.saveState();
     paragraph.runs[runIndex].text = text;
+
+    // Clear other runs in memory too
+    if (runIndex === 0) {
+      for (let i = 1; i < paragraph.runs.length; i++) {
+        paragraph.runs[i].text = '';
+      }
+    }
+
     this.markModified();
   }
 
@@ -6519,30 +6544,47 @@ export class HwpxDocument {
 
   /**
    * Apply direct text updates (exact match replacement)
+   * Groups updates by paragraph to handle multi-run updates correctly
    */
   private async applyDirectTextUpdatesToXml(): Promise<void> {
     if (!this._zip) return;
 
-    // Group updates by sectionIndex for efficient processing
-    const updatesBySectionIndex = new Map<number, typeof this._pendingDirectTextUpdates>();
+    // Group updates by sectionIndex, then by elementIndex
+    const updatesBySectionAndElement = new Map<number, Map<number, typeof this._pendingDirectTextUpdates>>();
     for (const update of this._pendingDirectTextUpdates) {
-      const existing = updatesBySectionIndex.get(update.sectionIndex) || [];
-      existing.push(update);
-      updatesBySectionIndex.set(update.sectionIndex, existing);
+      let sectionMap = updatesBySectionAndElement.get(update.sectionIndex);
+      if (!sectionMap) {
+        sectionMap = new Map();
+        updatesBySectionAndElement.set(update.sectionIndex, sectionMap);
+      }
+
+      let elementUpdates = sectionMap.get(update.elementIndex);
+      if (!elementUpdates) {
+        elementUpdates = [];
+        sectionMap.set(update.elementIndex, elementUpdates);
+      }
+      elementUpdates.push(update);
     }
 
-    for (const [sectionIdx, updates] of updatesBySectionIndex) {
+    for (const [sectionIdx, elementMap] of updatesBySectionAndElement) {
       const sectionPath = `Contents/section${sectionIdx}.xml`;
       const file = this._zip.file(sectionPath);
       if (!file) continue;
 
       let xml = await file.async('string');
 
-      for (const update of updates) {
-        // Use index-based lookup only - paragraph IDs are NOT unique in HWPX
-        // Many paragraphs share the same ID (e.g., "2147483648" or "0")
-        // ID + oldText combination also fails when multiple paragraphs have same ID AND same text
-        xml = this.replaceTextInElementByIndex(xml, update.elementIndex, update.oldText, update.newText);
+      // Process each paragraph's updates together
+      for (const [elementIndex, updates] of elementMap) {
+        // Sort by runIndex to process in order
+        updates.sort((a, b) => a.runIndex - b.runIndex);
+
+        // If we have multiple run updates for the same paragraph, we need to update the entire run structure
+        if (updates.length > 1) {
+          xml = this.replaceMultipleRunsInElement(xml, elementIndex, updates);
+        } else {
+          // Single run update - use the simple replacement
+          xml = this.replaceTextInElementByIndex(xml, elementIndex, updates[0].oldText, updates[0].newText);
+        }
       }
 
       // Reset lineseg in updated paragraphs (same as table cell updates)
@@ -6551,6 +6593,310 @@ export class HwpxDocument {
 
       this._zip.file(sectionPath, xml);
     }
+  }
+
+  /**
+   * Replace multiple runs in a paragraph element at once
+   * This is needed when updating run 0 also clears runs 1-N
+   */
+  private replaceMultipleRunsInElement(
+    xml: string,
+    elementIndex: number,
+    updates: Array<{ runIndex: number; oldText: string; newText: string }>
+  ): string {
+    // First, locate the target paragraph using the same logic as replaceTextInElementByIndex
+    const cleanedXml = xml
+      .replace(/<hp:fieldBegin[^>]*type="MEMO"[^>]*>[\s\S]*?<\/hp:fieldBegin>/gi, '')
+      .replace(/<hp:footNote\b[^>]*>[\s\S]*?<\/hp:footNote>/gi, '')
+      .replace(/<hp:endNote\b[^>]*>[\s\S]*?<\/hp:endNote>/gi, '');
+
+    const extractAllParagraphs = (xmlStr: string): { xml: string; start: number; end: number }[] => {
+      const results: { xml: string; start: number; end: number }[] = [];
+      const closeTag = '</hp:p>';
+      const pOpenRegex = /<hp:p\b[^>]*>/g;
+      const pOpenSearchRegex = /<hp:p[\s>]/g;
+      let match;
+
+      while ((match = pOpenRegex.exec(xmlStr)) !== null) {
+        const startPos = match.index;
+        let depth = 1;
+        let searchPos = startPos + match[0].length;
+
+        while (depth > 0 && searchPos < xmlStr.length) {
+          pOpenSearchRegex.lastIndex = searchPos;
+          const nextOpenMatch = pOpenSearchRegex.exec(xmlStr);
+          const nextOpen = nextOpenMatch ? nextOpenMatch.index : -1;
+          const nextClose = xmlStr.indexOf(closeTag, searchPos);
+
+          if (nextClose === -1) break;
+
+          if (nextOpen !== -1 && nextOpen < nextClose) {
+            depth++;
+            searchPos = nextOpen + 6;
+          } else {
+            depth--;
+            if (depth === 0) {
+              const endPos = nextClose + closeTag.length;
+              results.push({
+                xml: xmlStr.substring(startPos, endPos),
+                start: startPos,
+                end: endPos
+              });
+            }
+            searchPos = nextClose + closeTag.length;
+          }
+        }
+      }
+      return results;
+    };
+
+    const extractBalancedTags = (xmlStr: string, tagName: string): string[] => {
+      const results: string[] = [];
+      const openTag = `<${tagName}`;
+      const closeTag = `</${tagName}>`;
+      let searchStart = 0;
+
+      while (true) {
+        const openIndex = xmlStr.indexOf(openTag, searchStart);
+        if (openIndex === -1) break;
+
+        let depth = 1;
+        let pos = openIndex + openTag.length;
+
+        while (depth > 0 && pos < xmlStr.length) {
+          const nextOpen = xmlStr.indexOf(openTag, pos);
+          const nextClose = xmlStr.indexOf(closeTag, pos);
+
+          if (nextClose === -1) break;
+
+          if (nextOpen !== -1 && nextOpen < nextClose) {
+            depth++;
+            pos = nextOpen + openTag.length;
+          } else {
+            depth--;
+            if (depth === 0) {
+              results.push(xmlStr.substring(openIndex, nextClose + closeTag.length));
+            }
+            pos = nextClose + closeTag.length;
+          }
+        }
+        searchStart = openIndex + 1;
+      }
+      return results;
+    };
+
+    const paragraphs = extractAllParagraphs(cleanedXml);
+    const tables = extractBalancedTags(cleanedXml, 'hp:tbl');
+
+    const tableRanges: { start: number; end: number }[] = [];
+    for (const tableXml of tables) {
+      const tableIndex = cleanedXml.indexOf(tableXml);
+      if (tableIndex !== -1) {
+        tableRanges.push({ start: tableIndex, end: tableIndex + tableXml.length });
+      }
+    }
+
+    interface CleanedElement {
+      type: string;
+      start: number;
+      end: number;
+      xml: string;
+    }
+    const elements: CleanedElement[] = [];
+
+    // Add tables
+    for (const range of tableRanges) {
+      elements.push({ type: 'tbl', start: range.start, end: range.end, xml: cleanedXml.substring(range.start, range.end) });
+    }
+
+    // Add paragraphs
+    for (const para of paragraphs) {
+      const isInsideTable = tableRanges.some(
+        range => para.start > range.start && para.start < range.end
+      );
+      const containsTable = tableRanges.some(
+        range => range.start >= para.start && range.end <= para.end
+      );
+
+      if (!isInsideTable) {
+        if (containsTable) {
+          let paraXmlWithoutTable = para.xml;
+          for (const range of tableRanges) {
+            if (range.start >= para.start && range.end <= para.start + para.xml.length) {
+              const tableStartInPara = range.start - para.start;
+              const tableEndInPara = range.end - para.start;
+              const tableXmlInPara = para.xml.substring(tableStartInPara, tableEndInPara);
+              paraXmlWithoutTable = paraXmlWithoutTable.replace(tableXmlInPara, '');
+            }
+          }
+          const hasTextContent = /<hp:t\b[^>]*>/.test(paraXmlWithoutTable);
+          if (hasTextContent) {
+            elements.push({ type: 'p', start: para.start, end: para.end, xml: paraXmlWithoutTable });
+          }
+        } else {
+          elements.push({ type: 'p', start: para.start, end: para.end, xml: para.xml });
+        }
+      }
+    }
+
+    // Add other element types
+    const addShapeElements = (pattern: RegExp, typeName: string) => {
+      let match;
+      while ((match = pattern.exec(cleanedXml)) !== null) {
+        elements.push({ type: typeName, start: match.index, end: match.index + match[0].length, xml: match[0] });
+      }
+    };
+
+    addShapeElements(/<hp:line\b[^>]*(?:\/>|>[\s\S]*?<\/hp:line>)/g, 'line');
+    addShapeElements(/<hp:rect\b[^>]*(?:\/>|>[\s\S]*?<\/hp:rect>)/g, 'rect');
+    addShapeElements(/<hp:ellipse\b[^>]*(?:\/>|>[\s\S]*?<\/hp:ellipse>)/g, 'ellipse');
+    addShapeElements(/<hp:arc\b[^>]*(?:\/>|>[\s\S]*?<\/hp:arc>)/g, 'arc');
+    addShapeElements(/<hp:polygon\b[^>]*(?:\/>|>[\s\S]*?<\/hp:polygon>)/g, 'polygon');
+    addShapeElements(/<hp:curve\b[^>]*(?:\/>|>[\s\S]*?<\/hp:curve>)/g, 'curve');
+    addShapeElements(/<hp:connectLine\b[^>]*(?:\/>|>[\s\S]*?<\/hp:connectLine>)/g, 'connectline');
+
+    elements.sort((a, b) => a.start - b.start);
+
+    if (elementIndex < 0 || elementIndex >= elements.length) {
+      return xml;
+    }
+
+    const targetElement = elements[elementIndex];
+    if (targetElement.type !== 'p') {
+      return xml;
+    }
+
+    // Find the same paragraph in original XML
+    const originalParagraphs = extractAllParagraphs(xml);
+    const originalTableRanges: { start: number; end: number }[] = [];
+    const originalTables = extractBalancedTags(xml, 'hp:tbl');
+    for (const tableXml of originalTables) {
+      const tableIndex = xml.indexOf(tableXml);
+      if (tableIndex !== -1) {
+        originalTableRanges.push({ start: tableIndex, end: tableIndex + tableXml.length });
+      }
+    }
+
+    const originalTopLevelParas: { start: number; end: number; xml: string }[] = [];
+    for (const para of originalParagraphs) {
+      const isInsideTable = originalTableRanges.some(
+        range => para.start > range.start && para.start < range.end
+      );
+      const containsTable = originalTableRanges.some(
+        range => range.start >= para.start && range.end <= para.end
+      );
+
+      if (!isInsideTable) {
+        if (containsTable) {
+          let paraXmlWithoutTable = para.xml;
+          for (const range of originalTableRanges) {
+            if (range.start >= para.start && range.end <= para.start + para.xml.length) {
+              const tableStartInPara = range.start - para.start;
+              const tableEndInPara = range.end - para.start;
+              const tableXmlInPara = para.xml.substring(tableStartInPara, tableEndInPara);
+              paraXmlWithoutTable = paraXmlWithoutTable.replace(tableXmlInPara, '');
+            }
+          }
+          const hasTextContent = /<hp:t\b[^>]*>/.test(paraXmlWithoutTable);
+          if (hasTextContent) {
+            originalTopLevelParas.push({ start: para.start, end: para.end, xml: para.xml });
+          }
+        } else {
+          originalTopLevelParas.push({ start: para.start, end: para.end, xml: para.xml });
+        }
+      }
+    }
+
+    // Find the paragraph at this element index
+    let targetInOriginal: { start: number; end: number; xml: string } | undefined;
+
+    // Count paragraph elements up to elementIndex
+    let paraCountUpToIndex = 0;
+    for (let i = 0; i <= elementIndex; i++) {
+      if (elements[i].type === 'p') {
+        paraCountUpToIndex++;
+      }
+    }
+
+    // Get the nth paragraph from original
+    let parasSeen = 0;
+    for (const para of originalTopLevelParas) {
+      parasSeen++;
+      if (parasSeen === paraCountUpToIndex) {
+        targetInOriginal = para;
+        break;
+      }
+    }
+
+    if (!targetInOriginal) {
+      return xml;
+    }
+
+    // Now extract all <hp:run> elements from the paragraph and update them
+    const paragraphXml = xml.slice(targetInOriginal.start, targetInOriginal.end);
+
+    // Extract runs
+    const runRegex = /<hp:run\b[^>]*>[\s\S]*?<\/hp:run>/g;
+    const runs: Array<{ xml: string; start: number; end: number }> = [];
+    let runMatch;
+    while ((runMatch = runRegex.exec(paragraphXml)) !== null) {
+      runs.push({
+        xml: runMatch[0],
+        start: runMatch.index,
+        end: runMatch.index + runMatch[0].length
+      });
+    }
+
+    // Build the update map
+    const updateMap = new Map<number, string>();
+    for (const update of updates) {
+      updateMap.set(update.runIndex, update.newText);
+    }
+
+    // Build new paragraph XML by updating the specified runs
+    let newParagraphXml = paragraphXml;
+    let offset = 0;
+
+    for (let i = 0; i < runs.length; i++) {
+      if (updateMap.has(i)) {
+        const newText = updateMap.get(i)!;
+        const run = runs[i];
+
+        // Replace text within <hp:t> tags (handles both with and without existing text)
+        const escapedNew = this.escapeXml(newText);
+        let newRunXml: string;
+
+        // Check if run has <hp:t> tags
+        if (/<hp:t\b[^>]*>/.test(run.xml)) {
+          // Has <hp:t> tags - replace content
+          newRunXml = run.xml.replace(/(<hp:t[^>]*>)[^<]*(<)/g, `$1${escapedNew}$2`);
+        } else {
+          // No <hp:t> tags - add them after charPrIDRef if present
+          if (/<hp:run\b[^>]*>/.test(run.xml)) {
+            newRunXml = run.xml.replace(
+              /(<hp:run\b[^>]*>)/,
+              `$1<hp:t>${escapedNew}</hp:t>`
+            );
+          } else {
+            // Fallback: just use the original
+            newRunXml = run.xml;
+          }
+        }
+
+        const adjustedStart = run.start + offset;
+        const adjustedEnd = run.end + offset;
+
+        newParagraphXml =
+          newParagraphXml.substring(0, adjustedStart) +
+          newRunXml +
+          newParagraphXml.substring(adjustedEnd);
+
+        offset += (newRunXml.length - (run.end - run.start));
+      }
+    }
+
+    // Reconstruct XML with updated paragraph
+    return xml.slice(0, targetInOriginal.start) + newParagraphXml + xml.slice(targetInOriginal.end);
   }
 
   /**
