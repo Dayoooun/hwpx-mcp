@@ -541,9 +541,10 @@ export class HwpxDocument {
     const paragraph = this.findParagraphByPath(sectionIndex, elementIndex);
     if (!paragraph || !paragraph.runs[runIndex]) return;
 
-    // Track the old text and location for XML update
-    const oldText = paragraph.runs[runIndex].text;
-    if (oldText && oldText !== text && this._zip) {
+    // Track for XML update - always add if we have a zip (HWPX file)
+    // Similar to updateTableCell which always tracks changes
+    if (this._zip) {
+      const oldText = paragraph.runs[runIndex].text || '';
       this._pendingDirectTextUpdates.push({ sectionIndex, elementIndex, runIndex, oldText, newText: text });
     }
 
@@ -670,7 +671,41 @@ export class HwpxDocument {
     if (!paragraph) return;
 
     this.saveState();
-    paragraph.runs.push({ text });
+
+    if (paragraph.runs.length > 0) {
+      // Append to existing last run's text
+      const lastRunIndex = paragraph.runs.length - 1;
+      const oldText = paragraph.runs[lastRunIndex].text || '';
+      const newText = oldText + text;
+
+      // Track for XML update
+      if (this._zip) {
+        this._pendingDirectTextUpdates.push({
+          sectionIndex,
+          elementIndex,
+          runIndex: lastRunIndex,
+          oldText,
+          newText
+        });
+      }
+
+      paragraph.runs[lastRunIndex].text = newText;
+    } else {
+      // No runs exist, create new run
+      paragraph.runs.push({ text });
+
+      // Track for XML update with new run
+      if (this._zip) {
+        this._pendingDirectTextUpdates.push({
+          sectionIndex,
+          elementIndex,
+          runIndex: 0,
+          oldText: '',
+          newText: text
+        });
+      }
+    }
+
     this.markModified();
   }
 
