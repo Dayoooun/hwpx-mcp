@@ -6904,20 +6904,7 @@ export class HwpxDocument {
       }
     }
 
-    // Step 5: If not found at specified index, search all paragraphs for the text
-    if (!targetElement) {
-      for (const element of topLevelElements) {
-        if (element.type === 'p') {
-          const elementContent = xml.slice(element.start, element.end);
-          if (elementContent.includes(escapedOld)) {
-            targetElement = element;
-            break; // Found the first matching paragraph
-          }
-        }
-      }
-    }
-
-    // Step 6: Perform the replacement if target was found
+    // Step 5: Perform the replacement if target was found
     if (targetElement) {
       const elementContent = xml.slice(targetElement.start, targetElement.end);
 
