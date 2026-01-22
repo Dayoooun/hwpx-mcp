@@ -6539,31 +6539,10 @@ export class HwpxDocument {
       let xml = await file.async('string');
 
       for (const update of updates) {
-        // Strategy: ID + oldText combination for reliable paragraph identification
-        // 1. Find all paragraphs with matching ID
-        // 2. Among those, find the one containing oldText
-        // 3. Replace only in that specific paragraph
-
-        let replaced = false;
-
-        if (update.paragraphId) {
-          // Try to find paragraph by ID + oldText combination
-          const result = this.replaceTextInParagraphByIdAndText(
-            xml,
-            update.paragraphId,
-            update.oldText,
-            update.newText
-          );
-          if (result !== xml) {
-            xml = result;
-            replaced = true;
-          }
-        }
-
-        // Fallback to index-based if ID approach didn't work
-        if (!replaced) {
-          xml = this.replaceTextInElementByIndex(xml, update.elementIndex, update.oldText, update.newText);
-        }
+        // Use index-based lookup only - paragraph IDs are NOT unique in HWPX
+        // Many paragraphs share the same ID (e.g., "2147483648" or "0")
+        // ID + oldText combination also fails when multiple paragraphs have same ID AND same text
+        xml = this.replaceTextInElementByIndex(xml, update.elementIndex, update.oldText, update.newText);
       }
 
       // Reset lineseg in updated paragraphs (same as table cell updates)
