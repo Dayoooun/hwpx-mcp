@@ -6561,8 +6561,10 @@ export class HwpxDocument {
    * This ensures that identical text in other parts of the document is not affected.
    *
    * IMPORTANT: This follows the same element indexing as HwpxParser.parseSection:
-   * - Tables and top-level paragraphs are counted as elements
+   * - All top-level elements are counted: paragraphs, tables, images, shapes (23+ types)
    * - Paragraphs INSIDE tables are NOT counted (they're part of the table)
+   * - Text replacement only applies to paragraph elements (type 'p')
+   * - Other elements (images, shapes, etc.) are counted for indexing but not modified
    */
   private replaceTextInElementByIndex(xml: string, elementIndex: number, oldText: string, newText: string): string {
     const escapedOld = this.escapeXml(oldText);
@@ -6646,9 +6648,169 @@ export class HwpxDocument {
       }
     }
 
-    // Step 3: Combine tables and top-level paragraphs, sort by position
+    // Step 2b: Find all other element types (images, shapes, etc.)
+    const otherElements: { type: string; start: number; end: number }[] = [];
+
+    // Images
+    const picRegex = /<hp:pic\b[^>]*>[\s\S]*?<\/hp:pic>/g;
+    let picMatch;
+    while ((picMatch = picRegex.exec(xml)) !== null) {
+      otherElements.push({ type: 'pic', start: picMatch.index, end: picMatch.index + picMatch[0].length });
+    }
+
+    // Line
+    const lineRegex = /<hp:line\b[^>]*(?:\/>|>[\s\S]*?<\/hp:line>)/g;
+    let lineMatch;
+    while ((lineMatch = lineRegex.exec(xml)) !== null) {
+      otherElements.push({ type: 'line', start: lineMatch.index, end: lineMatch.index + lineMatch[0].length });
+    }
+
+    // Rectangle
+    const rectRegex = /<hp:rect\b[^>]*(?:\/>|>[\s\S]*?<\/hp:rect>)/g;
+    let rectMatch;
+    while ((rectMatch = rectRegex.exec(xml)) !== null) {
+      otherElements.push({ type: 'rect', start: rectMatch.index, end: rectMatch.index + rectMatch[0].length });
+    }
+
+    // Ellipse
+    const ellipseRegex = /<hp:ellipse\b[^>]*(?:\/>|>[\s\S]*?<\/hp:ellipse>)/g;
+    let ellipseMatch;
+    while ((ellipseMatch = ellipseRegex.exec(xml)) !== null) {
+      otherElements.push({ type: 'ellipse', start: ellipseMatch.index, end: ellipseMatch.index + ellipseMatch[0].length });
+    }
+
+    // Arc
+    const arcRegex = /<hp:arc\b[^>]*(?:\/>|>[\s\S]*?<\/hp:arc>)/g;
+    let arcMatch;
+    while ((arcMatch = arcRegex.exec(xml)) !== null) {
+      otherElements.push({ type: 'arc', start: arcMatch.index, end: arcMatch.index + arcMatch[0].length });
+    }
+
+    // Polygon
+    const polygonRegex = /<hp:polygon\b[^>]*(?:\/>|>[\s\S]*?<\/hp:polygon>)/g;
+    let polygonMatch;
+    while ((polygonMatch = polygonRegex.exec(xml)) !== null) {
+      otherElements.push({ type: 'polygon', start: polygonMatch.index, end: polygonMatch.index + polygonMatch[0].length });
+    }
+
+    // Curve
+    const curveRegex = /<hp:curve\b[^>]*(?:\/>|>[\s\S]*?<\/hp:curve>)/g;
+    let curveMatch;
+    while ((curveMatch = curveRegex.exec(xml)) !== null) {
+      otherElements.push({ type: 'curve', start: curveMatch.index, end: curveMatch.index + curveMatch[0].length });
+    }
+
+    // ConnectLine
+    const connectLineRegex = /<hp:connectLine\b[^>]*(?:\/>|>[\s\S]*?<\/hp:connectLine>)/g;
+    let connectLineMatch;
+    while ((connectLineMatch = connectLineRegex.exec(xml)) !== null) {
+      otherElements.push({ type: 'connectline', start: connectLineMatch.index, end: connectLineMatch.index + connectLineMatch[0].length });
+    }
+
+    // Container
+    const containerRegex = /<hp:container\b[^>]*>[\s\S]*?<\/hp:container>/g;
+    let containerMatch;
+    while ((containerMatch = containerRegex.exec(xml)) !== null) {
+      otherElements.push({ type: 'container', start: containerMatch.index, end: containerMatch.index + containerMatch[0].length });
+    }
+
+    // OLE
+    const oleRegex = /<hp:ole\b[^>]*(?:\/>|>[\s\S]*?<\/hp:ole>)/g;
+    let oleMatch;
+    while ((oleMatch = oleRegex.exec(xml)) !== null) {
+      otherElements.push({ type: 'ole', start: oleMatch.index, end: oleMatch.index + oleMatch[0].length });
+    }
+
+    // Equation
+    const equationRegex = /<hp:equation\b[^>]*(?:\/>|>[\s\S]*?<\/hp:equation>)/g;
+    let equationMatch;
+    while ((equationMatch = equationRegex.exec(xml)) !== null) {
+      otherElements.push({ type: 'equation', start: equationMatch.index, end: equationMatch.index + equationMatch[0].length });
+    }
+
+    // TextArt
+    const textArtRegex = /<hp:textArt\b[^>]*(?:\/>|>[\s\S]*?<\/hp:textArt>)/g;
+    let textArtMatch;
+    while ((textArtMatch = textArtRegex.exec(xml)) !== null) {
+      otherElements.push({ type: 'textart', start: textArtMatch.index, end: textArtMatch.index + textArtMatch[0].length });
+    }
+
+    // UnknownObject
+    const unknownObjRegex = /<hp:unknownObj\b[^>]*(?:\/>|>[\s\S]*?<\/hp:unknownObj>)/g;
+    let unknownObjMatch;
+    while ((unknownObjMatch = unknownObjRegex.exec(xml)) !== null) {
+      otherElements.push({ type: 'unknownobject', start: unknownObjMatch.index, end: unknownObjMatch.index + unknownObjMatch[0].length });
+    }
+
+    // Button
+    const buttonRegex = /<hp:button\b[^>]*(?:\/>|>[\s\S]*?<\/hp:button>)/g;
+    let buttonMatch;
+    while ((buttonMatch = buttonRegex.exec(xml)) !== null) {
+      otherElements.push({ type: 'button', start: buttonMatch.index, end: buttonMatch.index + buttonMatch[0].length });
+    }
+
+    // RadioButton
+    const radioButtonRegex = /<hp:radioButton\b[^>]*(?:\/>|>[\s\S]*?<\/hp:radioButton>)/g;
+    let radioButtonMatch;
+    while ((radioButtonMatch = radioButtonRegex.exec(xml)) !== null) {
+      otherElements.push({ type: 'radiobutton', start: radioButtonMatch.index, end: radioButtonMatch.index + radioButtonMatch[0].length });
+    }
+
+    // CheckButton
+    const checkButtonRegex = /<hp:checkButton\b[^>]*(?:\/>|>[\s\S]*?<\/hp:checkButton>)/g;
+    let checkButtonMatch;
+    while ((checkButtonMatch = checkButtonRegex.exec(xml)) !== null) {
+      otherElements.push({ type: 'checkbutton', start: checkButtonMatch.index, end: checkButtonMatch.index + checkButtonMatch[0].length });
+    }
+
+    // ComboBox
+    const comboBoxRegex = /<hp:comboBox\b[^>]*(?:\/>|>[\s\S]*?<\/hp:comboBox>)/g;
+    let comboBoxMatch;
+    while ((comboBoxMatch = comboBoxRegex.exec(xml)) !== null) {
+      otherElements.push({ type: 'combobox', start: comboBoxMatch.index, end: comboBoxMatch.index + comboBoxMatch[0].length });
+    }
+
+    // Edit
+    const editRegex = /<hp:edit\b[^>]*(?:\/>|>[\s\S]*?<\/hp:edit>)/g;
+    let editMatch;
+    while ((editMatch = editRegex.exec(xml)) !== null) {
+      otherElements.push({ type: 'edit', start: editMatch.index, end: editMatch.index + editMatch[0].length });
+    }
+
+    // ListBox
+    const listBoxRegex = /<hp:listBox\b[^>]*(?:\/>|>[\s\S]*?<\/hp:listBox>)/g;
+    let listBoxMatch;
+    while ((listBoxMatch = listBoxRegex.exec(xml)) !== null) {
+      otherElements.push({ type: 'listbox', start: listBoxMatch.index, end: listBoxMatch.index + listBoxMatch[0].length });
+    }
+
+    // ScrollBar
+    const scrollBarRegex = /<hp:scrollBar\b[^>]*(?:\/>|>[\s\S]*?<\/hp:scrollBar>)/g;
+    let scrollBarMatch;
+    while ((scrollBarMatch = scrollBarRegex.exec(xml)) !== null) {
+      otherElements.push({ type: 'scrollbar', start: scrollBarMatch.index, end: scrollBarMatch.index + scrollBarMatch[0].length });
+    }
+
+    // Video
+    const videoRegex = /<hp:video\b[^>]*(?:\/>|>[\s\S]*?<\/hp:video>)/g;
+    let videoMatch;
+    while ((videoMatch = videoRegex.exec(xml)) !== null) {
+      otherElements.push({ type: 'video', start: videoMatch.index, end: videoMatch.index + videoMatch[0].length });
+    }
+
+    // Chart
+    const chartRegex = /<hp:chart\b[^>]*(?:\/>|>[\s\S]*?<\/hp:chart>)/g;
+    let chartMatch;
+    while ((chartMatch = chartRegex.exec(xml)) !== null) {
+      otherElements.push({ type: 'chart', start: chartMatch.index, end: chartMatch.index + chartMatch[0].length });
+    }
+
+    // Step 3: Combine tables, top-level paragraphs, and all other elements, sort by position
     interface TopLevelElement {
-      type: 'p' | 'tbl';
+      type: 'p' | 'tbl' | 'pic' | 'line' | 'rect' | 'ellipse' | 'arc' | 'polygon' | 'curve' |
+            'connectline' | 'container' | 'ole' | 'equation' | 'textart' | 'unknownobject' |
+            'button' | 'radiobutton' | 'checkbutton' | 'combobox' | 'edit' | 'listbox' |
+            'scrollbar' | 'video' | 'chart';
       start: number;
       end: number;
     }
@@ -6656,6 +6818,7 @@ export class HwpxDocument {
     const topLevelElements: TopLevelElement[] = [
       ...topLevelParagraphs.map(p => ({ type: 'p' as const, ...p })),
       ...tableRanges.map(t => ({ type: 'tbl' as const, ...t })),
+      ...otherElements.map(e => ({ type: e.type as any, start: e.start, end: e.end })),
     ].sort((a, b) => a.start - b.start);
 
     // Step 4: Find the element at the specified index and replace text
