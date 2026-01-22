@@ -6539,10 +6539,31 @@ export class HwpxDocument {
       let xml = await file.async('string');
 
       for (const update of updates) {
-        // Always use index-based lookup since paragraph IDs are NOT unique
-        // (many paragraphs share IDs like "2147483648" or "0")
-        // ID-based lookup finds the FIRST paragraph with that ID, which is often wrong
-        xml = this.replaceTextInElementByIndex(xml, update.elementIndex, update.oldText, update.newText);
+        // Strategy: ID + oldText combination for reliable paragraph identification
+        // 1. Find all paragraphs with matching ID
+        // 2. Among those, find the one containing oldText
+        // 3. Replace only in that specific paragraph
+
+        let replaced = false;
+
+        if (update.paragraphId) {
+          // Try to find paragraph by ID + oldText combination
+          const result = this.replaceTextInParagraphByIdAndText(
+            xml,
+            update.paragraphId,
+            update.oldText,
+            update.newText
+          );
+          if (result !== xml) {
+            xml = result;
+            replaced = true;
+          }
+        }
+
+        // Fallback to index-based if ID approach didn't work
+        if (!replaced) {
+          xml = this.replaceTextInElementByIndex(xml, update.elementIndex, update.oldText, update.newText);
+        }
       }
 
       // Reset lineseg in updated paragraphs (same as table cell updates)
@@ -6551,6 +6572,78 @@ export class HwpxDocument {
 
       this._zip.file(sectionPath, xml);
     }
+  }
+
+  /**
+   * Replace text in a paragraph identified by both ID and text content.
+   * This is more reliable because:
+   * - Uses ID to narrow down candidates (even if not unique)
+   * - Uses oldText to find the exact paragraph among candidates
+   */
+  private replaceTextInParagraphByIdAndText(
+    xml: string,
+    paragraphId: string,
+    oldText: string,
+    newText: string
+  ): string {
+    if (!paragraphId || !oldText) return xml;
+
+    const escapedOld = this.escapeXml(oldText);
+    const escapedNew = this.escapeXml(newText);
+
+    // Find all paragraphs with this ID
+    // Pattern: <hp:p ... id="paragraphId" ...>...</hp:p>
+    const idPattern = new RegExp(`<hp:p\\s+[^>]*\\bid=["']${this.escapeRegex(paragraphId)}["'][^>]*>`, 'g');
+
+    let match;
+    while ((match = idPattern.exec(xml)) !== null) {
+      const paraStart = match.index;
+
+      // Find the matching closing tag
+      let depth = 1;
+      let searchPos = paraStart + match[0].length;
+      let paraEnd = -1;
+
+      while (depth > 0 && searchPos < xml.length) {
+        const nextOpen = xml.indexOf('<hp:p', searchPos);
+        const nextClose = xml.indexOf('</hp:p>', searchPos);
+
+        if (nextClose === -1) break;
+
+        if (nextOpen !== -1 && nextOpen < nextClose) {
+          depth++;
+          searchPos = nextOpen + 1;
+        } else {
+          depth--;
+          if (depth === 0) {
+            paraEnd = nextClose + '</hp:p>'.length;
+          }
+          searchPos = nextClose + 1;
+        }
+      }
+
+      if (paraEnd === -1) continue;
+
+      const paragraphContent = xml.slice(paraStart, paraEnd);
+
+      // Check if this paragraph contains the oldText
+      if (!paragraphContent.includes(escapedOld)) continue;
+
+      // Found the right paragraph! Replace the text
+      // Replace within <hp:t> tags
+      const pattern1 = new RegExp(`(<hp:t[^>]*>)${this.escapeRegex(escapedOld)}`);
+      let newParagraphContent = paragraphContent.replace(pattern1, `$1${escapedNew}`);
+
+      // Also try standalone text replacement
+      const pattern2 = new RegExp(`>${this.escapeRegex(escapedOld)}<`);
+      newParagraphContent = newParagraphContent.replace(pattern2, `>${escapedNew}<`);
+
+      // Reconstruct XML
+      return xml.slice(0, paraStart) + newParagraphContent + xml.slice(paraEnd);
+    }
+
+    // No matching paragraph found
+    return xml;
   }
 
   /**
