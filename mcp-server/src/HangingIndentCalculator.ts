@@ -24,7 +24,8 @@ export type MarkerType =
   | 'parenthesized_korean'
   | 'circled'
   | 'roman'
-  | 'alpha';
+  | 'alpha'
+  | 'article';
 
 /**
  * 문자 너비 테이블 (em 단위, 기준 폰트 기준)
@@ -158,13 +159,84 @@ const CHAR_WIDTH_TABLE: Record<string, number> = {
 
   // 콜론 (마커 뒤에 올 수 있음)
   ':': 0.35,
+
+  // 법률/공문서 한글 문자
+  '제': 1.0,
+  '조': 1.0,
+  '항': 1.0,
+  '호': 1.0,
+  '목': 1.0,
+  '의': 1.0,
 };
 
 /**
- * 한글 폰트 보정 계수
- * 한글 문서에서 실제 렌더링되는 너비가 em 값보다 넓음
+ * @deprecated Use getFontFactor(fontName) instead
+ * 기본 한글 폰트 보정 계수 (하위 호환성 유지)
  */
 const HANGUL_FONT_FACTOR = 1.3;
+
+/**
+ * 폰트별 보정 계수 테이블
+ * 실측 기반 값 (한글에서 실제 렌더링 너비 / em 값)
+ */
+const FONT_FACTOR_TABLE: Record<string, number> = {
+  // 기본값
+  'default': 1.3,
+
+  // 한컴 폰트
+  '함초롬바탕': 1.25,
+  '함초롬돋움': 1.25,
+  '한컴바탕': 1.3,
+  '한컴돋움': 1.3,
+
+  // 마이크로소프트 폰트
+  '맑은 고딕': 1.35,
+  '맑은고딕': 1.35,
+  'Malgun Gothic': 1.35,
+  '바탕': 1.3,
+  '돋움': 1.3,
+  '굴림': 1.3,
+  '궁서': 1.35,
+
+  // 나눔 폰트
+  '나눔고딕': 1.3,
+  '나눔명조': 1.3,
+  'NanumGothic': 1.3,
+  'NanumMyeongjo': 1.3,
+  '나눔바른고딕': 1.28,
+
+  // Adobe 폰트
+  '본고딕': 1.25,
+  '본명조': 1.25,
+  'Noto Sans KR': 1.25,
+  'Noto Serif KR': 1.25,
+
+  // 영문 폰트 (한글이 없는 경우)
+  'Arial': 1.0,
+  'Times New Roman': 1.0,
+};
+
+/**
+ * 폰트 보정 계수 가져오기
+ */
+function getFontFactor(fontName?: string | null): number {
+  if (!fontName) return FONT_FACTOR_TABLE['default'];
+
+  // 정확한 매칭 시도
+  if (FONT_FACTOR_TABLE[fontName]) {
+    return FONT_FACTOR_TABLE[fontName];
+  }
+
+  // 부분 매칭 시도 (공백/대소문자 무시)
+  const normalizedName = fontName.toLowerCase().replace(/\s+/g, '');
+  for (const [key, value] of Object.entries(FONT_FACTOR_TABLE)) {
+    if (key.toLowerCase().replace(/\s+/g, '') === normalizedName) {
+      return value;
+    }
+  }
+
+  return FONT_FACTOR_TABLE['default'];
+}
 
 /**
  * 마커 패턴 정의 (순서 중요 - 더 구체적인 패턴이 먼저)
@@ -174,6 +246,16 @@ const MARKER_PATTERNS: Array<{
   regex: RegExp;
   type: MarkerType;
 }> = [
+  // 법률/공문서 마커 (더 구체적인 것이 먼저)
+  // 제1조의2, 제1항의3 등
+  { regex: /^(\s*)(제\d+[조항호목]의\d+)\s/, type: 'article' },
+
+  // 제1조, 제2항, 제3호, 제4목 등
+  { regex: /^(\s*)(제\d+[조항호목])\s/, type: 'article' },
+
+  // 1호, 2목 등 (숫자 + 호/목)
+  { regex: /^(\s*)(\d+[호목])\s/, type: 'article' },
+
   // 괄호 한글: (가), (나), ... (앞 공백 허용)
   { regex: /^(\s*)\(([가-힣])\)\s/, type: 'parenthesized_korean' },
 
@@ -251,12 +333,13 @@ export class HangingIndentCalculator {
    *
    * @param marker 마커 문자열 (예: "○ ", "1. ")
    * @param fontSize 폰트 크기 (pt)
+   * @param fontName 폰트 이름 (선택적, 기본값 사용시 생략)
    * @returns 마커의 너비 (pt)
    */
-  calculateMarkerWidth(marker: string, fontSize: number): number {
+  calculateMarkerWidth(marker: string, fontSize: number, fontName?: string | null): number {
     const widthInEm = this.calculateMarkerWidthInEm(marker);
-    // em을 pt로 변환하고 한글 폰트 보정 계수 적용
-    return widthInEm * fontSize * HANGUL_FONT_FACTOR;
+    const fontFactor = getFontFactor(fontName);
+    return widthInEm * fontSize * fontFactor;
   }
 
   /**
@@ -290,9 +373,10 @@ export class HangingIndentCalculator {
    *
    * @param text 텍스트
    * @param fontSize 폰트 크기 (pt, 기본값 12pt)
+   * @param fontName 폰트 이름 (선택적, 기본값 사용시 생략)
    * @returns 내어쓰기 값 (pt)
    */
-  calculateHangingIndent(text: string, fontSize?: number): number {
+  calculateHangingIndent(text: string, fontSize?: number, fontName?: string | null): number {
     const size = fontSize ?? HangingIndentCalculator.DEFAULT_FONT_SIZE;
     const markerInfo = this.detectMarker(text);
 
@@ -300,7 +384,7 @@ export class HangingIndentCalculator {
       return 0;
     }
 
-    return this.calculateMarkerWidth(markerInfo.marker, size);
+    return this.calculateMarkerWidth(markerInfo.marker, size, fontName);
   }
 
   /**
@@ -318,10 +402,11 @@ export class HangingIndentCalculator {
    *
    * @param text 텍스트
    * @param fontSize 폰트 크기 (pt, 기본값 12pt)
+   * @param fontName 폰트 이름 (선택적, 기본값 사용시 생략)
    * @returns 내어쓰기 값 (HWPUNIT)
    */
-  calculateHangingIndentInHwpUnit(text: string, fontSize?: number): number {
-    const points = this.calculateHangingIndent(text, fontSize);
+  calculateHangingIndentInHwpUnit(text: string, fontSize?: number, fontName?: string | null): number {
+    const points = this.calculateHangingIndent(text, fontSize, fontName);
     return this.toHwpUnit(points);
   }
 }

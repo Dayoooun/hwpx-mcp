@@ -251,7 +251,8 @@ Example workflow for templates:
 2. Use update_paragraph_text to fill in content
 3. Save - all original formatting preserved
 
-⚠️ If you need to CHANGE alignment/style, use set_paragraph_style instead.`,
+⚠️ If you need to CHANGE alignment/style, use set_paragraph_style instead.
+⚠️ For paragraphs with multiple styled runs (bold + normal), use update_paragraph_text_preserve_styles.`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -259,6 +260,36 @@ Example workflow for templates:
         section_index: { type: 'number', description: 'Section index' },
         paragraph_index: { type: 'number', description: 'Paragraph index' },
         run_index: { type: 'number', description: 'Run index (default 0)' },
+        text: { type: 'string', description: 'New text content' },
+      },
+      required: ['doc_id', 'section_index', 'paragraph_index', 'text'],
+    },
+  },
+  {
+    name: 'update_paragraph_text_preserve_styles',
+    description: `Update paragraph text while preserving the style structure of multiple runs.
+
+When a paragraph has multiple styled runs (e.g., bold + normal text), this tool distributes
+the new text across runs proportionally while keeping their original character styles.
+
+Strategy:
+- Distributes new text proportionally based on original run lengths
+- Preserves charPrIDRef (character style) of each run
+- If new text is longer, extends the last run
+- If original has no text, sets to first run
+
+Use this instead of update_paragraph_text when you need to maintain style formatting
+across multiple runs within a single paragraph.
+
+Example: Paragraph with "Hello" (bold) + " World" (normal)
+→ update_paragraph_text_preserve_styles("Goodbye Universe")
+→ Result: "Goodbye" (bold) + " Universe" (normal)`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        doc_id: { type: 'string', description: 'Document ID' },
+        section_index: { type: 'number', description: 'Section index' },
+        paragraph_index: { type: 'number', description: 'Paragraph index' },
         text: { type: 'string', description: 'New text content' },
       },
       required: ['doc_id', 'section_index', 'paragraph_index', 'text'],
@@ -2412,6 +2443,22 @@ Call get_tool_guide with: template, table, image, search, read, create`
           args?.text as string
         );
         return success({ message: 'Paragraph updated' });
+      }
+
+      case 'update_paragraph_text_preserve_styles': {
+        const doc = getDoc(args?.doc_id as string);
+        if (!doc) return error('Document not found');
+        if (doc.format === 'hwp') return error('HWP files are read-only');
+
+        const result = doc.updateParagraphTextPreserveStyles(
+          args?.section_index as number,
+          args?.paragraph_index as number,
+          args?.text as string
+        );
+        if (result) {
+          return success({ message: 'Paragraph text updated with preserved styles' });
+        }
+        return error('Failed to update paragraph (not found or no runs)');
       }
 
       case 'append_text_to_paragraph': {

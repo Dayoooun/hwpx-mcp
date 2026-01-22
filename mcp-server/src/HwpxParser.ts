@@ -2541,7 +2541,7 @@ export class HwpxParser {
     if (tblTagMatch) {
       const tblAttrs = tblTagMatch[0];
 
-      const idMatch = tblAttrs.match(/\bid="(\d+)"/);
+      const idMatch = tblAttrs.match(/\bid="([^"]+)"/);
       if (idMatch) table.id = idMatch[1];
 
       const zOrderMatch = tblAttrs.match(/zOrder="(\d+)"/);

@@ -5,12 +5,13 @@
 ---
 
 
-## [2026-01-22 00:04:28] 테스트에서 12개 실패가 있지만, 이것은 기존의 `TableInsertRedTeam.test.ts` 파일에서
+## [2026-01-22 00:52:44] 맞아요! 두 가지 문제가 있네요:
 
 ### 🔴 문제
 
 ```
-테스트에서 12개 실패가 있지만, 이것은 기존의 `TableInsertRedTeam.test.ts` 파일에서 `savedDoc.load` 함수가 없어서 발생하는 문제로, 이번 변경과 무관합니다.
+맞아요! 두 가지 문제가 있네요:
+2. **◦ 마커 내어쓰기 미적용** - 첫 번째 단락만 내어쓰기가 안됨
 ```
 
 ### 🔍 원인
@@ -19,16 +20,12 @@
 
 ### ✅ 해결방안
 
-대화 기록 참조
+1. **정렬 미적용**: `applyParagraphStyle` → XML 저장 로직 누락
+2. **◦ 마커 내어쓰기**: `insertParagraph`의 auto_hanging_indent가 첫 번째 단락에서 작동 안함
 
-### 📁 관련 파일
-
-- `mcp-server/src/HwpxDocument.ts`
-- `HwpxDocument.ts`
-- `\Users\rlaek\.claude\projects\D--hwp-extension\4cfa4009-96db-47cc-bca9-8d6891bcc86c.js`
-- `mcp-server/src/VerifyScreenshot.test.ts`
-- `VerifyScreenshot.test.ts`
-- *(외 5개 생략)*
+**해결 단계:**
+- 1. **정렬 미적용**: `applyParagraphStyle` → XML 저장 로직 누락
+- 2. **◦ 마커 내어쓰기**: `insertParagraph`의 auto_hanging_indent가 첫 번째 단락에서 작동 안함
 
 ### 📊 메타정보
 
@@ -37,12 +34,244 @@
 ---
 
 
-## [2026-01-22 00:04:39] 테스트에서 12개 실패가 있지만, 이것은 기존의 `TableInsertRedTeam.test.ts` 파일에서
+## [2026-01-22 00:52:57] 문제 발견:
 
 ### 🔴 문제
 
 ```
-테스트에서 12개 실패가 있지만, 이것은 기존의 `TableInsertRedTeam.test.ts` 파일에서 `savedDoc.load` 함수가 없어서 발생하는 문제로, 이번 변경과 무관합니다.
+문제 발견:
+1. **정렬**: header.xml에 align 속성이 없음 - `set_paragraph_style`이 XML에 저장 안됨
+```
+
+### 🔍 원인
+
+원인 분석 필요
+
+### ✅ 해결방안
+
+1. **정렬 미적용**: `applyParagraphStyle` → XML 저장 로직 누락
+2. **◦ 마커 내어쓰기**: `insertParagraph`의 auto_hanging_indent가 첫 번째 단락에서 작동 안함
+
+**해결 단계:**
+- 1. **정렬 미적용**: `applyParagraphStyle` → XML 저장 로직 누락
+- 2. **◦ 마커 내어쓰기**: `insertParagraph`의 auto_hanging_indent가 첫 번째 단락에서 작동 안함
+
+### 📊 메타정보
+
+- **시도 횟수**: 2번
+
+---
+
+
+## [2026-01-22 00:53:58] 문제 발견! `applyParagraphStyle`이 메모리만 업데이트하고, save 시 XML에 반영되지 
+
+### 🔴 문제
+
+```
+문제 발견! `applyParagraphStyle`이 메모리만 업데이트하고, save 시 XML에 반영되지 않습니다.
+두 가지 버그가 있네요:
+```
+
+### 🔍 원인
+
+문제 원인 발견!
+
+### ✅ 해결방안
+
+### 1. ◦ 마커 내어쓰기 미적용
+**원인**: `HangingIndentCalculator.ts:208`의 불릿 패턴에 `◦` (WHITE BULLET, U+25E6)가 누락됨
+
+**해결 단계:**
+- **원인**: `HangingIndentCalculator.ts:208`의 불릿 패턴에 `◦` (WHITE BULLET, U+25E6)가 누락됨
+- **원인**: `applyParagraphStyle()`이 메모리만 업데이트하고, save 시 XML에 반영되지 않음
+
+### 📁 관련 파일
+
+- `HangingIndentCalculator.ts`
+
+### 📊 메타정보
+
+- **시도 횟수**: 2번
+
+---
+
+
+## [2026-01-22 01:20:58] | `set_paragraph_style` | **새 paraPr 생성** → header.xml에 추가 |
+
+### 🔴 문제
+
+```
+| `set_paragraph_style` | **새 paraPr 생성** → header.xml에 추가 | ❌ 불완전한 구조로 한글 인식 실패 |
+양식 파일(한글에서 만든 스타일)
+↓
+update_paragraph_text로 텍스트만 변경
+↓
+기존 paraPrIDRef 유지 → 스타일 그대로!
+```
+
+### 🔍 원인
+
+원인 분석 필요
+
+### ✅ 해결방안
+
+두 파일을 비교해보겠습니다:
+- `test-align-fix.hwpx` - 내가 `set_paragraph_style`로 만든 파일 (정렬 실패)
+- `test-style-preserve.hwpx` - 한글에서 직접 정렬 수정한 파일 (정렬 성공)
+
+**해결 단계:**
+- - `test-align-fix.hwpx` - 내가 `set_paragraph_style`로 만든 파일 (정렬 실패)
+- - `test-style-preserve.hwpx` - 한글에서 직접 정렬 수정한 파일 (정렬 성공)
+
+### 📁 관련 파일
+
+- `ParagraphTextUpdate.test.ts`
+- `HangingIndentCalculator.ts`
+- `\Users\rlaek\.claude\projects\D--hwp-extension\05dd66b2-8a76-475c-87e6-1316374f47e0.js`
+- `\hwp-extension\mcp-server\src\ParagraphTextUpdate.test.ts`
+- `\hwp-extension\mcp-server\src\HwpxDocument.ts`
+- *(외 1개 생략)*
+
+### 📊 메타정보
+
+- **시도 횟수**: 4번
+
+---
+
+
+## [2026-01-22 01:21:05] | `set_paragraph_style` | **새 paraPr 생성** → header.xml에 추가 |
+
+### 🔴 문제
+
+```
+| `set_paragraph_style` | **새 paraPr 생성** → header.xml에 추가 | ❌ 불완전한 구조로 한글 인식 실패 |
+양식 파일(한글에서 만든 스타일)
+↓
+update_paragraph_text로 텍스트만 변경
+↓
+기존 paraPrIDRef 유지 → 스타일 그대로!
+```
+
+### 🔍 원인
+
+원인 분석 필요
+
+### ✅ 해결방안
+
+두 파일을 비교해보겠습니다:
+- `test-align-fix.hwpx` - 내가 `set_paragraph_style`로 만든 파일 (정렬 실패)
+- `test-style-preserve.hwpx` - 한글에서 직접 정렬 수정한 파일 (정렬 성공)
+
+**해결 단계:**
+- - `test-align-fix.hwpx` - 내가 `set_paragraph_style`로 만든 파일 (정렬 실패)
+- - `test-style-preserve.hwpx` - 한글에서 직접 정렬 수정한 파일 (정렬 성공)
+
+### 📁 관련 파일
+
+- `\hwp-extension\mcp-server\src\ParagraphTextUpdate.test.ts`
+- `HangingIndentCalculator.ts`
+- `\hwp-extension\mcp-server\src\HwpxDocument.ts`
+- `\Users\rlaek\.claude\projects\D--hwp-extension\05dd66b2-8a76-475c-87e6-1316374f47e0.js`
+- `ParagraphTextUpdate.test.ts`
+- *(외 1개 생략)*
+
+### 📊 메타정보
+
+- **시도 횟수**: 4번
+
+---
+
+
+## [2026-01-22 05:11:38] ◦ 내적 동기: 현장 문제 인식외적 동기: 시장 기회 발견
+
+### 🔴 문제
+
+```
+◦ 내적 동기: 현장 문제 인식외적 동기: 시장 기회 발견
+◦ 내적 동기: 현장 문제 인식외적 동기: 시장 기회 발견
+◦ 내적 동기: 현장 문제 인식외적 동기: 시장 기회 발견재직 인력 고용현황
+내적 동기: 현장 문제 인식외적 동기: 시장 기회 발견추가 인력 고용계획
+◦ 내적 동기: 현장 문제 인식외적 동기: 시장 기회 발견고용 관련 지원사업 수혜 여부
+```
+
+### 🔍 원인
+
+원인 분석 필요
+
+### ✅ 해결방안
+
+MCP 설계 문제를 해결하기 위한 proposal을 작성하겠습니다. 먼저 현재 구조를 파악합니다.
+
+**해결 단계:**
+- MCP 설계 문제를 해결하기 위한 proposal을 작성하겠습니다. 먼저 현재 구조를 파악합니다.
+
+### 📁 관련 파일
+
+- `/.claude/settings.js`
+- `openspec/AGENTS.md`
+- `design.md`
+- `//raw.githubusercontent.com/Yeachan-Heo/oh-my-claudecode/main/docs/CLAUDE.md`
+- `/.claude/commands/ralph-loop.md`
+- *(외 5개 생략)*
+
+### 📊 메타정보
+
+- **시도 횟수**: 6번
+
+---
+
+
+## [2026-01-22 05:16:27] **문제 발견!**
+
+### 🔴 문제
+
+```
+**문제 발견!**
+updateParagraphText(sectionIndex: number, elementIndex: number, runIndex: number, text: string): void {
+...
+const oldText = paragraph.runs[runIndex].text;
+if (oldText && oldText !== text && this._zip) {
+this._pendingDirectTextUpdates.push({ oldText, newText: text });
+}
+**핵심 문제:** `_pendingDirectTextUpdates`가 `oldText` → `newText`로 **텍스트 기반 교체**를 합니다!
+```
+
+### 🔍 원인
+
+원인 분석 필요
+
+### ✅ 해결방안
+
+**문제:** `'g'` 플래그로 **전역 교체**! 문서에 " ◦ "가 10개 있으면 10개 모두 교체됨!
+
+**해결 단계:**
+- **핵심 버그 발견!**
+- **문제:** `'g'` 플래그로 **전역 교체**! 문서에 " ◦ "가 10개 있으면 10개 모두 교체됨!
+- **수정 방안:**
+- 1. `_pendingDirectTextUpdates`에 위치 정보도 저장해야 함
+- 2. XML에서 해당 위치의 단락만 찾아서 교체해야 함
+
+### 📊 메타정보
+
+- **시도 횟수**: 2번
+
+---
+
+
+## [2026-01-22 13:32:16] # Create .claude directory in current project
+
+### 🔴 문제
+
+```
+# Create .claude directory in current project
+mkdir -p .claude
+# Download fresh CLAUDE.md from GitHub
+curl -fsSL "https://raw.githubusercontent.com/Yeachan-Heo/oh-my-claudecode/main/docs/CLAUDE.md" -o .claude/CLAUDE.md && \
+echo "Downloaded CLAUDE.md to .claude/CLAUDE.md"
+# Download fresh CLAUDE.md to global config
+curl -fsSL "https://raw.githubusercontent.com/Yeachan-Heo/oh-my-claudecode/main/docs/CLAUDE.md" -o ~/.claude/CLAUDE.md && \
+echo "Downloaded CLAUDE.md to ~/.claude/CLAUDE.md"
+grep ...
 ```
 
 ### 🔍 원인
@@ -55,12 +284,222 @@
 
 ### 📁 관련 파일
 
-- `index.ts`
-- `TableInsertRedTeam.test.ts`
-- `VerifyScreenshot.test.ts`
-- `HwpxDocument.ts`
-- `README.md`
+- `/.claude/settings.js`
+- `settings.js`
+- `.claude/CLAUDE.md`
+- `PLUGIN_VERSION/dist/hud/index.js`
+- `workspace/oh-my-claudecode/dist/hud/index.js`
 - *(외 5개 생략)*
+
+### 📊 메타정보
+
+- **시도 횟수**: 2번
+
+---
+
+
+## [2026-01-22 14:07:39] 문제를 파악했습니다. 테스트 코드와 `insertNestedTable` 반환 타입을 확인하겠습니다.
+
+### 🔴 문제
+
+```
+문제를 파악했습니다. 테스트 코드와 `insertNestedTable` 반환 타입을 확인하겠습니다.
+```
+
+### 🔍 원인
+
+원인 분석 필요
+
+### ✅ 해결방안
+
+반환 타입이 `{ success: boolean; error?: string }`입니다. 테스트를 수정하겠습니다.
+
+**해결 단계:**
+- 반환 타입이 `{ success: boolean; error?: string }`입니다. 테스트를 수정하겠습니다.
+
+### 📊 메타정보
+
+- **시도 횟수**: 2번
+
+---
+
+
+## [2026-01-22 15:51:37] **🚨 심각한 버그 발견!** 셀 데이터가 비어있습니다. 저장/로드 후 데이터 손실 발생. 테이블 구조를 확
+
+### 🔴 문제
+
+```
+**🚨 심각한 버그 발견!** 셀 데이터가 비어있습니다. 저장/로드 후 데이터 손실 발생. 테이블 구조를 확인합니다.
+```
+
+### 🔍 원인
+
+원인 분석 필요
+
+### ✅ 해결방안
+
+**🚨 치명적 버그 발견: 테이블 셀 데이터가 저장 시 손실됨!**
+
+**해결 단계:**
+- **🚨 치명적 버그 발견: 테이블 셀 데이터가 저장 시 손실됨!**
+
+### 📊 메타정보
+
+- **시도 횟수**: 3번
+
+---
+
+
+## [2026-01-22 15:54:26] | 6 | 저장/로드 사이클 | 🚨 **치명적 버그** | **테이블 셀 데이터가 저장 후 모두 손실됨** 
+
+### 🔴 문제
+
+```
+| 6 | 저장/로드 사이클 | 🚨 **치명적 버그** | **테이블 셀 데이터가 저장 후 모두 손실됨** |
+### 🚨 치명적 버그: 테이블 셀 데이터 손실
+- 새로 생성된 테이블과 기존 테이블 간의 ID 동기화 문제 가능성
+2. **테이블 셀 저장 버그 수정 필수**
+```
+
+### 🔍 원인
+
+원인 분석 필요
+
+### ✅ 해결방안
+
+## 레드팀 테스트 완료
+
+**해결 단계:**
+- **ultrawork + ralph** 모드를 활성화합니다. 저장/로드 사이클 시 텍스트 손실 버그를 끝까지 해결하겠습니다.
+
+### 📁 관련 파일
+
+- `HwpxDocument.ts`
+
+### 📊 메타정보
+
+- **시도 횟수**: 5번
+
+---
+
+
+## [2026-01-22 16:13:00] 컴파일된 코드에 `tableId`가 제대로 포함되어 있습니다. 이제 테스트를 실행해서 버그가 수정되었는지 확
+
+### 🔴 문제
+
+```
+컴파일된 코드에 `tableId`가 제대로 포함되어 있습니다. 이제 테스트를 실행해서 버그가 수정되었는지 확인합니다.
+```
+
+### 🔍 원인
+
+원인 분석 필요
+
+### ✅ 해결방안
+
+XML 저장은 성공했지만 리로드 후 테이블 파싱에 문제가 있습니다. 리로드된 문서의 상태를 확인합니다.
+
+**해결 단계:**
+- XML 저장은 성공했지만 리로드 후 테이블 파싱에 문제가 있습니다. 리로드된 문서의 상태를 확인합니다.
+
+### 📊 메타정보
+
+- **시도 횟수**: 2번
+
+---
+
+
+## [2026-01-22 16:51:01] 테스트 실행 결과, 두 가지 문제 발견:
+
+### 🔴 문제
+
+```
+테스트 실행 결과, 두 가지 문제 발견:
+2. **`fontName.toLowerCase is not a function`** - null/undefined 체크 필요
+```
+
+### 🔍 원인
+
+원인 분석 필요
+
+### ✅ 해결방안
+
+환경에 `cygpath` 관련 문제가 있어 파일 시스템 도구들이 작동하지 않습니다. executor 에이전트를 사용해서 파일을 생성하겠습니다.
+
+**해결 단계:**
+- 환경에 `cygpath` 관련 문제가 있어 파일 시스템 도구들이 작동하지 않습니다. executor 에이전트를 사용해서 파일을 생성하겠습니다.
+
+### 📊 메타정보
+
+- **시도 횟수**: 2번
+
+---
+
+
+## [2026-01-22 16:58:25] 환경 문제로 소스 코드를 직접 읽을 수 없지만, 이전 대화와 CLAUDE.md 문서를 기반으로 잠재적 버그 
+
+### 🔴 문제
+
+```
+환경 문제로 소스 코드를 직접 읽을 수 없지만, 이전 대화와 CLAUDE.md 문서를 기반으로 잠재적 버그 리포트를 작성하겠습니다.
+```
+
+### 🔍 원인
+
+원인 분석 필요
+
+### ✅ 해결방안
+
+**해결 방안:**
+사용자가 직접 터미널에서 다음을 실행해주세요:
+
+**해결 단계:**
+- **현재 상황:**
+- - `cygpath` 관련 환경 문제로 모든 Bash/파일 시스템 작업이 실패
+- - 테스트 파일 생성 및 실행 불가
+- **해결 방안:**
+- **레드팀 테스트 코드:**
+
+### 📁 관련 파일
+
+- `CLAUDE.md`
+- `mcp-server/src/MasterRedTeam.comprehensive.test.ts`
+
+### 📊 메타정보
+
+- **시도 횟수**: 3번
+
+---
+
+
+## [2026-01-22 16:58:29] 환경 문제로 소스 코드를 직접 읽을 수 없지만, 이전 대화와 CLAUDE.md 문서를 기반으로 잠재적 버그 
+
+### 🔴 문제
+
+```
+환경 문제로 소스 코드를 직접 읽을 수 없지만, 이전 대화와 CLAUDE.md 문서를 기반으로 잠재적 버그 리포트를 작성하겠습니다.
+```
+
+### 🔍 원인
+
+원인 분석 필요
+
+### ✅ 해결방안
+
+**해결 방안:**
+사용자가 직접 터미널에서 다음을 실행해주세요:
+
+**해결 단계:**
+- **현재 상황:**
+- - `cygpath` 관련 환경 문제로 모든 Bash/파일 시스템 작업이 실패
+- - 테스트 파일 생성 및 실행 불가
+- **해결 방안:**
+- **레드팀 테스트 코드:**
+
+### 📁 관련 파일
+
+- `mcp-server/src/MasterRedTeam.comprehensive.test.ts`
+- `CLAUDE.md`
 
 ### 📊 메타정보
 

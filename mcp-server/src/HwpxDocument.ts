@@ -99,7 +99,7 @@ export class HwpxDocument {
   private _undoStack: string[] = [];
   private _redoStack: string[] = [];
   private _pendingTextReplacements: Array<{ oldText: string; newText: string; options: { caseSensitive?: boolean; regex?: boolean; replaceAll?: boolean } }> = [];
-  private _pendingDirectTextUpdates: Array<{ oldText: string; newText: string }> = [];
+  private _pendingDirectTextUpdates: Array<{ sectionIndex: number; elementIndex: number; runIndex: number; oldText: string; newText: string }> = [];
   private _pendingTableCellUpdates: Array<{ sectionIndex: number; tableIndex: number; tableId: string; row: number; col: number; text: string; charShapeId?: number }> = [];
   private _pendingNestedTableInserts: Array<{ sectionIndex: number; parentTableIndex: number; row: number; col: number; nestedRows: number; nestedCols: number; data: string[][] }> = [];
   private _pendingImageInserts: Array<{
@@ -137,6 +137,7 @@ export class HwpxDocument {
     width: number;
     cellWidth: number;
     insertOrder: number;  // Track insertion order for proper sequencing
+    tableId: string;  // In-memory table ID to sync with XML
   }> = [];
   private _tableInsertCounter = 0;  // Counter for insertion order
   private _pendingImageDeletes: Array<{
@@ -540,10 +541,10 @@ export class HwpxDocument {
     const paragraph = this.findParagraphByPath(sectionIndex, elementIndex);
     if (!paragraph || !paragraph.runs[runIndex]) return;
 
-    // Track the old text for XML update
+    // Track the old text and location for XML update
     const oldText = paragraph.runs[runIndex].text;
     if (oldText && oldText !== text && this._zip) {
-      this._pendingDirectTextUpdates.push({ oldText, newText: text });
+      this._pendingDirectTextUpdates.push({ sectionIndex, elementIndex, runIndex, oldText, newText: text });
     }
 
     this.saveState();
@@ -557,6 +558,73 @@ export class HwpxDocument {
     this.saveState();
     paragraph.runs = runs;
     this.markModified();
+  }
+
+  /**
+   * Update paragraph text while preserving the style structure of existing runs.
+   *
+   * Strategy:
+   * - If new text is shorter/equal: distribute text across existing runs proportionally
+   * - If new text is longer: extend the last run
+   * - Preserves charPrIDRef of each run
+   *
+   * @param sectionIndex Section index
+   * @param elementIndex Paragraph element index
+   * @param newText New text content
+   * @returns true if successful, false otherwise
+   */
+  updateParagraphTextPreserveStyles(sectionIndex: number, elementIndex: number, newText: string): boolean {
+    const paragraph = this.findParagraphByPath(sectionIndex, elementIndex);
+    if (!paragraph || paragraph.runs.length === 0) return false;
+
+    this.saveState();
+
+    // Calculate total original text length
+    const originalTexts = paragraph.runs.map(r => r.text || '');
+    const totalOriginalLength = originalTexts.reduce((sum, t) => sum + t.length, 0);
+
+    if (totalOriginalLength === 0) {
+      // If no original text, just set to first run
+      paragraph.runs[0].text = newText;
+      this.markModified();
+      return true;
+    }
+
+    // Distribute new text proportionally across runs
+    let newTextIndex = 0;
+    for (let i = 0; i < paragraph.runs.length; i++) {
+      const run = paragraph.runs[i];
+      const originalLength = (run.text || '').length;
+      const proportion = originalLength / totalOriginalLength;
+
+      let runTextLength: number;
+      if (i === paragraph.runs.length - 1) {
+        // Last run gets all remaining text
+        runTextLength = newText.length - newTextIndex;
+      } else {
+        // Proportional distribution
+        runTextLength = Math.round(proportion * newText.length);
+      }
+
+      // Track for XML update
+      const oldText = run.text;
+      run.text = newText.substring(newTextIndex, newTextIndex + runTextLength);
+      newTextIndex += runTextLength;
+
+      // Add to pending updates if text changed
+      if (oldText !== run.text && this._zip) {
+        this._pendingDirectTextUpdates.push({
+          sectionIndex,
+          elementIndex,
+          runIndex: i,
+          oldText: oldText || '',
+          newText: run.text
+        });
+      }
+    }
+
+    this.markModified();
+    return true;
   }
 
   insertParagraph(sectionIndex: number, afterElementIndex: number, text: string = ''): number {
@@ -2601,6 +2669,7 @@ export class HwpxDocument {
       width: defaultWidth,
       cellWidth,
       insertOrder: this._tableInsertCounter++,
+      tableId: tableId,
     });
 
     this.markModified();
@@ -4106,6 +4175,7 @@ export class HwpxDocument {
       width: number;
       cellWidth: number;
       insertOrder: number;
+      tableId: string;
     }>>();
 
     for (const insert of this._pendingTableInserts) {
@@ -4117,6 +4187,7 @@ export class HwpxDocument {
         width: insert.width,
         cellWidth: insert.cellWidth,
         insertOrder: insert.insertOrder,
+        tableId: insert.tableId,
       });
       insertsBySection.set(insert.sectionIndex, sectionInserts);
     }
@@ -4141,9 +4212,8 @@ export class HwpxDocument {
       const sortedInserts = [...inserts].sort((a, b) => a.insertOrder - b.insertOrder);
 
       for (const insert of sortedInserts) {
-        // Generate unique IDs
-        maxId++;
-        const tableId = maxId;
+        // Use the in-memory table ID for consistency with updateTableCell operations
+        const tableId = insert.tableId;
 
         // Calculate row height based on standard settings
         const rowHeight = 1000; // Default row height in hwpunit
@@ -4454,8 +4524,9 @@ export class HwpxDocument {
 
       let xml = await file.async('string');
 
-      // Sort inserts by afterElementIndex in descending order to avoid index shifting
-      const sortedInserts = [...inserts].sort((a, b) => b.afterElementIndex - a.afterElementIndex);
+      // Sort inserts by afterElementIndex in ascending order
+      // This ensures each insert happens at the correct position as XML grows
+      const sortedInserts = [...inserts].sort((a, b) => a.afterElementIndex - b.afterElementIndex);
 
       for (const insert of sortedInserts) {
         // Escape text for XML
@@ -6400,25 +6471,24 @@ export class HwpxDocument {
   private async applyDirectTextUpdatesToXml(): Promise<void> {
     if (!this._zip) return;
 
-    let sectionIndex = 0;
-    while (true) {
-      const sectionPath = `Contents/section${sectionIndex}.xml`;
+    // Group updates by sectionIndex for efficient processing
+    const updatesBySectionIndex = new Map<number, typeof this._pendingDirectTextUpdates>();
+    for (const update of this._pendingDirectTextUpdates) {
+      const existing = updatesBySectionIndex.get(update.sectionIndex) || [];
+      existing.push(update);
+      updatesBySectionIndex.set(update.sectionIndex, existing);
+    }
+
+    for (const [sectionIdx, updates] of updatesBySectionIndex) {
+      const sectionPath = `Contents/section${sectionIdx}.xml`;
       const file = this._zip.file(sectionPath);
-      if (!file) break;
+      if (!file) continue;
 
       let xml = await file.async('string');
 
-      for (const update of this._pendingDirectTextUpdates) {
-        const escapedOld = this.escapeXml(update.oldText);
-        const escapedNew = this.escapeXml(update.newText);
-
-        // Replace text anywhere within <hp:t> tags (may contain other tags like <hp:tab/>)
-        // First try exact match at the start of <hp:t> content
-        const pattern1 = new RegExp(`(<hp:t[^>]*>)${this.escapeRegex(escapedOld)}`, 'g');
-        xml = xml.replace(pattern1, `$1${escapedNew}`);
-
-        // Also try simple text replacement for cases where text is standalone
-        xml = xml.replace(new RegExp(`>${this.escapeRegex(escapedOld)}<`, 'g'), `>${escapedNew}<`);
+      for (const update of updates) {
+        // Replace text only within the specific element (paragraph) at elementIndex
+        xml = this.replaceTextInElementByIndex(xml, update.elementIndex, update.oldText, update.newText);
       }
 
       // Reset lineseg in updated paragraphs (same as table cell updates)
@@ -6426,8 +6496,134 @@ export class HwpxDocument {
       xml = this.resetLinesegInXml(xml);
 
       this._zip.file(sectionPath, xml);
-      sectionIndex++;
     }
+  }
+
+  /**
+   * Replace text only within a specific element (paragraph) identified by elementIndex.
+   * This ensures that identical text in other parts of the document is not affected.
+   *
+   * IMPORTANT: This follows the same element indexing as HwpxParser.parseSection:
+   * - Tables and top-level paragraphs are counted as elements
+   * - Paragraphs INSIDE tables are NOT counted (they're part of the table)
+   */
+  private replaceTextInElementByIndex(xml: string, elementIndex: number, oldText: string, newText: string): string {
+    const escapedOld = this.escapeXml(oldText);
+    const escapedNew = this.escapeXml(newText);
+
+    // Step 1: Find all table ranges first (like HwpxParser does)
+    const tableRanges: { start: number; end: number }[] = [];
+    const tableRegex = /<hp:tbl\b/g;
+    let tableMatch;
+
+    while ((tableMatch = tableRegex.exec(xml)) !== null) {
+      const tableStart = tableMatch.index;
+      // Find the matching closing tag
+      let depth = 1;
+      let searchPos = tableStart + tableMatch[0].length;
+      let tableEnd = -1;
+
+      while (depth > 0 && searchPos < xml.length) {
+        const nextOpen = xml.indexOf('<hp:tbl', searchPos);
+        const nextClose = xml.indexOf('</hp:tbl>', searchPos);
+
+        if (nextClose === -1) break;
+
+        if (nextOpen !== -1 && nextOpen < nextClose) {
+          depth++;
+          searchPos = nextOpen + 1;
+        } else {
+          depth--;
+          if (depth === 0) {
+            tableEnd = nextClose + '</hp:tbl>'.length;
+          }
+          searchPos = nextClose + 1;
+        }
+      }
+
+      if (tableEnd !== -1) {
+        tableRanges.push({ start: tableStart, end: tableEnd });
+      }
+    }
+
+    // Step 2: Find all <hp:p> tags and filter out those inside tables
+    const paragraphRegex = /<hp:p\b/g;
+    const topLevelParagraphs: { start: number; end: number }[] = [];
+    let paraMatch;
+
+    while ((paraMatch = paragraphRegex.exec(xml)) !== null) {
+      const paraStart = paraMatch.index;
+
+      // Check if this paragraph is inside any table
+      const isInsideTable = tableRanges.some(
+        range => paraStart > range.start && paraStart < range.end
+      );
+
+      if (!isInsideTable) {
+        // Find the matching closing tag
+        let depth = 1;
+        let searchPos = paraStart + paraMatch[0].length;
+        let paraEnd = -1;
+
+        while (depth > 0 && searchPos < xml.length) {
+          const nextOpen = xml.indexOf('<hp:p', searchPos);
+          const nextClose = xml.indexOf('</hp:p>', searchPos);
+
+          if (nextClose === -1) break;
+
+          if (nextOpen !== -1 && nextOpen < nextClose) {
+            depth++;
+            searchPos = nextOpen + 1;
+          } else {
+            depth--;
+            if (depth === 0) {
+              paraEnd = nextClose + '</hp:p>'.length;
+            }
+            searchPos = nextClose + 1;
+          }
+        }
+
+        if (paraEnd !== -1) {
+          topLevelParagraphs.push({ start: paraStart, end: paraEnd });
+        }
+      }
+    }
+
+    // Step 3: Combine tables and top-level paragraphs, sort by position
+    interface TopLevelElement {
+      type: 'p' | 'tbl';
+      start: number;
+      end: number;
+    }
+
+    const topLevelElements: TopLevelElement[] = [
+      ...topLevelParagraphs.map(p => ({ type: 'p' as const, ...p })),
+      ...tableRanges.map(t => ({ type: 'tbl' as const, ...t })),
+    ].sort((a, b) => a.start - b.start);
+
+    // Step 4: Find the element at the specified index and replace text
+    if (elementIndex >= 0 && elementIndex < topLevelElements.length) {
+      const element = topLevelElements[elementIndex];
+
+      if (element.type === 'p') {
+        const elementContent = xml.slice(element.start, element.end);
+
+        // Replace text within <hp:t> tags (first match only within this element)
+        const pattern1 = new RegExp(`(<hp:t[^>]*>)${this.escapeRegex(escapedOld)}`);
+        let newElementContent = elementContent.replace(pattern1, `$1${escapedNew}`);
+
+        // Also try standalone text replacement
+        const pattern2 = new RegExp(`>${this.escapeRegex(escapedOld)}<`);
+        newElementContent = newElementContent.replace(pattern2, `>${escapedNew}<`);
+
+        // Reconstruct XML with updated element
+        return xml.slice(0, element.start) + newElementContent + xml.slice(element.end);
+      }
+      // For tables, we don't replace text at this level (table cells have separate handling)
+    }
+
+    // Element not found at specified index, return unchanged
+    return xml;
   }
 
   private escapeRegex(str: string): string {

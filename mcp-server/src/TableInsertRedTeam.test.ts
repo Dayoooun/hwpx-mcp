@@ -94,11 +94,12 @@ describe('RED TEAM - 복잡한 테이블 삽입', () => {
 
       // 저장
       const outputPath = path.join(__dirname, '../test-output/two-tables.hwpx');
-      await doc.save(outputPath);
+      const savedBuffer = await doc.save();
+      fs.writeFileSync(outputPath, savedBuffer);
 
       // XML 검증
-      const savedDoc = new HwpxDocument();
-      await savedDoc.load(outputPath);
+      const reloadedBuffer = fs.readFileSync(outputPath);
+      const savedDoc = await HwpxDocument.createFromBuffer('saved-doc', outputPath, reloadedBuffer);
       const xml = await savedDoc.getSectionXml(0);
 
       const balance = verifyTagBalance(xml);
@@ -116,10 +117,11 @@ describe('RED TEAM - 복잡한 테이블 삽입', () => {
       doc.insertTable(0, 2, 3, 2);
 
       const outputPath = path.join(__dirname, '../test-output/three-tables.hwpx');
-      await doc.save(outputPath);
+      const savedBuffer = await doc.save();
+      fs.writeFileSync(outputPath, savedBuffer);
 
-      const savedDoc = new HwpxDocument();
-      await savedDoc.load(outputPath);
+      const reloadedBuffer = fs.readFileSync(outputPath);
+      const savedDoc = await HwpxDocument.createFromBuffer('saved-doc', outputPath, reloadedBuffer);
       const xml = await savedDoc.getSectionXml(0);
 
       const balance = verifyTagBalance(xml);
@@ -138,10 +140,11 @@ describe('RED TEAM - 복잡한 테이블 삽입', () => {
       }
 
       const outputPath = path.join(__dirname, '../test-output/five-tables.hwpx');
-      await doc.save(outputPath);
+      const savedBuffer = await doc.save();
+      fs.writeFileSync(outputPath, savedBuffer);
 
-      const savedDoc = new HwpxDocument();
-      await savedDoc.load(outputPath);
+      const reloadedBuffer = fs.readFileSync(outputPath);
+      const savedDoc = await HwpxDocument.createFromBuffer('saved-doc', outputPath, reloadedBuffer);
       const xml = await savedDoc.getSectionXml(0);
 
       const balance = verifyTagBalance(xml);
@@ -172,10 +175,11 @@ describe('RED TEAM - 복잡한 테이블 삽입', () => {
       doc.updateTableCell(0, result2!.tableIndex, 0, 0, '표2 셀1');
 
       const outputPath = path.join(__dirname, '../test-output/table-edit-table.hwpx');
-      await doc.save(outputPath);
+      const savedBuffer = await doc.save();
+      fs.writeFileSync(outputPath, savedBuffer);
 
-      const savedDoc = new HwpxDocument();
-      await savedDoc.load(outputPath);
+      const reloadedBuffer = fs.readFileSync(outputPath);
+      const savedDoc = await HwpxDocument.createFromBuffer('saved-doc', outputPath, reloadedBuffer);
       const xml = await savedDoc.getSectionXml(0);
 
       const balance = verifyTagBalance(xml);
@@ -199,17 +203,18 @@ describe('RED TEAM - 복잡한 테이블 삽입', () => {
 
       // 중첩 테이블 추가
       const nestedResult = doc.insertNestedTable(0, result1!.tableIndex, 1, 1, 2, 2);
-      expect(nestedResult).toBe(true);
+      expect(nestedResult.success).toBe(true);
 
       // 독립적인 두 번째 테이블 추가
       const result2 = doc.insertTable(0, 1, 2, 2);
       expect(result2).not.toBeNull();
 
       const outputPath = path.join(__dirname, '../test-output/nested-plus-independent.hwpx');
-      await doc.save(outputPath);
+      const savedBuffer = await doc.save();
+      fs.writeFileSync(outputPath, savedBuffer);
 
-      const savedDoc = new HwpxDocument();
-      await savedDoc.load(outputPath);
+      const reloadedBuffer = fs.readFileSync(outputPath);
+      const savedDoc = await HwpxDocument.createFromBuffer('saved-doc', outputPath, reloadedBuffer);
       const xml = await savedDoc.getSectionXml(0);
 
       const balance = verifyTagBalance(xml);
@@ -243,10 +248,11 @@ describe('RED TEAM - 복잡한 테이블 삽입', () => {
       }
 
       const outputPath = path.join(__dirname, '../test-output/ten-tables-complex.hwpx');
-      await doc.save(outputPath);
+      const savedBuffer = await doc.save();
+      fs.writeFileSync(outputPath, savedBuffer);
 
-      const savedDoc = new HwpxDocument();
-      await savedDoc.load(outputPath);
+      const reloadedBuffer = fs.readFileSync(outputPath);
+      const savedDoc = await HwpxDocument.createFromBuffer('saved-doc', outputPath, reloadedBuffer);
       const xml = await savedDoc.getSectionXml(0);
 
       const balance = verifyTagBalance(xml);
@@ -277,10 +283,11 @@ describe('RED TEAM - 복잡한 테이블 삽입', () => {
       }
 
       const outputPath = path.join(__dirname, '../test-output/various-sizes.hwpx');
-      await doc.save(outputPath);
+      const savedBuffer = await doc.save();
+      fs.writeFileSync(outputPath, savedBuffer);
 
-      const savedDoc = new HwpxDocument();
-      await savedDoc.load(outputPath);
+      const reloadedBuffer = fs.readFileSync(outputPath);
+      const savedDoc = await HwpxDocument.createFromBuffer('saved-doc', outputPath, reloadedBuffer);
       const xml = await savedDoc.getSectionXml(0);
 
       const balance = verifyTagBalance(xml);
@@ -312,10 +319,11 @@ describe('RED TEAM - 복잡한 테이블 삽입', () => {
       expect(table4).not.toBeNull();
 
       const outputPath = path.join(__dirname, '../test-output/multi-nested-complex.hwpx');
-      await doc.save(outputPath);
+      const savedBuffer = await doc.save();
+      fs.writeFileSync(outputPath, savedBuffer);
 
-      const savedDoc = new HwpxDocument();
-      await savedDoc.load(outputPath);
+      const reloadedBuffer = fs.readFileSync(outputPath);
+      const savedDoc = await HwpxDocument.createFromBuffer('saved-doc', outputPath, reloadedBuffer);
       const xml = await savedDoc.getSectionXml(0);
 
       const balance = verifyTagBalance(xml);
@@ -338,10 +346,11 @@ describe('RED TEAM - 복잡한 테이블 삽입', () => {
       console.log('첫 위치 삽입 결과:', result);
 
       const outputPath = path.join(__dirname, '../test-output/first-position.hwpx');
-      await doc.save(outputPath);
+      const savedBuffer = await doc.save();
+      fs.writeFileSync(outputPath, savedBuffer);
 
-      const savedDoc = new HwpxDocument();
-      await savedDoc.load(outputPath);
+      const reloadedBuffer = fs.readFileSync(outputPath);
+      const savedDoc = await HwpxDocument.createFromBuffer('saved-doc', outputPath, reloadedBuffer);
       const xml = await savedDoc.getSectionXml(0);
 
       const balance = verifyTagBalance(xml);
@@ -358,10 +367,11 @@ describe('RED TEAM - 복잡한 테이블 삽입', () => {
       }
 
       const outputPath = path.join(__dirname, '../test-output/large-table.hwpx');
-      await doc.save(outputPath);
+      const savedBuffer = await doc.save();
+      fs.writeFileSync(outputPath, savedBuffer);
 
-      const savedDoc = new HwpxDocument();
-      await savedDoc.load(outputPath);
+      const reloadedBuffer = fs.readFileSync(outputPath);
+      const savedDoc = await HwpxDocument.createFromBuffer('saved-doc', outputPath, reloadedBuffer);
       const xml = await savedDoc.getSectionXml(0);
 
       const balance = verifyTagBalance(xml);
@@ -390,10 +400,11 @@ describe('RED TEAM - 복잡한 테이블 삽입', () => {
       console.log(`20개 테이블 삽입 시간: ${insertTime}ms`);
 
       const outputPath = path.join(__dirname, '../test-output/rapid-insert.hwpx');
-      await doc.save(outputPath);
+      const savedBuffer = await doc.save();
+      fs.writeFileSync(outputPath, savedBuffer);
 
-      const savedDoc = new HwpxDocument();
-      await savedDoc.load(outputPath);
+      const reloadedBuffer = fs.readFileSync(outputPath);
+      const savedDoc = await HwpxDocument.createFromBuffer('saved-doc', outputPath, reloadedBuffer);
       const xml = await savedDoc.getSectionXml(0);
 
       const balance = verifyTagBalance(xml);
@@ -402,6 +413,146 @@ describe('RED TEAM - 복잡한 테이블 삽입', () => {
       const independence = verifyIndependentTables(xml, 20);
       console.log('20개 빠른 삽입 독립성:', independence.message);
       expect(independence.independent).toBe(true);
+    });
+  });
+
+  describe('RED TEAM - Save/Load 텍스트 손실 버그', () => {
+    it('새 테이블 삽입 후 셀 업데이트, 저장, 리로드 시 텍스트 유지', async () => {
+      // Step 1: 새 테이블 삽입
+      const insertResult = doc.insertTable(0, 0, 3, 3);
+      expect(insertResult).not.toBeNull();
+      const tableIndex = insertResult!.tableIndex;
+      console.log('삽입된 테이블 인덱스:', tableIndex);
+
+      // Step 2: 셀에 텍스트 입력
+      const testTexts = [
+        { row: 0, col: 0, text: '제1장 서론' },
+        { row: 0, col: 1, text: '테스트 데이터' },
+        { row: 1, col: 0, text: '가. 배경' },
+        { row: 1, col: 1, text: '상세 내용입니다' },
+        { row: 2, col: 2, text: '결론' },
+      ];
+
+      for (const { row, col, text } of testTexts) {
+        const result = doc.updateTableCell(0, tableIndex, row, col, text);
+        expect(result).toBe(true);
+        console.log(`셀 (${row},${col}) 업데이트: "${text}"`);
+      }
+
+      // Step 3: 메모리에서 텍스트 확인 (getTableCell 사용)
+      console.log('저장 전 테이블 내용:');
+      for (const { row, col, text } of testTexts) {
+        const cell = doc.getTableCell(0, tableIndex, row, col);
+        const cellText = cell?.text || '';
+        console.log(`  (${row},${col}): "${cellText}" (기대: "${text}")`);
+        expect(cellText).toBe(text);
+      }
+
+      // Step 4: 저장
+      const outputPath = path.join(__dirname, '../test-output/saveload-text-bug.hwpx');
+      const savedBuffer = await doc.save();
+      fs.writeFileSync(outputPath, savedBuffer);
+      console.log('파일 저장 완료:', outputPath);
+
+      // Step 5: XML에서 텍스트 확인
+      const xml = await doc.getSectionXml(0);
+      console.log('저장된 XML에서 텍스트 검색:');
+      for (const { text } of testTexts) {
+        const found = xml.includes(text);
+        console.log(`  "${text}": ${found ? '✓ 발견' : '✗ 없음'}`);
+        expect(found).toBe(true); // 이 단계에서 실패하면 XML 저장 버그
+      }
+
+      // Step 6: 새 문서로 리로드
+      const reloadedBuffer = fs.readFileSync(outputPath);
+      const reloadedDoc = await HwpxDocument.createFromBuffer('reloaded-doc', outputPath, reloadedBuffer);
+      console.log('문서 리로드 완료');
+
+      // Step 7: 리로드된 문서에서 테이블 찾기
+      const tables = reloadedDoc.getTables();
+      console.log('리로드된 문서의 테이블 수:', tables.length);
+      expect(tables.length).toBeGreaterThan(0);
+
+      // Step 8: 리로드된 테이블에서 텍스트 확인 (getTableCell 사용)
+      console.log('리로드된 테이블 내용:');
+      for (const { row, col, text } of testTexts) {
+        const cell = reloadedDoc.getTableCell(0, 0, row, col);
+        const cellText = cell?.text || '';
+        console.log(`  (${row},${col}): "${cellText}" (기대: "${text}")`);
+        expect(cellText).toBe(text); // 이 단계에서 실패하면 파싱 버그
+      }
+
+      // Step 9: 테이블 구조 확인
+      const reloadedTable = reloadedDoc.getTable(0, 0);
+      expect(reloadedTable?.rows).toBe(3);
+      expect(reloadedTable?.cols).toBe(3);
+    });
+
+    it('기존 테이블의 셀 업데이트 후 저장/리로드 시 텍스트 유지', async () => {
+      // 이 테스트는 기존 테이블(파서로 로드된)의 셀을 업데이트하는 경우를 테스트
+      // 먼저 테이블을 삽입하고 저장한 후, 다시 로드하여 업데이트 테스트
+
+      // Step 1: 새 테이블 삽입 및 저장
+      const insertResult = doc.insertTable(0, 0, 2, 2);
+      expect(insertResult).not.toBeNull();
+
+      const outputPath = path.join(__dirname, '../test-output/existing-table-test.hwpx');
+      let savedBuffer = await doc.save();
+      fs.writeFileSync(outputPath, savedBuffer);
+
+      // Step 2: 새 문서로 로드 (이제 "기존" 테이블이 됨)
+      const reloadedBuffer = fs.readFileSync(outputPath);
+      const existingDoc = await HwpxDocument.createFromBuffer('existing-doc', outputPath, reloadedBuffer);
+
+      // Step 3: 기존 테이블의 셀 업데이트
+      const updateResult = existingDoc.updateTableCell(0, 0, 0, 0, '기존 테이블 업데이트 테스트');
+      expect(updateResult).toBe(true);
+      console.log('기존 테이블 셀 업데이트 완료');
+
+      // Step 4: 다시 저장
+      const outputPath2 = path.join(__dirname, '../test-output/existing-table-updated.hwpx');
+      savedBuffer = await existingDoc.save();
+      fs.writeFileSync(outputPath2, savedBuffer);
+
+      // Step 5: XML에서 텍스트 확인
+      const xml = await existingDoc.getSectionXml(0);
+      const found = xml.includes('기존 테이블 업데이트 테스트');
+      console.log('기존 테이블 업데이트 텍스트 XML 저장:', found ? '✓ 성공' : '✗ 실패');
+      expect(found).toBe(true);
+
+      // Step 6: 세 번째 로드
+      const finalBuffer = fs.readFileSync(outputPath2);
+      const finalDoc = await HwpxDocument.createFromBuffer('final-doc', outputPath2, finalBuffer);
+
+      const finalCell = finalDoc.getTableCell(0, 0, 0, 0);
+      const finalText = finalCell?.text || '';
+      console.log('최종 리로드된 텍스트:', finalText);
+      expect(finalText).toBe('기존 테이블 업데이트 테스트');
+    });
+
+    it('테이블 ID 동기화 검증', async () => {
+      // 새 테이블 삽입 후 ID가 XML에 올바르게 저장되는지 검증
+      const insertResult = doc.insertTable(0, 0, 2, 2);
+      expect(insertResult).not.toBeNull();
+
+      // _pendingTableInserts에서 테이블 ID 가져오기 (테스트 목적으로 private 접근)
+      const pendingInserts = (doc as any)._pendingTableInserts;
+      expect(pendingInserts.length).toBeGreaterThan(0);
+      const memoryTableId = pendingInserts[pendingInserts.length - 1]?.tableId;
+      console.log('메모리 테이블 ID (from _pendingTableInserts):', memoryTableId);
+      expect(memoryTableId).toBeDefined();
+
+      // 저장
+      const savedBuffer = await doc.save();
+
+      // XML에서 테이블 ID 확인
+      const xml = await doc.getSectionXml(0);
+      const idMatch = xml.match(/<hp:tbl[^>]*id="([^"]+)"/);
+      const xmlTableId = idMatch?.[1];
+      console.log('XML 테이블 ID:', xmlTableId);
+
+      // ID가 일치해야 함
+      expect(xmlTableId).toBe(memoryTableId);
     });
   });
 });
