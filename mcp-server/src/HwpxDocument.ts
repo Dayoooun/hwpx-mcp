@@ -99,7 +99,14 @@ export class HwpxDocument {
   private _undoStack: string[] = [];
   private _redoStack: string[] = [];
   private _pendingTextReplacements: Array<{ oldText: string; newText: string; options: { caseSensitive?: boolean; regex?: boolean; replaceAll?: boolean } }> = [];
-  private _pendingDirectTextUpdates: Array<{ sectionIndex: number; elementIndex: number; runIndex: number; oldText: string; newText: string }> = [];
+  private _pendingDirectTextUpdates: Array<{
+    sectionIndex: number;
+    elementIndex: number;
+    paragraphId: string;  // Stable ID for reliable paragraph identification
+    runIndex: number;
+    oldText: string;
+    newText: string
+  }> = [];
   private _pendingTableCellUpdates: Array<{ sectionIndex: number; tableIndex: number; tableId: string; row: number; col: number; text: string; charShapeId?: number }> = [];
   private _pendingNestedTableInserts: Array<{ sectionIndex: number; parentTableIndex: number; row: number; col: number; nestedRows: number; nestedCols: number; data: string[][] }> = [];
   private _pendingImageInserts: Array<{
@@ -545,7 +552,14 @@ export class HwpxDocument {
     // Similar to updateTableCell which always tracks changes
     if (this._zip) {
       const oldText = paragraph.runs[runIndex].text || '';
-      this._pendingDirectTextUpdates.push({ sectionIndex, elementIndex, runIndex, oldText, newText: text });
+      this._pendingDirectTextUpdates.push({
+        sectionIndex,
+        elementIndex,
+        paragraphId: paragraph.id || '',  // Use stable paragraph ID for reliable identification
+        runIndex,
+        oldText,
+        newText: text
+      });
     }
 
     this.saveState();
@@ -617,6 +631,7 @@ export class HwpxDocument {
         this._pendingDirectTextUpdates.push({
           sectionIndex,
           elementIndex,
+          paragraphId: paragraph.id || '',
           runIndex: i,
           oldText: oldText || '',
           newText: run.text
@@ -683,6 +698,7 @@ export class HwpxDocument {
         this._pendingDirectTextUpdates.push({
           sectionIndex,
           elementIndex,
+          paragraphId: paragraph.id || '',  // Use stable paragraph ID
           runIndex: lastRunIndex,
           oldText,
           newText
@@ -699,6 +715,7 @@ export class HwpxDocument {
         this._pendingDirectTextUpdates.push({
           sectionIndex,
           elementIndex,
+          paragraphId: paragraph.id || '',  // Use stable paragraph ID
           runIndex: 0,
           oldText: '',
           newText: text
@@ -6522,8 +6539,13 @@ export class HwpxDocument {
       let xml = await file.async('string');
 
       for (const update of updates) {
-        // Replace text only within the specific element (paragraph) at elementIndex
-        xml = this.replaceTextInElementByIndex(xml, update.elementIndex, update.oldText, update.newText);
+        // Try ID-based lookup first (stable and reliable)
+        if (update.paragraphId) {
+          xml = this.replaceTextInParagraphById(xml, update.paragraphId, update.runIndex, update.oldText, update.newText);
+        } else {
+          // Fallback: use element index (for backward compatibility)
+          xml = this.replaceTextInElementByIndex(xml, update.elementIndex, update.oldText, update.newText);
+        }
       }
 
       // Reset lineseg in updated paragraphs (same as table cell updates)
@@ -6663,6 +6685,115 @@ export class HwpxDocument {
 
   private escapeRegex(str: string): string {
     return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  /**
+   * Replace text in a paragraph identified by its ID.
+   * This is more reliable than index-based lookup because:
+   * - Paragraph IDs are stable across document modifications
+   * - Not affected by the presence of images, shapes, or other elements
+   */
+  private replaceTextInParagraphById(
+    xml: string,
+    paragraphId: string,
+    runIndex: number,
+    oldText: string,
+    newText: string
+  ): string {
+    if (!paragraphId) return xml;
+
+    const escapedOld = this.escapeXml(oldText);
+    const escapedNew = this.escapeXml(newText);
+
+    // Find the paragraph by ID
+    // Pattern: <hp:p id="paragraphId" ...>...</hp:p>
+    const idPattern = new RegExp(`<hp:p\\s+[^>]*\\bid=["']${this.escapeRegex(paragraphId)}["'][^>]*>`);
+    const match = idPattern.exec(xml);
+
+    if (!match) {
+      // Paragraph not found by ID, return unchanged
+      return xml;
+    }
+
+    const paraStart = match.index;
+
+    // Find the matching closing tag
+    let depth = 1;
+    let searchPos = paraStart + match[0].length;
+    let paraEnd = -1;
+
+    while (depth > 0 && searchPos < xml.length) {
+      const nextOpen = xml.indexOf('<hp:p', searchPos);
+      const nextClose = xml.indexOf('</hp:p>', searchPos);
+
+      if (nextClose === -1) break;
+
+      if (nextOpen !== -1 && nextOpen < nextClose) {
+        depth++;
+        searchPos = nextOpen + 1;
+      } else {
+        depth--;
+        if (depth === 0) {
+          paraEnd = nextClose + '</hp:p>'.length;
+        }
+        searchPos = nextClose + 1;
+      }
+    }
+
+    if (paraEnd === -1) return xml;
+
+    const paragraphContent = xml.slice(paraStart, paraEnd);
+
+    // Find all runs in this paragraph
+    const runPattern = /<hp:run\b[^>]*>[\s\S]*?<\/hp:run>/g;
+    const runs: { start: number; end: number; content: string }[] = [];
+    let runMatch;
+
+    while ((runMatch = runPattern.exec(paragraphContent)) !== null) {
+      runs.push({
+        start: runMatch.index,
+        end: runMatch.index + runMatch[0].length,
+        content: runMatch[0]
+      });
+    }
+
+    // Target the specific run by index
+    if (runIndex >= runs.length) {
+      // Run index out of bounds, try to replace in any run
+      // Replace text within <hp:t> tags (first match only)
+      const pattern1 = new RegExp(`(<hp:t[^>]*>)${this.escapeRegex(escapedOld)}`);
+      let newParagraphContent = paragraphContent.replace(pattern1, `$1${escapedNew}`);
+
+      // Also try standalone text replacement
+      if (newParagraphContent === paragraphContent) {
+        const pattern2 = new RegExp(`>${this.escapeRegex(escapedOld)}<`);
+        newParagraphContent = paragraphContent.replace(pattern2, `>${escapedNew}<`);
+      }
+
+      return xml.slice(0, paraStart) + newParagraphContent + xml.slice(paraEnd);
+    }
+
+    // Replace text in the specific run
+    const targetRun = runs[runIndex];
+    let newRunContent = targetRun.content;
+
+    // Replace within <hp:t> tags in this run
+    const tPattern = new RegExp(`(<hp:t[^>]*>)${this.escapeRegex(escapedOld)}(</hp:t>)`);
+    newRunContent = newRunContent.replace(tPattern, `$1${escapedNew}$2`);
+
+    // If no match, try simpler pattern
+    if (newRunContent === targetRun.content) {
+      const simplePattern = new RegExp(`>${this.escapeRegex(escapedOld)}<`);
+      newRunContent = newRunContent.replace(simplePattern, `>${escapedNew}<`);
+    }
+
+    // Reconstruct paragraph with updated run
+    const newParagraphContent =
+      paragraphContent.slice(0, targetRun.start) +
+      newRunContent +
+      paragraphContent.slice(targetRun.end);
+
+    return xml.slice(0, paraStart) + newParagraphContent + xml.slice(paraEnd);
   }
 
   /**

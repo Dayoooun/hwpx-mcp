@@ -5,82 +5,6 @@
 ---
 
 
-## [2026-01-22 00:53:58] 문제 발견! `applyParagraphStyle`이 메모리만 업데이트하고, save 시 XML에 반영되지 
-
-### 🔴 문제
-
-```
-문제 발견! `applyParagraphStyle`이 메모리만 업데이트하고, save 시 XML에 반영되지 않습니다.
-두 가지 버그가 있네요:
-```
-
-### 🔍 원인
-
-문제 원인 발견!
-
-### ✅ 해결방안
-
-### 1. ◦ 마커 내어쓰기 미적용
-**원인**: `HangingIndentCalculator.ts:208`의 불릿 패턴에 `◦` (WHITE BULLET, U+25E6)가 누락됨
-
-**해결 단계:**
-- **원인**: `HangingIndentCalculator.ts:208`의 불릿 패턴에 `◦` (WHITE BULLET, U+25E6)가 누락됨
-- **원인**: `applyParagraphStyle()`이 메모리만 업데이트하고, save 시 XML에 반영되지 않음
-
-### 📁 관련 파일
-
-- `HangingIndentCalculator.ts`
-
-### 📊 메타정보
-
-- **시도 횟수**: 2번
-
----
-
-
-## [2026-01-22 01:20:58] | `set_paragraph_style` | **새 paraPr 생성** → header.xml에 추가 |
-
-### 🔴 문제
-
-```
-| `set_paragraph_style` | **새 paraPr 생성** → header.xml에 추가 | ❌ 불완전한 구조로 한글 인식 실패 |
-양식 파일(한글에서 만든 스타일)
-↓
-update_paragraph_text로 텍스트만 변경
-↓
-기존 paraPrIDRef 유지 → 스타일 그대로!
-```
-
-### 🔍 원인
-
-원인 분석 필요
-
-### ✅ 해결방안
-
-두 파일을 비교해보겠습니다:
-- `test-align-fix.hwpx` - 내가 `set_paragraph_style`로 만든 파일 (정렬 실패)
-- `test-style-preserve.hwpx` - 한글에서 직접 정렬 수정한 파일 (정렬 성공)
-
-**해결 단계:**
-- - `test-align-fix.hwpx` - 내가 `set_paragraph_style`로 만든 파일 (정렬 실패)
-- - `test-style-preserve.hwpx` - 한글에서 직접 정렬 수정한 파일 (정렬 성공)
-
-### 📁 관련 파일
-
-- `ParagraphTextUpdate.test.ts`
-- `HangingIndentCalculator.ts`
-- `\Users\rlaek\.claude\projects\D--hwp-extension\05dd66b2-8a76-475c-87e6-1316374f47e0.js`
-- `\hwp-extension\mcp-server\src\ParagraphTextUpdate.test.ts`
-- `\hwp-extension\mcp-server\src\HwpxDocument.ts`
-- *(외 1개 생략)*
-
-### 📊 메타정보
-
-- **시도 횟수**: 4번
-
----
-
-
 ## [2026-01-22 01:21:05] | `set_paragraph_style` | **새 paraPr 생성** → header.xml에 추가 |
 
 ### 🔴 문제
@@ -504,6 +428,82 @@ hwpx-mcp의 문단 업데이트가 저장 시 유지되지 않는 버그가 있�
 ### 📊 메타정보
 
 - **시도 횟수**: 2번
+
+---
+
+
+## [2026-01-22 21:56:22] **문제:** 조건부로만 `_pendingDirectTextUpdates`에 추가
+
+### 🔴 문제
+
+```
+**문제:** 조건부로만 `_pendingDirectTextUpdates`에 추가
+- `oldText`가 빈 문자열이면 추가 안됨
+- `oldText`가 `undefined`이면 추가 안됨
+if (this._zip) {
+const oldText = paragraph.runs[runIndex].text || '';
+this._pendingDirectTextUpdates.push({ sectionIndex, elementIndex, runIndex, oldText, newText: text });
+}
+**문제:** XML 동기화 로직이 전혀 없었음
+```
+
+### 🔍 원인
+
+원인 분석 필요
+
+### ✅ 해결방안
+
+**ralph ulw** 모드를 활성화하여 이 버그를 완전히 해결하겠습니다.
+
+**해결 단계:**
+- **ralph ulw** 모드를 활성화하여 이 버그를 완전히 해결하겠습니다.
+
+### 📁 관련 파일
+
+- `\hwp-extension\mcp-server\src\HwpxDocument.ts`
+
+### 📊 메타정보
+
+- **시도 횟수**: 3번
+
+---
+
+
+## [2026-01-22 21:56:40] **문제:** 조건부로만 `_pendingDirectTextUpdates`에 추가
+
+### 🔴 문제
+
+```
+**문제:** 조건부로만 `_pendingDirectTextUpdates`에 추가
+- `oldText`가 빈 문자열이면 추가 안됨
+- `oldText`가 `undefined`이면 추가 안됨
+if (this._zip) {
+const oldText = paragraph.runs[runIndex].text || '';
+this._pendingDirectTextUpdates.push({ sectionIndex, elementIndex, runIndex, oldText, newText: text });
+}
+**문제:** XML 동기화 로직이 전혀 없었음
+```
+
+### 🔍 원인
+
+원인 분석 필요
+
+### ✅ 해결방안
+
+**ralph ulw** 모드를 활성화하여 이 버그를 완전히 해결하겠습니다.
+
+**해결 단계:**
+- **ralph ulw** 모드를 활성화하여 이 버그를 완전히 해결하겠습니다.
+
+### 📁 관련 파일
+
+- `\hwp-extension\mcp-server\src\HwpxDocument.ts`
+- `CLAUDE.md`
+- `AGENTS.md`
+
+### 📊 메타정보
+
+- **시도 횟수**: 4번
 
 ---
 
