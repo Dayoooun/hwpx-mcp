@@ -8080,7 +8080,7 @@ export class HwpxDocument {
     // 5. Comprehensive tag balance validation for all HWPML tags
     const tagNames = ['p', 'tbl', 'tr', 'tc', 'run', 't', 'subList', 'sec', 'lineSeg'];
     for (const tagName of tagNames) {
-      const openPattern = new RegExp(`<(?:hp|hs|hc):${tagName}(?:\\s[^>]*)?>`, 'g');
+      const openPattern = new RegExp(`<(?:hp|hs|hc):${tagName}(?:\\s[^>]*)?\\/?>`, 'g');
       const closePattern = new RegExp(`</(?:hp|hs|hc):${tagName}>`, 'g');
       const selfClosePattern = new RegExp(`<(?:hp|hs|hc):${tagName}(?:\\s[^>]*)?/>`, 'g');
 
