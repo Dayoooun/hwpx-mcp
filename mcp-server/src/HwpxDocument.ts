@@ -8032,28 +8032,88 @@ export class HwpxDocument {
    * Validate section XML structure.
    */
   private validateSectionXml(xml: string): { valid: boolean; error?: string } {
-    // Check for required root element
+    // 1. Check for invalid control characters (except tab, LF, CR)
+    const invalidChars = xml.match(/[\x00-\x08\x0B-\x0C\x0E-\x1F]/);
+    if (invalidChars) {
+      return {
+        valid: false,
+        error: `Invalid control character found: ${JSON.stringify(invalidChars[0])} at position ${xml.indexOf(invalidChars[0])}`
+      };
+    }
+
+    // 2. Check for required root element
     if (!xml.includes('<hs:sec') && !xml.includes('<hp:sec')) {
       return { valid: false, error: 'Missing section root element (<hs:sec> or <hp:sec>)' };
     }
 
-    // Check for basic tag balance
-    const openTags = (xml.match(/<(?:hp|hs|hc):[a-zA-Z]+[^/>]*>/g) || []).length;
-    const closeTags = (xml.match(/<\/(?:hp|hs|hc):[a-zA-Z]+>/g) || []).length;
-    const selfCloseTags = (xml.match(/<(?:hp|hs|hc):[a-zA-Z]+[^>]*\/>/g) || []).length;
-
-    // Note: This is a rough check. openTags - selfCloseTags should equal closeTags
-    // But some tags might be counted in both patterns, so we do a simpler check
-    const pOpen = (xml.match(/<(?:hp|hs):p[^>]*>/g) || []).length;
-    const pClose = (xml.match(/<\/(?:hp|hs):p>/g) || []).length;
-    if (pOpen !== pClose) {
-      return { valid: false, error: `Paragraph tag imbalance: ${pOpen} open, ${pClose} close` };
+    // 3. Check for required HWPML namespace declaration
+    const hasHsNamespace = xml.includes('xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section"');
+    const hasHpNamespace = xml.includes('xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"');
+    if (!hasHsNamespace && !hasHpNamespace) {
+      return {
+        valid: false,
+        error: 'Missing required HWPML namespace declarations (xmlns:hs or xmlns:hp)'
+      };
     }
 
-    const tblOpen = (xml.match(/<(?:hp|hs):tbl[^>]*>/g) || []).length;
-    const tblClose = (xml.match(/<\/(?:hp|hs):tbl>/g) || []).length;
-    if (tblOpen !== tblClose) {
-      return { valid: false, error: `Table tag imbalance: ${tblOpen} open, ${tblClose} close` };
+    // 4. Basic XML well-formedness checks
+    // Check for mismatched angle brackets
+    const openBrackets = (xml.match(/</g) || []).length;
+    const closeBrackets = (xml.match(/>/g) || []).length;
+    if (openBrackets !== closeBrackets) {
+      return {
+        valid: false,
+        error: `Mismatched angle brackets: ${openBrackets} '<' vs ${closeBrackets} '>'`
+      };
+    }
+
+    // Check for unclosed CDATA sections
+    const cdataOpen = (xml.match(/<!\[CDATA\[/g) || []).length;
+    const cdataClose = (xml.match(/\]\]>/g) || []).length;
+    if (cdataOpen !== cdataClose) {
+      return {
+        valid: false,
+        error: `Unclosed CDATA section: ${cdataOpen} open, ${cdataClose} close`
+      };
+    }
+
+    // 5. Comprehensive tag balance validation for all HWPML tags
+    const tagNames = ['p', 'tbl', 'tr', 'tc', 'run', 't', 'subList', 'sec', 'lineSeg'];
+    for (const tagName of tagNames) {
+      const openPattern = new RegExp(`<(?:hp|hs|hc):${tagName}(?:\\s[^>]*)?>`, 'g');
+      const closePattern = new RegExp(`</(?:hp|hs|hc):${tagName}>`, 'g');
+      const selfClosePattern = new RegExp(`<(?:hp|hs|hc):${tagName}(?:\\s[^>]*)?/>`, 'g');
+
+      const openCount = (xml.match(openPattern) || []).length;
+      const closeCount = (xml.match(closePattern) || []).length;
+      const selfCloseCount = (xml.match(selfClosePattern) || []).length;
+
+      // Tags that are not self-closed must have matching close tags
+      const nonSelfClosedOpen = openCount - selfCloseCount;
+      if (nonSelfClosedOpen !== closeCount) {
+        return {
+          valid: false,
+          error: `Tag imbalance for <${tagName}>: ${nonSelfClosedOpen} open (excluding ${selfCloseCount} self-closed), ${closeCount} close`
+        };
+      }
+    }
+
+    // 6. Check for common XML syntax errors
+    // Detect tags with spaces in names
+    if (xml.match(/<\w+\s+\w+[^>]*>/)) {
+      return {
+        valid: false,
+        error: 'Invalid tag syntax: tag names cannot contain spaces'
+      };
+    }
+
+    // Detect attributes without quotes
+    const unquotedAttr = xml.match(/\s(\w+)=([^"'\s>][^\s>]*)/);
+    if (unquotedAttr) {
+      return {
+        valid: false,
+        error: `Unquoted attribute value found: ${unquotedAttr[1]}=${unquotedAttr[2]}`
+      };
     }
 
     return { valid: true };
