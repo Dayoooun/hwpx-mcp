@@ -6591,19 +6591,11 @@ export class HwpxDocument {
         updates.sort((a, b) => a.runIndex - b.runIndex);
 
         // If we have multiple run updates for the same paragraph, we need to update the entire run structure
-        // Prefer ID-based lookup for accurate targeting (element index doesn't account for table-internal paragraphs)
-        const paragraphId = updates[0]?.paragraphId;
-
-        if (paragraphId) {
-          // Use stable paragraph ID for accurate targeting
-          for (const update of updates) {
-            xml = this.replaceTextInParagraphById(xml, update.paragraphId, update.runIndex, update.oldText, update.newText);
-          }
-        } else if (updates.length > 1) {
-          // Fallback to index-based multi-run replacement
+        // NOTE: Cannot use paragraphId because most HWPX documents have non-unique IDs (e.g., 419 paragraphs with same ID)
+        // Always use index-based lookup which properly handles element index vs paragraph index mapping
+        if (updates.length > 1) {
           xml = this.replaceMultipleRunsInElement(xml, elementIndex, updates);
         } else {
-          // Fallback to index-based single run replacement
           xml = this.replaceTextInElementByIndex(xml, elementIndex, updates[0].oldText, updates[0].newText);
         }
       }
