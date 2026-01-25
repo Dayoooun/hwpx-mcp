@@ -546,7 +546,19 @@ export class HwpxDocument {
 
   updateParagraphText(sectionIndex: number, elementIndex: number, runIndex: number, text: string): void {
     const paragraph = this.findParagraphByPath(sectionIndex, elementIndex);
-    if (!paragraph || !paragraph.runs[runIndex]) return;
+    if (!paragraph) return;
+
+    // Handle case where paragraph has no runs (e.g., run without hp:t tag)
+    // We need to create a run in memory and track the update for XML modification
+    if (!paragraph.runs[runIndex]) {
+      // Only allow creating run 0 if no runs exist
+      if (runIndex === 0 && paragraph.runs.length === 0) {
+        // Create a new run in memory
+        paragraph.runs.push({ text: '' });
+      } else {
+        return; // Can't update non-existent run
+      }
+    }
 
     // Track for XML update - always add if we have a zip (HWPX file)
     // Similar to updateTableCell which always tracks changes
@@ -6866,12 +6878,24 @@ export class HwpxDocument {
         const escapedNew = this.escapeXml(newText);
         let newRunXml: string;
 
-        // Check if run has <hp:t> tags
-        if (/<hp:t\b[^>]*>/.test(run.xml)) {
-          // Has <hp:t> tags - replace content
-          newRunXml = run.xml.replace(/(<hp:t[^>]*>)[^<]*(<)/g, `$1${escapedNew}$2`);
+        // Check if run has <hp:t> tags (including self-closing)
+        if (/<hp:t\s*\/>/.test(run.xml)) {
+          // Has self-closing <hp:t/> tag - replace with content
+          newRunXml = run.xml.replace(/<hp:t\s*\/>/, `<hp:t>${escapedNew}</hp:t>`);
+        } else if (/<hp:t\b[^>]*>/.test(run.xml)) {
+          // Has <hp:t>...</hp:t> tags - replace content of FIRST one only (no g flag)
+          newRunXml = run.xml.replace(/(<hp:t[^>]*>)[^<]*(<\/hp:t>)/, `$1${escapedNew}$2`);
+          // Remove any additional <hp:t>...</hp:t> tags to prevent duplication
+          let firstReplaced = false;
+          newRunXml = newRunXml.replace(/<hp:t[^>]*>[^<]*<\/hp:t>/g, (match) => {
+            if (!firstReplaced) {
+              firstReplaced = true;
+              return match; // Keep the first one
+            }
+            return ''; // Remove subsequent ones
+          });
         } else {
-          // No <hp:t> tags - add them after charPrIDRef if present
+          // No <hp:t> tags - add one after the opening hp:run tag
           if (/<hp:run\b[^>]*>/.test(run.xml)) {
             newRunXml = run.xml.replace(
               /(<hp:run\b[^>]*>)/,
@@ -7212,24 +7236,32 @@ export class HwpxDocument {
       }
     }
 
-    // Find the nth paragraph in original that contains the text
-    let parasSeen = 0;
-    for (const para of originalTopLevelParas) {
-      if (para.xml.includes(escapedOld)) {
-        parasSeen++;
-        if (parasSeen === paraCountUpToIndex) {
-          targetInOriginal = para;
-          break;
-        }
+    // When oldText is empty, we can't search by text content - use positional matching
+    if (oldText === '') {
+      // Get the nth paragraph from original (by position)
+      if (paraCountUpToIndex > 0 && paraCountUpToIndex <= originalTopLevelParas.length) {
+        targetInOriginal = originalTopLevelParas[paraCountUpToIndex - 1];
       }
-    }
-
-    // Fallback: just find any paragraph with the text
-    if (!targetInOriginal) {
+    } else {
+      // Find the nth paragraph in original that contains the text
+      let parasSeen = 0;
       for (const para of originalTopLevelParas) {
         if (para.xml.includes(escapedOld)) {
-          targetInOriginal = para;
-          break;
+          parasSeen++;
+          if (parasSeen === paraCountUpToIndex) {
+            targetInOriginal = para;
+            break;
+          }
+        }
+      }
+
+      // Fallback: just find any paragraph with the text
+      if (!targetInOriginal) {
+        for (const para of originalTopLevelParas) {
+          if (para.xml.includes(escapedOld)) {
+            targetInOriginal = para;
+            break;
+          }
         }
       }
     }
@@ -7240,14 +7272,29 @@ export class HwpxDocument {
 
     // Step 7: Perform the replacement in original XML
     const elementContent = xml.slice(targetInOriginal.start, targetInOriginal.end);
+    let newElementContent = elementContent;
 
-    // Replace text within <hp:t> tags (first match only within this element)
-    const pattern1 = new RegExp(`(<hp:t[^>]*>)${this.escapeRegex(escapedOld)}`);
-    let newElementContent = elementContent.replace(pattern1, `$1${escapedNew}`);
+    // Handle different hp:t tag scenarios
+    if (/<hp:t\s*\/>/.test(elementContent)) {
+      // Case 1: Self-closing <hp:t/> - replace with full tag containing new text
+      newElementContent = elementContent.replace(/<hp:t\s*\/>/, `<hp:t>${escapedNew}</hp:t>`);
+    } else if (oldText === '' && /<hp:t[^>]*><\/hp:t>/.test(elementContent)) {
+      // Case 2: Empty <hp:t></hp:t> - fill with new text
+      newElementContent = elementContent.replace(/(<hp:t[^>]*>)<\/hp:t>/, `$1${escapedNew}</hp:t>`);
+    } else if (oldText === '' && !/<hp:t\b[^>]*>/.test(elementContent)) {
+      // Case 3: No hp:t tag at all - add one after the first hp:run opening tag
+      newElementContent = elementContent.replace(/(<hp:run\b[^>]*>)/, `$1<hp:t>${escapedNew}</hp:t>`);
+    } else {
+      // Case 4: Normal case - replace text within <hp:t> tags (first match only)
+      const pattern1 = new RegExp(`(<hp:t[^>]*>)${this.escapeRegex(escapedOld)}`);
+      newElementContent = elementContent.replace(pattern1, `$1${escapedNew}`);
 
-    // Also try standalone text replacement
-    const pattern2 = new RegExp(`>${this.escapeRegex(escapedOld)}<`);
-    newElementContent = newElementContent.replace(pattern2, `>${escapedNew}<`);
+      // Also try standalone text replacement if pattern1 didn't match
+      if (newElementContent === elementContent) {
+        const pattern2 = new RegExp(`>${this.escapeRegex(escapedOld)}<`);
+        newElementContent = newElementContent.replace(pattern2, `>${escapedNew}<`);
+      }
+    }
 
     // Reconstruct XML with updated element
     return xml.slice(0, targetInOriginal.start) + newElementContent + xml.slice(targetInOriginal.end);
