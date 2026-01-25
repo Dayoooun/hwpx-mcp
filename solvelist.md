@@ -5,135 +5,6 @@
 ---
 
 
-## [2026-01-22 22:55:17] 문제를 발견했습니다! `get_paragraph`는 **단락만** 카운트하지만, `replaceTextInE
-
-### 🔴 문제
-
-```
-문제를 발견했습니다! `get_paragraph`는 **단락만** 카운트하지만, `replaceTextInElementByIndex`는 **모든 요소**를 카운트합니다.
-```
-
-### 🔍 원인
-
-원인 분석 필요
-
-### ✅ 해결방안
-
-수정 완료! 다시 테스트하겠습니다.
-
-**해결 단계:**
-- 수정 완료! 다시 테스트하겠습니다.
-
-### 📊 메타정보
-
-- **시도 횟수**: 2번
-
----
-
-
-## [2026-01-22 23:56:25] **버그의 근본 원인을 찾았습니다!**
-
-### 🔴 문제
-
-```
-**버그의 근본 원인을 찾았습니다!**
-```
-
-### 🔍 원인
-
-**인덱스 불일치 원인:**
-
-### ✅ 해결방안
-
-파서(1495-1498)에서:
-```typescript
-} else if (el.type === 'pic') {
-  const image = this.parseImageElement(el.xml, content);
-  if (image) {  // <-- 이미지 파싱 성공 시에만 추가!
-    section.elements.push({ type: 'image', data: image });
-  }
-}
-```
-
-**해결 단계:**
-- **핵심 문제를 발견했습니다!**
-- if (image) {  // <-- 이미지 파싱 성공 시에만 추가!
-- **인덱스 불일치 원인:**
-- - 파서: 이미지 파싱 실패 시 `section.elements`에서 제외
-- - `replaceTextInElementByIndex`: XML의 모든 이미지 요소를 카운트
-
-### 📊 메타정보
-
-- **시도 횟수**: 2번
-
----
-
-
-## [2026-01-22 23:58:05] **핵심 문제를 발견했습니다!**
-
-### 🔴 문제
-
-```
-**핵심 문제를 발견했습니다!**
-} else if (el.type === 'pic') {
-const image = this.parseImageElement(el.xml, content);
-if (image) {  // <-- 이미지 파싱 성공 시에만 추가!
-section.elements.push({ type: 'image', data: image });
-}
-}
-const picRegex = /<hp:pic\b[^>]*>[\s\S]*?<\/hp:pic>/g;
-while ((picMatch = picRegex.exec(xml)) !== null) {
-otherElements.push({ ... });  // <-- 모든 이미지 요소 추가!
-}
-- 파서: 이미지 파싱 실패 시 `section.elements`에서 제외
-이로 인해 elementIndex가 일치하지 않아 텍스트 교체가 실패합니다.
-버그를 수정하겠습니다.
-```
-
-### 🔍 원인
-
-원인 분석 필요
-
-### ✅ 해결방안
-
-수정이 완료되었습니다. 이제 빌드하고 테스트하겠습니다.
-
-**해결 단계:**
-- 수정이 완료되었습니다. 이제 빌드하고 테스트하겠습니다.
-
-### 📊 메타정보
-
-- **시도 횟수**: 2번
-
----
-
-
-## [2026-01-23 00:00:33] 테스트 결과를 확인했습니다. **318개 테스트 통과**, 실패한 13개는 모두 `test-output` 디
-
-### 🔴 문제
-
-```
-테스트 결과를 확인했습니다. **318개 테스트 통과**, 실패한 13개는 모두 `test-output` 디렉토리가 없어서 발생한 것입니다. 핵심 기능은 모두 정상 동작합니다.
-```
-
-### 🔍 원인
-
-원인 분석 필요
-
-### ✅ 해결방안
-
-**모든 331개 테스트 통과!** 버그 수정이 성공적으로 완료되었습니다.
-
-**해결 단계:**
-- **모든 331개 테스트 통과!** 버그 수정이 성공적으로 완료되었습니다.
-
-### 📊 메타정보
-
-- **시도 횟수**: 2번
-
----
-
-
 ## [2026-01-23 01:25:49] 코드에 오류가 있습니다! `<\hp:p>` → `</hp:p>` 수정 필요. 더 확인합니다.
 
 ### 🔴 문제
@@ -452,6 +323,136 @@ sed 명령이 제대로 작동하지 않았습니다. 파일을 직접 확인합
 ### 📊 메타정보
 
 - **시도 횟수**: 3번
+
+---
+
+
+## [2026-01-25 20:22:26] 문제는 pnpm의 symlink가 Windows에서 제대로 해결되지 않았기 때문입니다. npm으로 설치하니 
+
+### 🔴 문제
+
+```
+문제는 pnpm의 symlink가 Windows에서 제대로 해결되지 않았기 때문입니다. npm으로 설치하니 해결되었습니다.
+**원인:** pnpm의 node_modules symlink 구조가 Windows에서 Node.js 모듈 해결에 문제를 일으킴
+```
+
+### 🔍 원인
+
+원인 분석 필요
+
+### ✅ 해결방안
+
+심각한 버그 리포트 감사합니다. 이전에 `updateParagraphText` 버그를 수정했지만 여전히 문제가 있는 것 같습니다. XML 저장 로직을 분석하겠습니다.
+
+**해결 단계:**
+- 심각한 버그 리포트 감사합니다. 이전에 `updateParagraphText` 버그를 수정했지만 여전히 문제가 있는 것 같습니다. XML 저장 로직을 분석하겠습니다.
+
+### 📁 관련 파일
+
+- `Node.js`
+
+### 📊 메타정보
+
+- **시도 횟수**: 3번
+
+---
+
+
+## [2026-01-25 20:31:21] 문제가 사용자의 실제 파일 구조에서 발생하는 것 같습니다. 더 복잡한 시나리오를 테스트해보겠습니다 - 여러 
+
+### 🔴 문제
+
+```
+문제가 사용자의 실제 파일 구조에서 발생하는 것 같습니다. 더 복잡한 시나리오를 테스트해보겠습니다 - 여러 세션에 걸쳐 같은 문단을 업데이트하는 경우.
+```
+
+### 🔍 원인
+
+원인 분석 필요
+
+### ✅ 해결방안
+
+모든 테스트가 통과합니다. 테스트 HWPX 파일은 정상 작동합니다.
+
+**해결 단계:**
+- 모든 테스트가 통과합니다. 테스트 HWPX 파일은 정상 작동합니다.
+
+### 📊 메타정보
+
+- **시도 횟수**: 2번
+
+---
+
+
+## [2026-01-25 20:35:03] `replaceMultipleRunsInElement`에서 잠재적 버그를 발견했습니다. run에 `<hp:t
+
+### 🔴 문제
+
+```
+`replaceMultipleRunsInElement`에서 잠재적 버그를 발견했습니다. run에 `<hp:t>` 태그가 없을 때 텍스트가 추가될 수 있습니다. 이 시나리오를 테스트해보겠습니다.
+```
+
+### 🔍 원인
+
+3. **단일 run에 여러 `<hp:t>` 태그가 있을 때**: **모든 `<hp:t>`에 동일한 텍스트가 적용되어 중복 발생!** ← 사용자 문제의 원인
+
+### ✅ 해결방안
+
+1. **run에 `<hp:t>` 태그가 없을 때**: 업데이트가 작동하지 않음
+2. **self-closing `<hp:t/>` 태그**: 업데이트가 XML에 반영되지 않음  
+3. **단일 run에 여러 `<hp:t>` 태그가 있을 때**: **모든 `<hp:t>`에 동일한 텍스트가 적용되어 중복 발생!** ← 사용자 문제의 원인
+
+**해결 단계:**
+- **버그를 찾았습니다!** 3가지 문제가 확인되었습니다:
+- 1. **run에 `<hp:t>` 태그가 없을 때**: 업데이트가 작동하지 않음
+- 2. **self-closing `<hp:t/>` 태그**: 업데이트가 XML에 반영되지 않음
+- 3. **단일 run에 여러 `<hp:t>` 태그가 있을 때**: **모든 `<hp:t>`에 동일한 텍스트가 적용되어 중복 발생!** ← 사용자 문제의 원인
+
+### 📊 메타정보
+
+- **시도 횟수**: 2번
+
+---
+
+
+## [2026-01-25 20:44:29] - Previous session worked on `updateParagraphText` bug fix
+
+### 🔴 문제
+
+```
+- Previous session worked on `updateParagraphText` bug fix
+2. **User's first issue**: MCP server connection failure
+- Error: `Cannot find module '@modelcontextprotocol/sdk/server/index.js'`
+3. **User's second issue**: Major bug report about text duplication
+- Created task to track the bug fix
+- Created test files: `TextDuplication.bug.test.ts`, `TextDuplicationComplex.bug.test.ts`, `RunStructure.bug.test.ts`
+- Initial tests passed, suggesting issue is with specific XML structures
+- Created `R...
+```
+
+### 🔍 원인
+
+원인 분석 필요
+
+### ✅ 해결방안
+
+텍스트 중복 버그 수정이 완료되었습니다. 전체 테스트를 실행하여 regression이 없는지 확인하겠습니다.
+
+**해결 단계:**
+- 텍스트 중복 버그 수정이 완료되었습니다. 전체 테스트를 실행하여 regression이 없는지 확인하겠습니다.
+
+### 📁 관련 파일
+
+- `modelcontextprotocol/sdk/server/index.js`
+- `TextDuplication.bug.test.ts`
+- `RunStructure.bug.test.ts`
+- `\Users\rlaek\.claude\projects\D--hwp-extension\4cfa4009-96db-47cc-bca9-8d6891bcc86c.js`
+- `TextDuplicationComplex.bug.test.ts`
+- *(외 5개 생략)*
+
+### 📊 메타정보
+
+- **시도 횟수**: 2번
 
 ---
 
