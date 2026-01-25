@@ -7237,34 +7237,34 @@ export class HwpxDocument {
     // and matches the relative position
     let targetInOriginal: { start: number; end: number; xml: string } | undefined;
 
-    // Count paragraph elements up to elementIndex in the cleaned element list
-    let paraCountUpToIndex = 0;
-    for (let i = 0; i <= elementIndex; i++) {
+    // Count how many paragraph elements appear BEFORE elementIndex in the cleaned element list
+    // elementIndex is an index into elements array (which includes tables as single elements)
+    // We need to find which top-level paragraph this corresponds to
+    let topLevelParagraphIndex = 0;
+    for (let i = 0; i < elementIndex; i++) {
       if (elements[i].type === 'p') {
-        paraCountUpToIndex++;
+        topLevelParagraphIndex++;
       }
     }
+    // topLevelParagraphIndex is now the index into originalTopLevelParas for the target paragraph
 
     // When oldText is empty, we can't search by text content - use positional matching
     if (oldText === '') {
-      // Get the nth paragraph from original (by position)
-      if (paraCountUpToIndex > 0 && paraCountUpToIndex <= originalTopLevelParas.length) {
-        targetInOriginal = originalTopLevelParas[paraCountUpToIndex - 1];
+      // Get the paragraph at topLevelParagraphIndex from original
+      if (topLevelParagraphIndex >= 0 && topLevelParagraphIndex < originalTopLevelParas.length) {
+        targetInOriginal = originalTopLevelParas[topLevelParagraphIndex];
       }
     } else {
-      // Find the nth paragraph in original that contains the text
-      let parasSeen = 0;
-      for (const para of originalTopLevelParas) {
-        if (para.xml.includes(escapedOld)) {
-          parasSeen++;
-          if (parasSeen === paraCountUpToIndex) {
-            targetInOriginal = para;
-            break;
-          }
+      // Find the paragraph in original that contains the text and is at the expected position
+      // First try exact positional match with text content
+      if (topLevelParagraphIndex >= 0 && topLevelParagraphIndex < originalTopLevelParas.length) {
+        const candidatePara = originalTopLevelParas[topLevelParagraphIndex];
+        if (candidatePara.xml.includes(escapedOld)) {
+          targetInOriginal = candidatePara;
         }
       }
 
-      // Fallback: just find any paragraph with the text
+      // Fallback: search nearby paragraphs if exact position doesn't match
       if (!targetInOriginal) {
         for (const para of originalTopLevelParas) {
           if (para.xml.includes(escapedOld)) {
