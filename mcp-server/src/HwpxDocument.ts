@@ -6770,16 +6770,7 @@ export class HwpxDocument {
 
     elements.sort((a, b) => a.start - b.start);
 
-    if (elementIndex < 0 || elementIndex >= elements.length) {
-      return xml;
-    }
-
-    const targetElement = elements[elementIndex];
-    if (targetElement.type !== 'p') {
-      return xml;
-    }
-
-    // Find the same paragraph in original XML
+    // Build list of top-level paragraphs in original XML
     const originalParagraphs = extractAllParagraphs(xml);
     const originalTableRanges: { start: number; end: number }[] = [];
     const originalTables = extractBalancedTags(xml, 'hp:tbl');
@@ -6820,29 +6811,77 @@ export class HwpxDocument {
       }
     }
 
-    // Find the paragraph at this element index
+    // Determine strategy based on oldText in updates
     let targetInOriginal: { start: number; end: number; xml: string } | undefined;
 
-    // Count paragraph elements up to elementIndex
-    let paraCountUpToIndex = 0;
-    for (let i = 0; i <= elementIndex; i++) {
-      if (elements[i].type === 'p') {
-        paraCountUpToIndex++;
-      }
-    }
+    // When updates contain non-empty oldText, prioritize text-based search over positional matching
+    // because element indices may differ between HwpxParser and this function
+    const nonEmptyOldTexts = updates.filter(u => u.oldText !== '').map(u => this.escapeXml(u.oldText));
 
-    // Get the nth paragraph from original
-    let parasSeen = 0;
-    for (const para of originalTopLevelParas) {
-      parasSeen++;
-      if (parasSeen === paraCountUpToIndex) {
-        targetInOriginal = para;
-        break;
-      }
-    }
+    if (nonEmptyOldTexts.length > 0) {
+      // TEXT-BASED SEARCH: Find ALL paragraphs containing at least one of the oldTexts
+      const matchingParas = originalTopLevelParas.filter(para =>
+        nonEmptyOldTexts.some(escapedOld => para.xml.includes(escapedOld))
+      );
 
-    if (!targetInOriginal) {
-      return xml;
+      if (matchingParas.length === 1) {
+        // Unique match - use it directly
+        targetInOriginal = matchingParas[0];
+      } else if (matchingParas.length > 1) {
+        // Multiple matches - find the CLOSEST paragraph by position
+        let topLevelParagraphIndex = 0;
+        for (let i = 0; i < elementIndex && i < elements.length; i++) {
+          if (elements[i].type === 'p') {
+            topLevelParagraphIndex++;
+          }
+        }
+
+        // Find the CLOSEST matching paragraph (not just any within tolerance)
+        let closestPara: typeof matchingParas[0] | undefined;
+        let closestDistance = Infinity;
+        for (const para of matchingParas) {
+          const paraIndex = originalTopLevelParas.indexOf(para);
+          const distance = Math.abs(paraIndex - topLevelParagraphIndex);
+          if (distance < closestDistance) {
+            closestDistance = distance;
+            closestPara = para;
+          }
+        }
+
+        targetInOriginal = closestPara || matchingParas[0];
+      }
+
+      // If no matches found by text, return unchanged
+      if (!targetInOriginal) {
+        return xml;
+      }
+    } else {
+      // INDEX-BASED SEARCH: When all oldTexts are empty, use element index
+      if (elementIndex < 0 || elementIndex >= elements.length) {
+        return xml; // Index out of bounds
+      }
+
+      const targetElement = elements[elementIndex];
+      if (targetElement.type !== 'p') {
+        return xml; // Not a paragraph, can't replace text
+      }
+
+      // Count how many paragraph elements appear BEFORE elementIndex
+      let topLevelParagraphIndex = 0;
+      for (let i = 0; i < elementIndex; i++) {
+        if (elements[i].type === 'p') {
+          topLevelParagraphIndex++;
+        }
+      }
+
+      // Use positional matching
+      if (topLevelParagraphIndex >= 0 && topLevelParagraphIndex < originalTopLevelParas.length) {
+        targetInOriginal = originalTopLevelParas[topLevelParagraphIndex];
+      }
+
+      if (!targetInOriginal) {
+        return xml; // Paragraph not found
+      }
     }
 
     // Now extract all <hp:run> elements from the paragraph and update them
@@ -7010,6 +7049,7 @@ export class HwpxDocument {
     const escapedOld = this.escapeXml(oldText);
     const escapedNew = this.escapeXml(newText);
 
+
     // CRITICAL: Match HwpxParser.parseSection logic EXACTLY
     // Step 1: Clean XML first (remove MEMO, footnote, endnote content) - same as HwpxParser
     let cleanedXml = xml.replace(/<hp:fieldBegin[^>]*type="MEMO"[^>]*>[\s\S]*?<\/hp:fieldBegin>/gi, '');
@@ -7169,21 +7209,7 @@ export class HwpxDocument {
     // Sort by position (same as HwpxParser)
     elements.sort((a, b) => a.start - b.start);
 
-    // Step 5: Find target element at specified index
-    if (elementIndex < 0 || elementIndex >= elements.length) {
-      return xml; // Index out of bounds
-    }
-
-    const targetElement = elements[elementIndex];
-    if (targetElement.type !== 'p') {
-      return xml; // Not a paragraph, can't replace text
-    }
-
-    // Step 6: Now we need to find the SAME paragraph in the ORIGINAL XML
-    // The paragraph might be at a different position due to MEMO/footnote/endnote removal
-    // Strategy: Find paragraph in original XML that contains the oldText and is at approximately the same position
-
-    // First, try to find by unique text content
+    // Step 5: Build original document structure for target lookup
     const originalParagraphs = extractAllParagraphs(xml);
     const originalTableRanges: { start: number; end: number }[] = [];
     const originalTables = extractBalancedTags(xml, 'hp:tbl');
@@ -7225,50 +7251,74 @@ export class HwpxDocument {
       }
     }
 
-    // Find the paragraph in original XML that contains the escapedOld text
-    // and matches the relative position
+    // Step 6: Determine strategy based on oldText
     let targetInOriginal: { start: number; end: number; xml: string } | undefined;
 
-    // Count how many paragraph elements appear BEFORE elementIndex in the cleaned element list
-    // elementIndex is an index into elements array (which includes tables as single elements)
-    // We need to find which top-level paragraph this corresponds to
-    let topLevelParagraphIndex = 0;
-    for (let i = 0; i < elementIndex; i++) {
-      if (elements[i].type === 'p') {
-        topLevelParagraphIndex++;
-      }
-    }
-    // topLevelParagraphIndex is now the index into originalTopLevelParas for the target paragraph
+    if (oldText !== '') {
+      // TEXT-BASED SEARCH: When oldText is provided, prioritize text-based search
+      // because element indices may differ between HwpxParser and this function
 
-    // When oldText is empty, we can't search by text content - use positional matching
-    if (oldText === '') {
-      // Get the paragraph at topLevelParagraphIndex from original
+      // Find ALL paragraphs containing the oldText
+      const matchingParas = originalTopLevelParas.filter(para => para.xml.includes(escapedOld));
+
+      if (matchingParas.length === 1) {
+        // Unique match - use it directly
+        targetInOriginal = matchingParas[0];
+      } else if (matchingParas.length > 1) {
+        // Multiple matches - find the CLOSEST paragraph by position
+        let topLevelParagraphIndex = 0;
+        for (let i = 0; i < elementIndex && i < elements.length; i++) {
+          if (elements[i].type === 'p') {
+            topLevelParagraphIndex++;
+          }
+        }
+
+        // Find the CLOSEST matching paragraph (not just any within tolerance)
+        let closestPara: typeof matchingParas[0] | undefined;
+        let closestDistance = Infinity;
+        for (const para of matchingParas) {
+          const paraIndex = originalTopLevelParas.indexOf(para);
+          const distance = Math.abs(paraIndex - topLevelParagraphIndex);
+          if (distance < closestDistance) {
+            closestDistance = distance;
+            closestPara = para;
+          }
+        }
+
+        targetInOriginal = closestPara || matchingParas[0];
+      }
+
+      // If no matches found by text, return unchanged
+      if (!targetInOriginal) {
+        return xml;
+      }
+    } else {
+      // INDEX-BASED SEARCH: When oldText is empty, use element index
+      if (elementIndex < 0 || elementIndex >= elements.length) {
+        return xml; // Index out of bounds
+      }
+
+      const targetElement = elements[elementIndex];
+      if (targetElement.type !== 'p') {
+        return xml; // Not a paragraph, can't replace text
+      }
+
+      // Count how many paragraph elements appear BEFORE elementIndex
+      let topLevelParagraphIndex = 0;
+      for (let i = 0; i < elementIndex; i++) {
+        if (elements[i].type === 'p') {
+          topLevelParagraphIndex++;
+        }
+      }
+
+      // Use positional matching
       if (topLevelParagraphIndex >= 0 && topLevelParagraphIndex < originalTopLevelParas.length) {
         targetInOriginal = originalTopLevelParas[topLevelParagraphIndex];
       }
-    } else {
-      // Find the paragraph in original that contains the text and is at the expected position
-      // First try exact positional match with text content
-      if (topLevelParagraphIndex >= 0 && topLevelParagraphIndex < originalTopLevelParas.length) {
-        const candidatePara = originalTopLevelParas[topLevelParagraphIndex];
-        if (candidatePara.xml.includes(escapedOld)) {
-          targetInOriginal = candidatePara;
-        }
-      }
 
-      // Fallback: search nearby paragraphs if exact position doesn't match
       if (!targetInOriginal) {
-        for (const para of originalTopLevelParas) {
-          if (para.xml.includes(escapedOld)) {
-            targetInOriginal = para;
-            break;
-          }
-        }
+        return xml; // Paragraph not found
       }
-    }
-
-    if (!targetInOriginal) {
-      return xml; // Paragraph not found
     }
 
     // Step 7: Perform the replacement in original XML

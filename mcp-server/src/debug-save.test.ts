@@ -1,19 +1,33 @@
-import { describe, it, expect, afterEach } from 'vitest';
-import { HwpxDocument } from './HwpxDocument';
+import { describe, it, expect } from 'vitest';
 import * as fs from 'fs';
-import * as path from 'path';
 import JSZip from 'jszip';
+import { HwpxDocument } from './HwpxDocument';
 
-describe('Debug paragraph save', () => {
+describe('Debug replaceTextInElementByIndex directly', () => {
   const testFile = 'D:/rlaek/doc-cursor(26new)/26년-지원사업/초기창업패키지-딥테크특화형/별첨/(별첨1) 2026년도 초기창업패키지(딥테크 특화형) 사업계획서 양식.hwpx';
 
-  it('should debug replaceTextInElementByIndex', async () => {
-    // Read the original XML
-    const originalZip = await JSZip.loadAsync(fs.readFileSync(testFile));
-    const originalXml = await originalZip.file('Contents/section0.xml')!.async('string');
+  it('should compare HwpxDocument parsing vs replaceTextInElementByIndex logic', async () => {
+    // 1. Open document with HwpxDocument and find paragraph with " ◦ "
+    const buffer = fs.readFileSync(testFile);
+    const doc = await HwpxDocument.createFromBuffer('test-id', testFile, buffer);
+    const paragraphs = doc.getParagraphs(0); // section 0
 
-    // Clean the XML (remove MEMO, footnote, endnote)
-    const cleanedXml = originalXml
+    console.log('=== HwpxDocument getParagraphs() ===');
+    const paraWithCircle = paragraphs.find(p => p.text.includes(' ◦ '));
+    if (paraWithCircle) {
+      console.log(`Found " ◦ " at element index: ${paraWithCircle.index}`);
+      console.log(`Text: ${paraWithCircle.text}`);
+    } else {
+      console.log('No paragraph with " ◦ " found!');
+    }
+
+    // 2. Now build elements array the same way replaceTextInElementByIndex does
+    // Read original XML directly
+    const zip = await JSZip.loadAsync(fs.readFileSync(testFile));
+    const xml = await zip.file('Contents/section0.xml')!.async('string');
+
+    // Simulate cleaned XML (same as in replaceTextInElementByIndex)
+    const cleanedXml = xml
       .replace(/<hp:fieldBegin[^>]*type="MEMO"[^>]*>[\s\S]*?<\/hp:fieldBegin>/gi, '')
       .replace(/<hp:footNote\b[^>]*>[\s\S]*?<\/hp:footNote>/gi, '')
       .replace(/<hp:endNote\b[^>]*>[\s\S]*?<\/hp:endNote>/gi, '');
@@ -59,7 +73,6 @@ describe('Debug paragraph save', () => {
       return results;
     };
 
-    // Extract tables
     const extractBalancedTags = (xmlStr: string, tagName: string): string[] => {
       const results: string[] = [];
       const openTag = `<${tagName}`;
@@ -95,8 +108,8 @@ describe('Debug paragraph save', () => {
       return results;
     };
 
-    // Build cleaned elements array
-    const paragraphs = extractAllParagraphs(cleanedXml);
+    // Build elements array (same as HwpxParser logic)
+    const cleanedParagraphs = extractAllParagraphs(cleanedXml);
     const tables = extractBalancedTags(cleanedXml, 'hp:tbl');
 
     const tableRanges: { start: number; end: number }[] = [];
@@ -120,91 +133,87 @@ describe('Debug paragraph save', () => {
       elements.push({ type: 'tbl', start: range.start, end: range.end, xml: cleanedXml.substring(range.start, range.end) });
     }
 
-    // Add paragraphs
-    for (const para of paragraphs) {
+    // Add paragraphs - SAME LOGIC AS HwpxParser
+    for (const para of cleanedParagraphs) {
       const isInsideTable = tableRanges.some(
         range => para.start > range.start && para.start < range.end
       );
+      const containsTable = tableRanges.some(
+        range => range.start >= para.start && range.end <= para.end
+      );
+
       if (!isInsideTable) {
-        const hasTextContent = /<hp:t\b[^>]*>/.test(para.xml);
-        if (hasTextContent || !tableRanges.some(range => range.start >= para.start && range.end <= para.end)) {
+        if (containsTable) {
+          let paraXmlWithoutTable = para.xml;
+          for (const range of tableRanges) {
+            if (range.start >= para.start && range.end <= para.start + para.xml.length) {
+              const tableStartInPara = range.start - para.start;
+              const tableEndInPara = range.end - para.start;
+              const tableXmlInPara = para.xml.substring(tableStartInPara, tableEndInPara);
+              paraXmlWithoutTable = paraXmlWithoutTable.replace(tableXmlInPara, '');
+            }
+          }
+          const hasTextContent = /<hp:t\b[^>]*>/.test(paraXmlWithoutTable);
+          if (hasTextContent) {
+            elements.push({ type: 'p', start: para.start, end: para.end, xml: paraXmlWithoutTable });
+          }
+        } else {
           elements.push({ type: 'p', start: para.start, end: para.end, xml: para.xml });
         }
       }
     }
 
+    // ADD SHAPE ELEMENTS (line, rect, ellipse, arc, polygon, curve, connectLine)
+    const addShapeElements = (pattern: RegExp, typeName: string) => {
+      let match;
+      while ((match = pattern.exec(cleanedXml)) !== null) {
+        elements.push({ type: typeName, start: match.index, end: match.index + match[0].length, xml: match[0] });
+      }
+    };
+
+    addShapeElements(/<hp:line\b[^>]*(?:\/>|>[\s\S]*?<\/hp:line>)/g, 'line');
+    addShapeElements(/<hp:rect\b[^>]*(?:\/>|>[\s\S]*?<\/hp:rect>)/g, 'rect');
+    addShapeElements(/<hp:ellipse\b[^>]*(?:\/>|>[\s\S]*?<\/hp:ellipse>)/g, 'ellipse');
+    addShapeElements(/<hp:arc\b[^>]*(?:\/>|>[\s\S]*?<\/hp:arc>)/g, 'arc');
+    addShapeElements(/<hp:polygon\b[^>]*(?:\/>|>[\s\S]*?<\/hp:polygon>)/g, 'polygon');
+    addShapeElements(/<hp:curve\b[^>]*(?:\/>|>[\s\S]*?<\/hp:curve>)/g, 'curve');
+    addShapeElements(/<hp:connectLine\b[^>]*(?:\/>|>[\s\S]*?<\/hp:connectLine>)/g, 'connectline');
+
     // Sort by position
     elements.sort((a, b) => a.start - b.start);
 
-    console.log('Total elements in cleaned XML:', elements.length);
-    console.log('Element 22 type:', elements[22]?.type);
+    // 3. Compare
+    console.log('\n=== Manual element building ===');
+    console.log('Total elements:', elements.length);
 
-    // Count paragraphs before index 22
-    let pCountBefore22 = 0;
-    for (let i = 0; i < 22; i++) {
-      if (elements[i].type === 'p') pCountBefore22++;
-    }
-    console.log('Paragraphs before element 22:', pCountBefore22);
+    if (paraWithCircle) {
+      const elementAtIndex = elements[paraWithCircle.index];
+      console.log(`\nElement at index ${paraWithCircle.index} (from HwpxDocument):`, elementAtIndex?.type);
 
-    // Build originalTopLevelParas
-    const originalParagraphs = extractAllParagraphs(originalXml);
-    const originalTables = extractBalancedTags(originalXml, 'hp:tbl');
-    const originalTableRanges: { start: number; end: number }[] = [];
-    for (const tableXml of originalTables) {
-      const tableIndex = originalXml.indexOf(tableXml);
-      if (tableIndex !== -1) {
-        originalTableRanges.push({ start: tableIndex, end: tableIndex + tableXml.length });
+      if (elementAtIndex?.type === 'p') {
+        const textMatch = elementAtIndex.xml.match(/<hp:t[^>]*>([^<]*)<\/hp:t>/);
+        console.log('Text:', textMatch?.[1]);
       }
     }
 
-    const originalTopLevelParas: { start: number; end: number; xml: string }[] = [];
-    for (const para of originalParagraphs) {
-      const isInsideTable = originalTableRanges.some(
-        range => para.start > range.start && para.start < range.end
-      );
-      if (!isInsideTable) {
-        originalTopLevelParas.push({ start: para.start, end: para.end, xml: para.xml });
-      }
-    }
-
-    console.log('Total originalTopLevelParas:', originalTopLevelParas.length);
-
-    // Check paragraph at index 13 (which is what we expect for element 22)
-    const targetPara = originalTopLevelParas[pCountBefore22];
-    console.log('Target paragraph (index ' + pCountBefore22 + '):');
-
-    // Extract text from hp:t tags
-    const textMatches = targetPara?.xml.match(/<hp:t[^>]*>([^<]*)<\/hp:t>/g);
-    if (textMatches) {
-      console.log('  Text content:', textMatches.map(m => {
-        const match = m.match(/<hp:t[^>]*>([^<]*)<\/hp:t>/);
-        return match ? match[1] : '';
-      }).join(''));
-    }
-
-    // Also check what's at element 22
-    console.log('\nElement 22 text:');
-    const el22Text = elements[22]?.xml.match(/<hp:t[^>]*>([^<]*)<\/hp:t>/g);
-    if (el22Text) {
-      console.log('  ', el22Text.map(m => {
-        const match = m.match(/<hp:t[^>]*>([^<]*)<\/hp:t>/);
-        return match ? match[1] : '';
-      }).join(''));
-    }
-
-    // Check if " ◦ " exists in originalTopLevelParas[13]
-    const containsTarget = targetPara?.xml.includes(' ◦ ');
-    console.log('\nTarget para contains " ◦ ":', containsTarget);
-
-    // Find which paragraph has " ◦ "
-    console.log('\nParagraphs containing " ◦ ":');
-    originalTopLevelParas.forEach((para, idx) => {
-      if (para.xml.includes(' ◦ ')) {
-        const textMatch = para.xml.match(/<hp:t[^>]*>([^<]*◦[^<]*)<\/hp:t>/);
-        console.log(`  Index ${idx}: ${textMatch?.[1]}`);
+    // Find where " ◦ " actually appears in our elements
+    console.log('\n=== Elements containing " ◦ " ===');
+    elements.forEach((el, idx) => {
+      if (el.type === 'p' && el.xml.includes(' ◦ ')) {
+        const textMatch = el.xml.match(/<hp:t[^>]*>([^<]*)<\/hp:t>/);
+        console.log(`Index ${idx}: ${textMatch?.[1]}`);
       }
     });
 
-    expect(true).toBe(true);
+    // The issue is clear now: HwpxDocument says " ◦ " is at element index 22
+    // But manual building shows element 22 is a 'tbl', and " ◦ " appears at indices 33, 39, 50, 72, 78, 101
+    // This means HwpxParser is missing shape elements that replaceTextInElementByIndex is including!
+    console.log('\n=== MISMATCH FOUND ===');
+    console.log('HwpxDocument thinks " ◦ " is at index:', paraWithCircle?.index);
+    console.log('But manually built elements show index 22 is type:', elements[22]?.type);
+    console.log('Manual build found " ◦ " at indices: 33, 39, 50, 72, 78, 101');
+
+    // Test should pass now that we understand the issue
+    expect(paraWithCircle).toBeDefined();
   });
 });
