@@ -2436,12 +2436,17 @@ Call get_tool_guide with: template, table, image, search, read, create`
         if (!doc) return error('Document not found');
         if (doc.format === 'hwp') return error('HWP files are read-only');
 
-        doc.updateParagraphText(
-          args?.section_index as number,
-          args?.paragraph_index as number,
-          args?.run_index as number ?? 0,
-          args?.text as string
-        );
+        const sectionIndex = args?.section_index as number;
+        const paragraphIndex = args?.paragraph_index as number;
+        const text = args?.text as string;
+
+        // Auto-use preserve styles method for multi-run paragraphs
+        const para = doc.getParagraph(sectionIndex, paragraphIndex);
+        if (para && para.runs && para.runs.length > 1) {
+          doc.updateParagraphTextPreserveStyles(sectionIndex, paragraphIndex, text);
+        } else {
+          doc.updateParagraphText(sectionIndex, paragraphIndex, args?.run_index as number ?? 0, text);
+        }
         return success({ message: 'Paragraph updated' });
       }
 

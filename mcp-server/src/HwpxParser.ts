@@ -118,7 +118,7 @@ export class HwpxParser {
       const sectionXml = await this.readXmlFile(zip, sectionPath);
       if (!sectionXml) break;
 
-      const section = this.parseSection(sectionXml, content);
+      const section = this.parseSection(sectionXml, content, sectionIndex);
       content.sections.push(section);
       sectionIndex++;
     }
@@ -1158,7 +1158,7 @@ export class HwpxParser {
     }
   }
 
-  private static parseSection(xml: string, content: HwpxContent): HwpxSection {
+  private static parseSection(xml: string, content: HwpxContent, sectionIndex: number): HwpxSection {
     const section: HwpxSection = {
       elements: [],
       pageSettings: this.parsePageSettings(xml),
@@ -1230,10 +1230,54 @@ export class HwpxParser {
     cleanedXml = cleanedXml.replace(/<hp:footNote\b[^>]*>[\s\S]*?<\/hp:footNote>/gi, '');
     cleanedXml = cleanedXml.replace(/<hp:endNote\b[^>]*>[\s\S]*?<\/hp:endNote>/gi, '');
 
-    const elements: { index: number; type: string; xml: string; parentLinesegs?: import('./types').LineSeg[] }[] = [];
+    const elements: { index: number; type: string; xml: string; parentLinesegs?: import('./types').LineSeg[]; originalXmlPosition?: { start: number; end: number } }[] = [];
 
     // Extract ALL paragraphs first to find parent paragraphs for tables
     const paragraphs = this.extractAllParagraphs(cleanedXml);
+
+    // Also extract top-level paragraphs from ORIGINAL xml for position caching
+    // This enables direct XML updates without re-parsing during save()
+    const originalParagraphs = this.extractAllParagraphs(xml);
+    const originalTables = this.extractBalancedTags(xml, 'hp:tbl');
+    const originalTableRanges: { start: number; end: number }[] = [];
+    for (const tableXml of originalTables) {
+      const tableIndex = xml.indexOf(tableXml);
+      if (tableIndex !== -1) {
+        originalTableRanges.push({ start: tableIndex, end: tableIndex + tableXml.length });
+      }
+    }
+    // Build list of top-level paragraphs in original XML (not inside tables)
+    const originalTopLevelParas: { start: number; end: number; xml: string }[] = [];
+    for (const para of originalParagraphs) {
+      const isInsideTable = originalTableRanges.some(
+        range => para.start > range.start && para.start < range.end
+      );
+      const containsTable = originalTableRanges.some(
+        range => range.start >= para.start && range.end <= para.end
+      );
+      if (!isInsideTable) {
+        if (containsTable) {
+          // Check if paragraph has text content after removing table
+          let paraXmlWithoutTable = para.xml;
+          for (const range of originalTableRanges) {
+            if (range.start >= para.start && range.end <= para.start + para.xml.length) {
+              const tableStartInPara = range.start - para.start;
+              const tableEndInPara = range.end - para.start;
+              const tableXmlInPara = para.xml.substring(tableStartInPara, tableEndInPara);
+              paraXmlWithoutTable = paraXmlWithoutTable.replace(tableXmlInPara, '');
+            }
+          }
+          const hasTextContent = /<hp:t\b[^>]*>/.test(paraXmlWithoutTable);
+          if (hasTextContent) {
+            originalTopLevelParas.push({ start: para.start, end: para.end, xml: para.xml });
+          }
+        } else {
+          originalTopLevelParas.push({ start: para.start, end: para.end, xml: para.xml });
+        }
+      }
+    }
+    // Counter for matching cleaned paragraphs to original positions
+    let originalParaIndex = 0;
 
     // Extract all tables from cleaned XML (without MEMOs and footnotes) to maintain consistent indices
     const tables = this.extractBalancedTags(cleanedXml, 'hp:tbl');
@@ -1290,6 +1334,11 @@ export class HwpxParser {
         range => range.start >= para.start && range.end <= para.end
       );
       if (!isInsideTable) {
+        // Get corresponding original XML position for this top-level paragraph
+        const origPos = originalParaIndex < originalTopLevelParas.length
+          ? { start: originalTopLevelParas[originalParaIndex].start, end: originalTopLevelParas[originalParaIndex].end }
+          : undefined;
+
         if (containsTable) {
           // Paragraph contains a table - remove the table XML and parse the remaining content
           let paraXmlWithoutTable = para.xml;
@@ -1305,10 +1354,12 @@ export class HwpxParser {
           // Only add if there's remaining content besides lineseg
           const hasTextContent = /<hp:t\b[^>]*>/.test(paraXmlWithoutTable);
           if (hasTextContent) {
-            elements.push({ index: para.start, type: 'p', xml: paraXmlWithoutTable });
+            elements.push({ index: para.start, type: 'p', xml: paraXmlWithoutTable, originalXmlPosition: origPos });
+            originalParaIndex++;
           }
         } else {
-          elements.push({ index: para.start, type: 'p', xml: para.xml });
+          elements.push({ index: para.start, type: 'p', xml: para.xml, originalXmlPosition: origPos });
+          originalParaIndex++;
         }
       }
     }
@@ -1462,6 +1513,16 @@ export class HwpxParser {
     for (const el of elements) {
       if (el.type === 'p') {
         const paragraph = this.parseParagraph(el.xml);
+
+        // Store XML position from original XML for direct updates
+        // This enables fast paragraph updates without re-parsing during save()
+        if (el.originalXmlPosition) {
+          paragraph._xmlPosition = {
+            sectionIndex,
+            start: el.originalXmlPosition.start,
+            end: el.originalXmlPosition.end,
+          };
+        }
 
         // Check if this paragraph should have a footnote reference
         // (footnote was in original XML but removed from cleanedXml)

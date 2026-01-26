@@ -103,6 +103,7 @@ export class HwpxDocument {
     sectionIndex: number;
     elementIndex: number;
     paragraphId: string;  // Stable ID for reliable paragraph identification
+    paragraphOccurrence: number;  // Which occurrence of this ID (0-indexed)
     runIndex: number;
     oldText: string;
     newText: string
@@ -548,6 +549,12 @@ export class HwpxDocument {
     const paragraph = this.findParagraphByPath(sectionIndex, elementIndex);
     if (!paragraph) return;
 
+    // Auto-delegate to preserve styles method for multi-run paragraphs
+    if (paragraph.runs.length > 1) {
+      this.updateParagraphTextPreserveStyles(sectionIndex, elementIndex, text);
+      return;
+    }
+
     // Handle case where paragraph has no runs (e.g., run without hp:t tag)
     // We need to create a run in memory and track the update for XML modification
     if (!paragraph.runs[runIndex]) {
@@ -564,10 +571,12 @@ export class HwpxDocument {
     // Similar to updateTableCell which always tracks changes
     if (this._zip) {
       const oldText = paragraph.runs[runIndex].text || '';
+      const paragraphOccurrence = this.getParagraphOccurrence(sectionIndex, elementIndex, paragraph.id || '');
       this._pendingDirectTextUpdates.push({
         sectionIndex,
         elementIndex,
         paragraphId: paragraph.id || '',  // Use stable paragraph ID for reliable identification
+        paragraphOccurrence,
         runIndex,
         oldText,
         newText: text
@@ -582,6 +591,7 @@ export class HwpxDocument {
               sectionIndex,
               elementIndex,
               paragraphId: paragraph.id || '',
+              paragraphOccurrence,
               runIndex: i,
               oldText: otherOldText,
               newText: ''  // Clear other runs
@@ -665,10 +675,12 @@ export class HwpxDocument {
 
       // Add to pending updates if text changed
       if (oldText !== run.text && this._zip) {
+        const paragraphOccurrence = this.getParagraphOccurrence(sectionIndex, elementIndex, paragraph.id || '');
         this._pendingDirectTextUpdates.push({
           sectionIndex,
           elementIndex,
           paragraphId: paragraph.id || '',
+          paragraphOccurrence,
           runIndex: i,
           oldText: oldText || '',
           newText: run.text
@@ -732,10 +744,12 @@ export class HwpxDocument {
 
       // Track for XML update
       if (this._zip) {
+        const paragraphOccurrence = this.getParagraphOccurrence(sectionIndex, elementIndex, paragraph.id || '');
         this._pendingDirectTextUpdates.push({
           sectionIndex,
           elementIndex,
           paragraphId: paragraph.id || '',  // Use stable paragraph ID
+          paragraphOccurrence,
           runIndex: lastRunIndex,
           oldText,
           newText
@@ -749,10 +763,12 @@ export class HwpxDocument {
 
       // Track for XML update with new run
       if (this._zip) {
+        const paragraphOccurrence = this.getParagraphOccurrence(sectionIndex, elementIndex, paragraph.id || '');
         this._pendingDirectTextUpdates.push({
           sectionIndex,
           elementIndex,
           paragraphId: paragraph.id || '',  // Use stable paragraph ID
+          paragraphOccurrence,
           runIndex: 0,
           oldText: '',
           newText: text
@@ -4093,7 +4109,51 @@ export class HwpxDocument {
     // Sync metadata
     await this.syncMetadataToZip();
 
+    // Invalidate cached XML positions since XML structure may have changed
+    this.invalidateXmlPositions();
+
     this._isDirty = false;
+  }
+
+  /**
+   * Invalidate cached XML positions for all paragraphs.
+   * Called after save() because XML modifications may shift byte positions.
+   * The positions will be re-populated on next document reload.
+   */
+  private invalidateXmlPositions(): void {
+    if (!this._content?.sections) return;
+    for (const section of this._content.sections) {
+      for (const element of section.elements) {
+        if (element.type === 'paragraph') {
+          const para = element.data as import('./types').HwpxParagraph;
+          delete para._xmlPosition;
+        }
+      }
+    }
+  }
+
+  /**
+   * Get cached XML position for a paragraph at the given section and element index.
+   * Returns undefined if no cached position is available.
+   * The cached positions are populated during parsing in HwpxParser.parseSection().
+   */
+  private getCachedXmlPosition(sectionIndex: number, elementIndex: number): { start: number; end: number } | undefined {
+    const section = this._content?.sections?.[sectionIndex];
+    if (!section) return undefined;
+
+    const element = section.elements[elementIndex];
+    if (!element || element.type !== 'paragraph') return undefined;
+
+    const para = element.data as import('./types').HwpxParagraph;
+    if (!para._xmlPosition) return undefined;
+
+    // Verify section index matches (safety check)
+    if (para._xmlPosition.sectionIndex !== sectionIndex) return undefined;
+
+    return {
+      start: para._xmlPosition.start,
+      end: para._xmlPosition.end
+    };
   }
 
   /**
@@ -6557,6 +6617,10 @@ export class HwpxDocument {
   /**
    * Apply direct text updates (exact match replacement)
    * Groups updates by paragraph to handle multi-run updates correctly
+   *
+   * BUGFIX (2026-01-25): Pre-compute paragraph mappings before any modifications
+   * to prevent text merging when multiple paragraphs have the same oldText pattern.
+   * Updates are applied in reverse order (bottom-to-top) to avoid position shifts.
    */
   private async applyDirectTextUpdatesToXml(): Promise<void> {
     if (!this._zip) return;
@@ -6585,18 +6649,57 @@ export class HwpxDocument {
 
       let xml = await file.async('string');
 
-      // Process each paragraph's updates together
+      // STEP 1: Pre-compute target paragraph mappings BEFORE any modifications
+      // OPTIMIZATION: Use cached XML positions when available (populated during parsing)
+      const paragraphTargets = new Map<number, { start: number; end: number; xml: string }>();
       for (const [elementIndex, updates] of elementMap) {
+        // Try cached position first (from parsing phase)
+        const cachedPosition = this.getCachedXmlPosition(sectionIdx, elementIndex);
+        if (cachedPosition && cachedPosition.start < xml.length && cachedPosition.end <= xml.length) {
+          // Validate cached position by checking if it points to a paragraph element
+          const cachedXml = xml.slice(cachedPosition.start, cachedPosition.end);
+          if (cachedXml.startsWith('<hp:p') && cachedXml.endsWith('</hp:p>')) {
+            paragraphTargets.set(elementIndex, {
+              start: cachedPosition.start,
+              end: cachedPosition.end,
+              xml: cachedXml
+            });
+            continue;
+          }
+        }
+
+        // Fallback to full search if no cached position or validation failed
+        const paragraphId = updates[0]?.paragraphId || '';
+        const paragraphOccurrence = updates[0]?.paragraphOccurrence ?? 0;
+        const target = this.findTargetParagraphForUpdate(xml, sectionIdx, elementIndex, updates, paragraphId, paragraphOccurrence);
+        if (target) {
+          paragraphTargets.set(elementIndex, target);
+        }
+      }
+
+      // STEP 2: Sort updates by position (descending) to process bottom-to-top
+      // This prevents position shifts from affecting subsequent updates
+      const sortedEntries = [...elementMap.entries()].sort((a, b) => {
+        const targetA = paragraphTargets.get(a[0]);
+        const targetB = paragraphTargets.get(b[0]);
+        if (!targetA || !targetB) return 0;
+        return targetB.start - targetA.start; // Descending by position
+      });
+
+      // STEP 3: Apply updates using pre-computed positions
+      for (const [elementIndex, updates] of sortedEntries) {
+        const target = paragraphTargets.get(elementIndex);
+        if (!target) continue;
+
         // Sort by runIndex to process in order
         updates.sort((a, b) => a.runIndex - b.runIndex);
 
-        // If we have multiple run updates for the same paragraph, we need to update the entire run structure
-        // NOTE: Cannot use paragraphId because most HWPX documents have non-unique IDs (e.g., 419 paragraphs with same ID)
-        // Always use index-based lookup which properly handles element index vs paragraph index mapping
+        // Apply the update directly using pre-computed target location
         if (updates.length > 1) {
-          xml = this.replaceMultipleRunsInElement(xml, elementIndex, updates);
+          xml = this.replaceRunsInParagraphDirect(xml, target, updates);
         } else {
-          xml = this.replaceTextInElementByIndex(xml, elementIndex, updates[0].oldText, updates[0].newText);
+          // For single update, use the existing method with pre-computed target
+          xml = this.replaceTextInElementDirect(xml, target, updates[0].oldText, updates[0].newText);
         }
       }
 
@@ -6961,6 +7064,590 @@ export class HwpxDocument {
 
     // Reconstruct XML with updated paragraph
     return xml.slice(0, targetInOriginal.start) + newParagraphXml + xml.slice(targetInOriginal.end);
+  }
+
+  /**
+   * Calculate the occurrence index for a paragraph with given ID.
+   * Returns how many paragraphs with the same ID appear before this one.
+   */
+  private getParagraphOccurrence(sectionIndex: number, elementIndex: number, paragraphId: string): number {
+    // Use _content.sections (same as findParagraphByPath) instead of _sections
+    if (!this._content || !this._content.sections || !this._content.sections[sectionIndex]) return 0;
+    const section = this._content.sections[sectionIndex];
+    if (!section || !section.elements) return 0;
+
+    let occurrenceCount = 0;
+    for (let i = 0; i < elementIndex; i++) {
+      const element = section.elements[i];
+      if (element && element.type === 'paragraph') {  // Use 'paragraph' not 'p'
+        const para = element.data as HwpxParagraph;
+        if (para.id === paragraphId) {
+          occurrenceCount++;
+        }
+      }
+    }
+    return occurrenceCount;
+  }
+
+  /**
+   * Find paragraph by its ID attribute and occurrence index.
+   * Uses balanced tag matching to handle nested paragraphs.
+   * @param xml - The XML content
+   * @param paragraphId - The paragraph ID to find
+   * @param occurrence - Which occurrence of this ID (0-indexed)
+   */
+  private findParagraphById(
+    xml: string,
+    paragraphId: string,
+    occurrence: number = 0
+  ): { start: number; end: number; xml: string } | undefined {
+    if (!paragraphId) return undefined;
+
+    // Find the opening tag with specific id
+    const escapedId = paragraphId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const openTagRegex = new RegExp(`<hp:p\\b[^>]*\\bid=["']${escapedId}["'][^>]*>`, 'g');
+
+    let matchCount = 0;
+    let openMatch;
+
+    while ((openMatch = openTagRegex.exec(xml)) !== null) {
+      const startIndex = openMatch.index;
+      let pos = startIndex + openMatch[0].length;
+
+      // Use balanced tag matching
+      let depth = 1;
+      const openTag = '<hp:p';
+      const closeTag = '</hp:p>';
+
+      while (depth > 0 && pos < xml.length) {
+        const nextOpen = xml.indexOf(openTag, pos);
+        const nextClose = xml.indexOf(closeTag, pos);
+
+        if (nextClose === -1) break;
+
+        if (nextOpen !== -1 && nextOpen < nextClose) {
+          depth++;
+          pos = nextOpen + openTag.length;
+        } else {
+          depth--;
+          if (depth === 0) {
+            // Found balanced paragraph
+            if (matchCount === occurrence) {
+              const endIndex = nextClose + closeTag.length;
+              return {
+                start: startIndex,
+                end: endIndex,
+                xml: xml.substring(startIndex, endIndex)
+              };
+            }
+            matchCount++;
+            break;  // Continue searching for next occurrence
+          }
+          pos = nextClose + closeTag.length;
+        }
+      }
+    }
+
+    return undefined;
+  }
+
+  /**
+   * Calculate Levenshtein distance between two strings.
+   * Used for fuzzy paragraph matching when exact match fails.
+   */
+  private levenshteinDistance(str1: string, str2: string): number {
+    const len1 = str1.length;
+    const len2 = str2.length;
+
+    // Create distance matrix
+    const matrix: number[][] = Array(len1 + 1).fill(null).map(() => Array(len2 + 1).fill(0));
+
+    // Initialize first row and column
+    for (let i = 0; i <= len1; i++) matrix[i][0] = i;
+    for (let j = 0; j <= len2; j++) matrix[0][j] = j;
+
+    // Fill in the rest
+    for (let i = 1; i <= len1; i++) {
+      for (let j = 1; j <= len2; j++) {
+        const cost = str1[i - 1] === str2[j - 1] ? 0 : 1;
+        matrix[i][j] = Math.min(
+          matrix[i - 1][j] + 1,      // deletion
+          matrix[i][j - 1] + 1,      // insertion
+          matrix[i - 1][j - 1] + cost // substitution
+        );
+      }
+    }
+
+    return matrix[len1][len2];
+  }
+
+  /**
+   * Find paragraph using fuzzy text matching with Levenshtein distance.
+   * Fallback method when ID and index-based lookups fail.
+   */
+  private findParagraphByFuzzyMatch(
+    xml: string,
+    searchText: string,
+    paragraphs: Array<{ start: number; end: number; xml: string }>
+  ): { start: number; end: number; xml: string } | undefined {
+    if (!searchText || paragraphs.length === 0) return undefined;
+
+    let bestMatch: { para: typeof paragraphs[0]; similarity: number } | undefined;
+
+    // Truncate search text if too long (Levenshtein is O(n*m))
+    const maxSearchLen = 100;
+    const truncatedSearch = searchText.length > maxSearchLen
+      ? searchText.substring(0, maxSearchLen)
+      : searchText;
+
+    for (const para of paragraphs) {
+      // Extract text content from paragraph XML
+      const textContent = para.xml.replace(/<[^>]+>/g, '').trim();
+
+      // Skip if text content is empty
+      if (!textContent) continue;
+
+      // Check if searchText is contained in textContent (exact substring)
+      if (textContent.includes(truncatedSearch)) {
+        return para;  // Exact match found
+      }
+
+      // For fuzzy matching, compare similar length substrings
+      const truncatedContent = textContent.length > maxSearchLen
+        ? textContent.substring(0, maxSearchLen)
+        : textContent;
+
+      const distance = this.levenshteinDistance(truncatedSearch, truncatedContent);
+      const maxLen = Math.max(truncatedSearch.length, truncatedContent.length);
+      const similarity = 1 - (distance / maxLen);
+
+      if (similarity >= 0.7) {  // 70% similarity threshold
+        if (!bestMatch || similarity > bestMatch.similarity) {
+          bestMatch = { para, similarity };
+        }
+      }
+    }
+
+    return bestMatch?.para;
+  }
+
+  /**
+   * Find the target paragraph for an update operation.
+   * Extracts paragraph-finding logic from replaceMultipleRunsInElement for reuse.
+   * Returns the paragraph's start, end, and XML content in the original document.
+   */
+  private findTargetParagraphForUpdate(
+    xml: string,
+    sectionIndex: number,
+    elementIndex: number,
+    updates: Array<{ runIndex: number; oldText: string; newText: string }>,
+    paragraphId?: string,
+    paragraphOccurrence?: number
+  ): { start: number; end: number; xml: string } | undefined {
+    // Clean XML by removing certain elements
+    const cleanedXml = xml
+      .replace(/<hp:fieldBegin[^>]*type="MEMO"[^>]*>[\s\S]*?<\/hp:fieldBegin>/gi, '')
+      .replace(/<hp:footNote\b[^>]*>[\s\S]*?<\/hp:footNote>/gi, '')
+      .replace(/<hp:endNote\b[^>]*>[\s\S]*?<\/hp:endNote>/gi, '');
+
+    const extractAllParagraphs = (xmlStr: string): { xml: string; start: number; end: number }[] => {
+      const results: { xml: string; start: number; end: number }[] = [];
+      const closeTag = '</hp:p>';
+      const pOpenRegex = /<hp:p\b[^>]*>/g;
+      const pOpenSearchRegex = /<hp:p[\s>]/g;
+      let match;
+
+      while ((match = pOpenRegex.exec(xmlStr)) !== null) {
+        const startPos = match.index;
+        let depth = 1;
+        let searchPos = startPos + match[0].length;
+
+        while (depth > 0 && searchPos < xmlStr.length) {
+          pOpenSearchRegex.lastIndex = searchPos;
+          const nextOpenMatch = pOpenSearchRegex.exec(xmlStr);
+          const nextOpen = nextOpenMatch ? nextOpenMatch.index : -1;
+          const nextClose = xmlStr.indexOf(closeTag, searchPos);
+
+          if (nextClose === -1) break;
+
+          if (nextOpen !== -1 && nextOpen < nextClose) {
+            depth++;
+            searchPos = nextOpen + 6;
+          } else {
+            depth--;
+            if (depth === 0) {
+              const endPos = nextClose + closeTag.length;
+              results.push({
+                xml: xmlStr.substring(startPos, endPos),
+                start: startPos,
+                end: endPos
+              });
+            }
+            searchPos = nextClose + closeTag.length;
+          }
+        }
+      }
+      return results;
+    };
+
+    const extractBalancedTags = (xmlStr: string, tagName: string): string[] => {
+      const results: string[] = [];
+      const openTag = `<${tagName}`;
+      const closeTag = `</${tagName}>`;
+      let searchStart = 0;
+
+      while (true) {
+        const openIndex = xmlStr.indexOf(openTag, searchStart);
+        if (openIndex === -1) break;
+
+        let depth = 1;
+        let pos = openIndex + openTag.length;
+
+        while (depth > 0 && pos < xmlStr.length) {
+          const nextOpen = xmlStr.indexOf(openTag, pos);
+          const nextClose = xmlStr.indexOf(closeTag, pos);
+
+          if (nextClose === -1) break;
+
+          if (nextOpen !== -1 && nextOpen < nextClose) {
+            depth++;
+            pos = nextOpen + openTag.length;
+          } else {
+            depth--;
+            if (depth === 0) {
+              results.push(xmlStr.substring(openIndex, nextClose + closeTag.length));
+            }
+            pos = nextClose + closeTag.length;
+          }
+        }
+        searchStart = openIndex + 1;
+      }
+      return results;
+    };
+
+    const paragraphs = extractAllParagraphs(cleanedXml);
+    const tables = extractBalancedTags(cleanedXml, 'hp:tbl');
+
+    const tableRanges: { start: number; end: number }[] = [];
+    for (const tableXml of tables) {
+      const tableIndex = cleanedXml.indexOf(tableXml);
+      if (tableIndex !== -1) {
+        tableRanges.push({ start: tableIndex, end: tableIndex + tableXml.length });
+      }
+    }
+
+    interface CleanedElement {
+      type: string;
+      start: number;
+      end: number;
+      xml: string;
+    }
+    const elements: CleanedElement[] = [];
+
+    // Add tables
+    for (const range of tableRanges) {
+      elements.push({ type: 'tbl', start: range.start, end: range.end, xml: cleanedXml.substring(range.start, range.end) });
+    }
+
+    // Add paragraphs
+    for (const para of paragraphs) {
+      const isInsideTable = tableRanges.some(
+        range => para.start > range.start && para.start < range.end
+      );
+      const containsTable = tableRanges.some(
+        range => range.start >= para.start && range.end <= para.end
+      );
+
+      if (!isInsideTable) {
+        if (containsTable) {
+          let paraXmlWithoutTable = para.xml;
+          for (const range of tableRanges) {
+            if (range.start >= para.start && range.end <= para.start + para.xml.length) {
+              const tableStartInPara = range.start - para.start;
+              const tableEndInPara = range.end - para.start;
+              const tableXmlInPara = para.xml.substring(tableStartInPara, tableEndInPara);
+              paraXmlWithoutTable = paraXmlWithoutTable.replace(tableXmlInPara, '');
+            }
+          }
+          const hasTextContent = /<hp:t\b[^>]*>/.test(paraXmlWithoutTable);
+          if (hasTextContent) {
+            elements.push({ type: 'p', start: para.start, end: para.end, xml: paraXmlWithoutTable });
+          }
+        } else {
+          elements.push({ type: 'p', start: para.start, end: para.end, xml: para.xml });
+        }
+      }
+    }
+
+    // Add other element types
+    const addShapeElements = (pattern: RegExp, typeName: string) => {
+      let match;
+      while ((match = pattern.exec(cleanedXml)) !== null) {
+        elements.push({ type: typeName, start: match.index, end: match.index + match[0].length, xml: match[0] });
+      }
+    };
+
+    addShapeElements(/<hp:line\b[^>]*(?:\/>|>[\s\S]*?<\/hp:line>)/g, 'line');
+    addShapeElements(/<hp:rect\b[^>]*(?:\/>|>[\s\S]*?<\/hp:rect>)/g, 'rect');
+    addShapeElements(/<hp:ellipse\b[^>]*(?:\/>|>[\s\S]*?<\/hp:ellipse>)/g, 'ellipse');
+    addShapeElements(/<hp:arc\b[^>]*(?:\/>|>[\s\S]*?<\/hp:arc>)/g, 'arc');
+    addShapeElements(/<hp:polygon\b[^>]*(?:\/>|>[\s\S]*?<\/hp:polygon>)/g, 'polygon');
+    addShapeElements(/<hp:curve\b[^>]*(?:\/>|>[\s\S]*?<\/hp:curve>)/g, 'curve');
+    addShapeElements(/<hp:connectLine\b[^>]*(?:\/>|>[\s\S]*?<\/hp:connectLine>)/g, 'connectline');
+
+    elements.sort((a, b) => a.start - b.start);
+
+    // Build list of top-level paragraphs in original XML
+    const originalParagraphs = extractAllParagraphs(xml);
+    const originalTableRanges: { start: number; end: number }[] = [];
+    const originalTables = extractBalancedTags(xml, 'hp:tbl');
+    for (const tableXml of originalTables) {
+      const tableIndex = xml.indexOf(tableXml);
+      if (tableIndex !== -1) {
+        originalTableRanges.push({ start: tableIndex, end: tableIndex + tableXml.length });
+      }
+    }
+
+    const originalTopLevelParas: { start: number; end: number; xml: string }[] = [];
+    for (const para of originalParagraphs) {
+      const isInsideTable = originalTableRanges.some(
+        range => para.start > range.start && para.start < range.end
+      );
+      const containsTable = originalTableRanges.some(
+        range => range.start >= para.start && range.end <= para.end
+      );
+
+      if (!isInsideTable) {
+        if (containsTable) {
+          let paraXmlWithoutTable = para.xml;
+          for (const range of originalTableRanges) {
+            if (range.start >= para.start && range.end <= para.start + para.xml.length) {
+              const tableStartInPara = range.start - para.start;
+              const tableEndInPara = range.end - para.start;
+              const tableXmlInPara = para.xml.substring(tableStartInPara, tableEndInPara);
+              paraXmlWithoutTable = paraXmlWithoutTable.replace(tableXmlInPara, '');
+            }
+          }
+          const hasTextContent = /<hp:t\b[^>]*>/.test(paraXmlWithoutTable);
+          if (hasTextContent) {
+            originalTopLevelParas.push({ start: para.start, end: para.end, xml: para.xml });
+          }
+        } else {
+          originalTopLevelParas.push({ start: para.start, end: para.end, xml: para.xml });
+        }
+      }
+    }
+
+    // BUGFIX (2026-01-26): 3-tier hybrid approach - ID first, index second, fuzzy fallback.
+    //
+    // Problem: Text-based search fails when multiple paragraphs have same markers.
+    // Solution: Use paragraph ID as PRIMARY key, index as SECONDARY, fuzzy matching as FALLBACK.
+    //
+    // Strategy:
+    // TIER 1: ID-based lookup (most reliable)
+    // TIER 2: Index-based lookup with text validation
+    // TIER 3: Fuzzy text matching fallback
+
+    // TIER 1: ID-based lookup - DISABLED
+    // Problem: XML counting includes nested paragraphs (inside tables),
+    // but _content.sections.elements only has top-level elements.
+    // This mismatch causes wrong paragraph selection.
+    // Solution: Skip ID-based lookup and use index-based (TIER 2) instead.
+    //
+    // if (paragraphId) {
+    //   const idBasedTarget = this.findParagraphById(xml, paragraphId, paragraphOccurrence ?? 0);
+    //   if (idBasedTarget) {
+    //     return idBasedTarget;
+    //   }
+    // }
+
+    // Calculate paragraph index using _content.sections.elements (same source as elementIndex)
+    // This ensures consistency between elementIndex and paragraph counting
+    let topLevelParagraphIndex = 0;
+    const contentSection = this._content?.sections?.[sectionIndex];
+    if (contentSection?.elements) {
+      for (let i = 0; i < elementIndex && i < contentSection.elements.length; i++) {
+        if (contentSection.elements[i].type === 'paragraph') {  // Note: 'paragraph' not 'p'
+          topLevelParagraphIndex++;
+        }
+      }
+    }
+
+    // TIER 2: Index-based lookup with text validation
+    const indexBasedTarget = (topLevelParagraphIndex >= 0 && topLevelParagraphIndex < originalTopLevelParas.length)
+      ? originalTopLevelParas[topLevelParagraphIndex]
+      : undefined;
+
+    // Get non-empty oldTexts for validation
+    const nonEmptyOldTexts = updates.filter(u => u.oldText !== '').map(u => this.escapeXml(u.oldText));
+
+    // If no oldText to validate, use index-based result
+    if (nonEmptyOldTexts.length === 0) {
+      return indexBasedTarget;
+    }
+
+    // If index-based target contains expected text, use it
+    if (indexBasedTarget) {
+      const hasMatchingText = nonEmptyOldTexts.some(escapedOld => indexBasedTarget.xml.includes(escapedOld));
+      if (hasMatchingText) {
+        return indexBasedTarget;
+      }
+    }
+
+    // Try nearby paragraphs (±2 range)
+    const searchRange = 2;
+    for (let offset = 1; offset <= searchRange; offset++) {
+      for (const delta of [-offset, offset]) {
+        const nearbyIndex = topLevelParagraphIndex + delta;
+        if (nearbyIndex >= 0 && nearbyIndex < originalTopLevelParas.length) {
+          const nearbyPara = originalTopLevelParas[nearbyIndex];
+          const hasMatchingText = nonEmptyOldTexts.some(escapedOld => nearbyPara.xml.includes(escapedOld));
+          if (hasMatchingText) {
+            return nearbyPara;
+          }
+        }
+      }
+    }
+
+    // TIER 3: Fuzzy matching fallback
+    const primaryOldText = nonEmptyOldTexts[0]?.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+    if (primaryOldText) {
+      const fuzzyMatch = this.findParagraphByFuzzyMatch(xml, primaryOldText, originalTopLevelParas);
+      if (fuzzyMatch) {
+        return fuzzyMatch;
+      }
+    }
+
+    // Final fallback: return index-based result anyway
+    return indexBasedTarget;
+  }
+
+  /**
+   * Replace multiple runs in a paragraph element at once.
+   * Finds hp:run elements and updates their hp:t content.
+   */
+  private replaceRunsInParagraphDirect(
+    xml: string,
+    target: { start: number; end: number; xml: string },
+    updates: Array<{ runIndex: number; oldText: string; newText: string }>
+  ): string {
+    let paragraphXml = xml.slice(target.start, target.end);
+
+    // Build update map
+    const updateMap = new Map<number, string>();
+    for (const update of updates) {
+      updateMap.set(update.runIndex, update.newText);
+    }
+
+    // Find all hp:run elements with their positions
+    // Use non-greedy matching and track depth for nested elements
+    const runs: Array<{ start: number; end: number; xml: string }> = [];
+    const runOpenRegex = /<hp:run\b[^>]*>/g;
+    let match;
+
+    while ((match = runOpenRegex.exec(paragraphXml)) !== null) {
+      const runStart = match.index;
+      let depth = 1;
+      let pos = runStart + match[0].length;
+
+      // Find matching </hp:run> using depth tracking
+      while (depth > 0 && pos < paragraphXml.length) {
+        const nextOpen = paragraphXml.indexOf('<hp:run', pos);
+        const nextClose = paragraphXml.indexOf('</hp:run>', pos);
+
+        if (nextClose === -1) break;
+
+        if (nextOpen !== -1 && nextOpen < nextClose) {
+          depth++;
+          pos = nextOpen + 7;
+        } else {
+          depth--;
+          if (depth === 0) {
+            const runEnd = nextClose + '</hp:run>'.length;
+            runs.push({
+              start: runStart,
+              end: runEnd,
+              xml: paragraphXml.slice(runStart, runEnd)
+            });
+          }
+          pos = nextClose + 9;
+        }
+      }
+    }
+
+    // Filter to only runs that have <hp:t> content (matching memory model behavior)
+    // Memory model only counts runs with text, not runs with only <hp:ctrl> etc.
+    const textRuns = runs.filter(run => /<hp:t\b/.test(run.xml) || /<hp:t\s*\/>/.test(run.xml));
+
+    // Process text runs in reverse order to maintain positions
+    for (let i = textRuns.length - 1; i >= 0; i--) {
+      if (!updateMap.has(i)) continue;
+
+      const run = textRuns[i];
+      const newText = updateMap.get(i)!;
+      const escapedNew = this.escapeXml(newText);
+      let newRunXml = run.xml;
+
+      // Find and replace hp:t content within this run
+      if (/<hp:t\s*\/>/.test(newRunXml)) {
+        // Self-closing tag: <hp:t/> -> <hp:t>newText</hp:t>
+        newRunXml = newRunXml.replace(/<hp:t\s*\/>/, `<hp:t>${escapedNew}</hp:t>`);
+      } else if (/<hp:t\b[^>]*>/.test(newRunXml)) {
+        // Has content: replace first hp:t content only
+        newRunXml = newRunXml.replace(
+          /(<hp:t\b[^>]*>)[^<]*(<\/hp:t>)/,
+          `$1${escapedNew}$2`
+        );
+      } else {
+        // No hp:t tag - add one after the opening hp:run tag
+        newRunXml = newRunXml.replace(
+          /(<hp:run\b[^>]*>)/,
+          `$1<hp:t>${escapedNew}</hp:t>`
+        );
+      }
+
+      // Replace in paragraph XML
+      paragraphXml = paragraphXml.slice(0, run.start) + newRunXml + paragraphXml.slice(run.end);
+    }
+
+    return xml.slice(0, target.start) + paragraphXml + xml.slice(target.end);
+  }
+
+  /**
+   * Replace text in a single run directly using pre-computed target location.
+   * Simpler version for single-run updates.
+   */
+  private replaceTextInElementDirect(
+    xml: string,
+    target: { start: number; end: number; xml: string },
+    oldText: string,
+    newText: string
+  ): string {
+    const escapedNew = this.escapeXml(newText);
+    let paragraphXml = xml.slice(target.start, target.end);
+
+    if (!oldText || oldText === '') {
+      // When oldText is empty, replace <hp:t> content or self-closing <hp:t/>
+      if (/<hp:t\s*\/>/.test(paragraphXml)) {
+        // Self-closing: <hp:t/> -> <hp:t>newText</hp:t>
+        paragraphXml = paragraphXml.replace(/<hp:t\s*\/>/, `<hp:t>${escapedNew}</hp:t>`);
+      } else if (/<hp:t[^>]*>/.test(paragraphXml)) {
+        // Has content or empty: <hp:t>...</hp:t> -> <hp:t>newText</hp:t>
+        paragraphXml = paragraphXml.replace(/(<hp:t[^>]*>)[^<]*(<\/hp:t>)/, `$1${escapedNew}$2`);
+      } else if (/<hp:run\b[^>]*>/.test(paragraphXml)) {
+        // No <hp:t> tag exists - add one after the <hp:run> opening tag
+        paragraphXml = paragraphXml.replace(
+          /(<hp:run\b[^>]*>)/,
+          `$1<hp:t>${escapedNew}</hp:t>`
+        );
+      }
+    } else {
+      // Normal case: replace oldText with newText
+      const escapedOld = this.escapeXml(oldText);
+      paragraphXml = paragraphXml.replace(escapedOld, escapedNew);
+    }
+
+    return xml.slice(0, target.start) + paragraphXml + xml.slice(target.end);
   }
 
   /**

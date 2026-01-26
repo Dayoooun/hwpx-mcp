@@ -1547,6 +1547,12 @@ export interface HwpxParagraph {
   listType?: 'none' | 'bullet' | 'number';
   listLevel?: number;
   linesegs?: LineSeg[];  // Pre-calculated layout info from HWPX
+  // XML position cache for direct updates (populated during parsing, invalidated on save)
+  _xmlPosition?: {
+    sectionIndex: number;  // Which section this paragraph belongs to
+    start: number;         // Start byte offset in section XML
+    end: number;           // End byte offset in section XML
+  };
 }
 
 export interface HeaderFooter {
