@@ -3080,8 +3080,11 @@ Call get_tool_guide with: template, table, image, search, read, create`
         if (!doc) return error('Document not found');
         if (doc.format === 'hwp') return error('HWP files are read-only');
 
-        const table = doc.findTable(args?.section_index as number, args?.table_index as number);
-        const wasOnlyRow = table && table.rows.length === 1;
+        const sectionIndex = args?.section_index as number;
+        const tableIndex = args?.table_index as number;
+        const allTables = doc.getTables();
+        const table = allTables.find(t => t.section === sectionIndex && t.index === tableIndex);
+        const wasOnlyRow = table && table.rows === 1;
 
         if (doc.deleteTableRow(
           args?.section_index as number,

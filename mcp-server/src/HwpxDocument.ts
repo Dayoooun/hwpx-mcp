@@ -157,6 +157,11 @@ export class HwpxDocument {
     tableIndex: number;
     tableId?: string;
   }> = [];
+  private _pendingParagraphDeletes: Array<{
+    sectionIndex: number;
+    elementIndex: number;
+    elementType: 'paragraph' | 'table';
+  }> = [];
   private _pendingCellMerges: Array<{
     sectionIndex: number;
     tableIndex: number;
@@ -729,6 +734,19 @@ export class HwpxDocument {
     if (!section || elementIndex < 0 || elementIndex >= section.elements.length) return false;
 
     this.saveState();
+
+    // Capture element type before deletion
+    const element = section.elements[elementIndex];
+    const elementType = element.type === 'table' ? 'table' : 'paragraph';
+
+    // Add to pending deletes for XML persistence
+    this._pendingParagraphDeletes.push({
+      sectionIndex,
+      elementIndex,
+      elementType
+    });
+
+    // Remove from memory
     section.elements.splice(elementIndex, 1);
     this.markModified();
     this.invalidateReadingCache();
@@ -2219,7 +2237,7 @@ export class HwpxDocument {
       if (el.type === 'table') {
         if (tableCount === tableIndex) {
           elementIndex = i;
-          tableId = el.id;
+          tableId = el.data?.id;
           break;
         }
         tableCount++;
@@ -4070,6 +4088,12 @@ export class HwpxDocument {
       this._pendingTableDeletes = [];
     }
 
+    // Apply paragraph/element deletes
+    if (this._pendingParagraphDeletes && this._pendingParagraphDeletes.length > 0) {
+      await this.applyParagraphDeletesToXml();
+      this._pendingParagraphDeletes = [];
+    }
+
     // Apply table moves/copies
     if (this._pendingTableMoves && this._pendingTableMoves.length > 0) {
       await this.applyTableMovesToXml();
@@ -4424,6 +4448,63 @@ export class HwpxDocument {
 
         if (del.tableIndex < tables.length) {
           const target = tables[del.tableIndex];
+          xml = xml.slice(0, target.start) + xml.slice(target.end);
+        }
+      }
+
+      this._zip.file(sectionFile, xml);
+    }
+  }
+
+  /**
+   * Apply paragraph/element deletes to XML.
+   * Removes paragraphs or tables from the section XML.
+   */
+  private async applyParagraphDeletesToXml(): Promise<void> {
+    if (!this._zip) return;
+
+    // Sort by elementIndex descending to avoid index shifting issues
+    const sortedDeletes = [...this._pendingParagraphDeletes].sort(
+      (a, b) => b.elementIndex - a.elementIndex
+    );
+
+    // Group by section
+    const deletesBySection = new Map<number, Array<{ elementIndex: number; elementType: 'paragraph' | 'table' }>>();
+    for (const del of sortedDeletes) {
+      if (!deletesBySection.has(del.sectionIndex)) {
+        deletesBySection.set(del.sectionIndex, []);
+      }
+      deletesBySection.get(del.sectionIndex)!.push({
+        elementIndex: del.elementIndex,
+        elementType: del.elementType
+      });
+    }
+
+    for (const [sectionIndex, deletes] of deletesBySection) {
+      const sectionFile = `Contents/section${sectionIndex}.xml`;
+      const file = this._zip.file(sectionFile);
+      if (!file) continue;
+
+      let xml = await file.async('string');
+
+      for (const del of deletes) {
+        // Find ALL elements (both paragraphs and tables) in document order
+        // elementIndex is the index in the combined list of paragraphs + tables
+        const allElementsRegex = /<hp:(p|tbl)\b[^>]*>[\s\S]*?<\/hp:\1>/g;
+        const allElements: Array<{ match: string; start: number; end: number; type: string }> = [];
+        let match;
+        while ((match = allElementsRegex.exec(xml)) !== null) {
+          allElements.push({
+            match: match[0],
+            start: match.index,
+            end: match.index + match[0].length,
+            type: match[1] // 'p' or 'tbl'
+          });
+        }
+
+        // Remove the element at the specified index
+        if (del.elementIndex < allElements.length) {
+          const target = allElements[del.elementIndex];
           xml = xml.slice(0, target.start) + xml.slice(target.end);
         }
       }

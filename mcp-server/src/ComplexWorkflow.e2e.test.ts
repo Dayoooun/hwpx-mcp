@@ -453,4 +453,115 @@ describe('Complex Workflow E2E Tests', () => {
       console.log('✅ Text replacement persisted across document');
     });
   });
+
+  describe('delete_paragraph XML 반영 테스트', () => {
+    it('should persist paragraph deletion to XML after save/reload', async () => {
+      const buffer = await createComplexDocument();
+      const testFilePath = path.join(testOutputDir, 'delete-paragraph-test.hwpx');
+      fs.writeFileSync(testFilePath, buffer);
+
+      let doc = await HwpxDocument.createFromBuffer('delete-para', testFilePath, buffer);
+
+      // 원본 문단 수 확인
+      const originalParagraphs = doc.getParagraphs(0);
+      const originalCount = originalParagraphs.length;
+      console.log(`원본 문단 수: ${originalCount}`);
+
+      // 원본 XML에서 <hp:p> 개수 확인
+      const originalZip = await JSZip.loadAsync(buffer);
+      const originalXml = await originalZip.file('Contents/section0.xml')?.async('string') || '';
+      const originalParagraphMatches = originalXml.match(/<hp:p\b/g) || [];
+      console.log(`원본 XML <hp:p> 개수: ${originalParagraphMatches.length}`);
+
+      // 두 번째 문단 삭제 (index 1)
+      const deleteResult = doc.deleteParagraph(0, 1);
+      expect(deleteResult).toBe(true);
+
+      // 메모리에서 삭제 확인
+      const afterDeleteParagraphs = doc.getParagraphs(0);
+      expect(afterDeleteParagraphs.length).toBe(originalCount - 1);
+      console.log(`삭제 후 메모리 문단 수: ${afterDeleteParagraphs.length}`);
+
+      // 저장
+      const savedBuffer = await doc.save();
+      fs.writeFileSync(testFilePath, savedBuffer);
+
+      // XML에서 <hp:p> 개수 확인
+      const savedZip = await JSZip.loadAsync(savedBuffer);
+      const savedXml = await savedZip.file('Contents/section0.xml')?.async('string') || '';
+      const savedParagraphMatches = savedXml.match(/<hp:p\b/g) || [];
+      console.log(`저장 후 XML <hp:p> 개수: ${savedParagraphMatches.length}`);
+
+      // XML에서도 문단이 삭제되었는지 확인 (테이블 내 문단 제외)
+      // 참고: 테이블 내 셀에도 <hp:p>가 있으므로, 단순 카운트가 아닌 내용으로 확인
+      expect(savedXml).not.toContain('작성일: 2024-01-01'); // 삭제된 문단 내용
+
+      // 재로드
+      doc = await HwpxDocument.createFromBuffer('reload', testFilePath, savedBuffer);
+      const reloadedParagraphs = doc.getParagraphs(0);
+      console.log(`재로드 후 문단 수: ${reloadedParagraphs.length}`);
+
+      // 재로드 후에도 삭제가 유지되는지 확인
+      expect(reloadedParagraphs.length).toBe(originalCount - 1);
+
+      console.log('✅ Paragraph deletion persisted to XML');
+    });
+
+    it('should persist table deletion via deleteParagraph to XML', async () => {
+      const buffer = await createComplexDocument();
+      const testFilePath = path.join(testOutputDir, 'delete-table-via-para-test.hwpx');
+      fs.writeFileSync(testFilePath, buffer);
+
+      let doc = await HwpxDocument.createFromBuffer('delete-tbl', testFilePath, buffer);
+
+      // 원본 테이블 수 확인
+      const originalTables = doc.getTables(0);
+      const originalTableCount = originalTables.length;
+      console.log(`원본 테이블 수: ${originalTableCount}`);
+
+      // 원본 XML에서 <hp:tbl> 개수 확인
+      const originalZip = await JSZip.loadAsync(buffer);
+      const originalXml = await originalZip.file('Contents/section0.xml')?.async('string') || '';
+      const originalTableMatches = originalXml.match(/<hp:tbl\b/g) || [];
+      console.log(`원본 XML <hp:tbl> 개수: ${originalTableMatches.length}`);
+
+      // 테이블의 element index 찾기 (첫 번째 테이블)
+      // 문서 구조: p, p, p, tbl, p, p, p, tbl, p, p → 테이블은 index 3
+      // createComplexDocument()를 보면: p1, p2, p3, t1, p4, p5, p6, t2, p7, p8
+      // index: 0, 1, 2, 3, 4, 5, 6, 7, 8, 9
+      // 첫 번째 테이블은 index 3
+
+      // deleteParagraph로 테이블 삭제 (element index 3 = 첫 번째 테이블)
+      const deleteResult = doc.deleteParagraph(0, 3);
+      expect(deleteResult).toBe(true);
+
+      // 메모리에서 삭제 확인
+      const afterDeleteTables = doc.getTables(0);
+      expect(afterDeleteTables.length).toBe(originalTableCount - 1);
+      console.log(`삭제 후 메모리 테이블 수: ${afterDeleteTables.length}`);
+
+      // 저장
+      const savedBuffer = await doc.save();
+      fs.writeFileSync(testFilePath, savedBuffer);
+
+      // XML에서 <hp:tbl> 개수 확인
+      const savedZip = await JSZip.loadAsync(savedBuffer);
+      const savedXml = await savedZip.file('Contents/section0.xml')?.async('string') || '';
+      const savedTableMatches = savedXml.match(/<hp:tbl\b/g) || [];
+      console.log(`저장 후 XML <hp:tbl> 개수: ${savedTableMatches.length}`);
+
+      // XML에서 테이블이 삭제되었는지 확인
+      expect(savedTableMatches.length).toBe(originalTableMatches.length - 1);
+
+      // 재로드
+      doc = await HwpxDocument.createFromBuffer('reload', testFilePath, savedBuffer);
+      const reloadedTables = doc.getTables(0);
+      console.log(`재로드 후 테이블 수: ${reloadedTables.length}`);
+
+      // 재로드 후에도 삭제가 유지되는지 확인
+      expect(reloadedTables.length).toBe(originalTableCount - 1);
+
+      console.log('✅ Table deletion via deleteParagraph persisted to XML');
+    });
+  });
 });

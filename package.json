@@ -59,17 +59,19 @@
     "watch": "npm run compile:extension -- --watch",
     "package": "vsce package"
   },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "hwp.js": "^0.0.3",
+    "jszip": "^3.10.1",
+    "pako": "^2.1.0"
+  },
   "devDependencies": {
     "@types/node": "^25.0.3",
+    "@types/pako": "^2.0.4",
     "@types/vscode": "^1.70.0",
     "@vscode/vsce": "^3.7.1",
     "esbuild": "^0.27.2",
     "pdf-parse": "^1.1.4",
     "typescript": "^5.9.3"
-  },
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.0",
-    "hwp.js": "^0.0.3",
-    "jszip": "^3.10.1"
   }
 }
