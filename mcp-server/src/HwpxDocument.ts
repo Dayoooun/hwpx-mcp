@@ -2184,10 +2184,45 @@ export class HwpxDocument {
 
   deleteTableRow(sectionIndex: number, tableIndex: number, rowIndex: number): boolean {
     const table = this.findTable(sectionIndex, tableIndex);
-    if (!table || table.rows.length <= 1) return false;
+    if (!table) return false;
+
+    // If only 1 row, delete the entire table instead
+    if (table.rows.length <= 1) {
+      return this.deleteTable(sectionIndex, tableIndex);
+    }
 
     this.saveState();
     table.rows.splice(rowIndex, 1);
+    this.markModified();
+    return true;
+  }
+
+  /**
+   * Delete an entire table from the document
+   */
+  deleteTable(sectionIndex: number, tableIndex: number): boolean {
+    const section = this._content?.sections?.[sectionIndex];
+    if (!section?.elements) return false;
+
+    // Find the table's index in elements array
+    let tableCount = 0;
+    let elementIndex = -1;
+
+    for (let i = 0; i < section.elements.length; i++) {
+      const el = section.elements[i];
+      if (el.type === 'table') {
+        if (tableCount === tableIndex) {
+          elementIndex = i;
+          break;
+        }
+        tableCount++;
+      }
+    }
+
+    if (elementIndex === -1) return false;
+
+    this.saveState();
+    section.elements.splice(elementIndex, 1);
     this.markModified();
     return true;
   }

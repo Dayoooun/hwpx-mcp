@@ -893,8 +893,21 @@ For template/form work:
     },
   },
   {
+    name: 'delete_table',
+    description: 'Delete an entire table from the document (HWPX only)',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        doc_id: { type: 'string', description: 'Document ID' },
+        section_index: { type: 'number', description: 'Section index' },
+        table_index: { type: 'number', description: 'Table index to delete' },
+      },
+      required: ['doc_id', 'section_index', 'table_index'],
+    },
+  },
+  {
     name: 'delete_table_row',
-    description: 'Delete a row from a table (HWPX only)',
+    description: 'Delete a row from a table. If the table has only 1 row, deletes the entire table (HWPX only)',
     inputSchema: {
       type: 'object',
       properties: {
@@ -3048,16 +3061,36 @@ Call get_tool_guide with: template, table, image, search, read, create`
         return error('Failed to insert row');
       }
 
+      case 'delete_table': {
+        const doc = getDoc(args?.doc_id as string);
+        if (!doc) return error('Document not found');
+        if (doc.format === 'hwp') return error('HWP files are read-only');
+
+        if (doc.deleteTable(
+          args?.section_index as number,
+          args?.table_index as number
+        )) {
+          return success({ message: 'Table deleted' });
+        }
+        return error('Failed to delete table');
+      }
+
       case 'delete_table_row': {
         const doc = getDoc(args?.doc_id as string);
         if (!doc) return error('Document not found');
         if (doc.format === 'hwp') return error('HWP files are read-only');
+
+        const table = doc.findTable(args?.section_index as number, args?.table_index as number);
+        const wasOnlyRow = table && table.rows.length === 1;
 
         if (doc.deleteTableRow(
           args?.section_index as number,
           args?.table_index as number,
           args?.row_index as number
         )) {
+          if (wasOnlyRow) {
+            return success({ message: 'Table deleted (was only row)' });
+          }
           return success({ message: 'Row deleted' });
         }
         return error('Failed to delete row');
