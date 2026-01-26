@@ -564,4 +564,359 @@ describe('Complex Workflow E2E Tests', () => {
       console.log('✅ Table deletion via deleteParagraph persisted to XML');
     });
   });
+
+  describe('중첩 테이블 삭제 테스트 (Nested Table Delete)', () => {
+    // Helper: 중첩 테이블이 포함된 문서 생성
+    async function createNestedTableDocument(): Promise<Buffer> {
+      const zip = new JSZip();
+
+      const headerXml = `<?xml version="1.0" encoding="UTF-8"?>
+<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head">
+  <hh:docInfo><hh:title>Nested Table Test</hh:title></hh:docInfo>
+</hh:head>`;
+
+      // 중첩 테이블이 있는 문서 구조
+      // - tbl_outer1: 외부 테이블 (내부에 tbl_inner1, tbl_inner2 포함)
+      // - tbl_simple: 단순 테이블
+      // - tbl_outer2: 또 다른 외부 테이블 (내부에 tbl_inner3 포함)
+      const sectionXml = `<?xml version="1.0" encoding="UTF-8"?>
+<hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section"
+        xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">
+  <hp:p id="p1"><hp:run><hp:t>문서 시작</hp:t></hp:run></hp:p>
+
+  <!-- 외부 테이블 1 (중첩 테이블 2개 포함) -->
+  <hp:tbl id="tbl_outer1" rowCnt="2" colCnt="2">
+    <hp:tr>
+      <hp:tc colAddr="0" rowAddr="0">
+        <hp:subList>
+          <hp:p id="outer1_cell00"><hp:run><hp:t>외부1-셀00</hp:t></hp:run></hp:p>
+          <!-- 중첩 테이블 1 -->
+          <hp:tbl id="tbl_inner1" rowCnt="1" colCnt="1">
+            <hp:tr>
+              <hp:tc colAddr="0" rowAddr="0">
+                <hp:subList><hp:p id="inner1"><hp:run><hp:t>내부테이블1</hp:t></hp:run></hp:p></hp:subList>
+              </hp:tc>
+            </hp:tr>
+          </hp:tbl>
+        </hp:subList>
+      </hp:tc>
+      <hp:tc colAddr="1" rowAddr="0">
+        <hp:subList>
+          <hp:p id="outer1_cell01"><hp:run><hp:t>외부1-셀01</hp:t></hp:run></hp:p>
+        </hp:subList>
+      </hp:tc>
+    </hp:tr>
+    <hp:tr>
+      <hp:tc colAddr="0" rowAddr="1">
+        <hp:subList>
+          <hp:p id="outer1_cell10"><hp:run><hp:t>외부1-셀10</hp:t></hp:run></hp:p>
+          <!-- 중첩 테이블 2 -->
+          <hp:tbl id="tbl_inner2" rowCnt="1" colCnt="1">
+            <hp:tr>
+              <hp:tc colAddr="0" rowAddr="0">
+                <hp:subList><hp:p id="inner2"><hp:run><hp:t>내부테이블2</hp:t></hp:run></hp:p></hp:subList>
+              </hp:tc>
+            </hp:tr>
+          </hp:tbl>
+        </hp:subList>
+      </hp:tc>
+      <hp:tc colAddr="1" rowAddr="1">
+        <hp:subList><hp:p id="outer1_cell11"><hp:run><hp:t>외부1-셀11</hp:t></hp:run></hp:p></hp:subList>
+      </hp:tc>
+    </hp:tr>
+  </hp:tbl>
+
+  <hp:p id="p2"><hp:run><hp:t>중간 문단</hp:t></hp:run></hp:p>
+
+  <!-- 단순 테이블 (중첩 없음) -->
+  <hp:tbl id="tbl_simple" rowCnt="1" colCnt="2">
+    <hp:tr>
+      <hp:tc colAddr="0" rowAddr="0"><hp:subList><hp:p id="simple_cell0"><hp:run><hp:t>단순셀0</hp:t></hp:run></hp:p></hp:subList></hp:tc>
+      <hp:tc colAddr="1" rowAddr="0"><hp:subList><hp:p id="simple_cell1"><hp:run><hp:t>단순셀1</hp:t></hp:run></hp:p></hp:subList></hp:tc>
+    </hp:tr>
+  </hp:tbl>
+
+  <hp:p id="p3"><hp:run><hp:t>또 다른 중간 문단</hp:t></hp:run></hp:p>
+
+  <!-- 외부 테이블 2 (중첩 테이블 1개 포함) -->
+  <hp:tbl id="tbl_outer2" rowCnt="1" colCnt="1">
+    <hp:tr>
+      <hp:tc colAddr="0" rowAddr="0">
+        <hp:subList>
+          <hp:p id="outer2_cell"><hp:run><hp:t>외부2-셀</hp:t></hp:run></hp:p>
+          <!-- 중첩 테이블 3 -->
+          <hp:tbl id="tbl_inner3" rowCnt="1" colCnt="1">
+            <hp:tr>
+              <hp:tc colAddr="0" rowAddr="0">
+                <hp:subList><hp:p id="inner3"><hp:run><hp:t>내부테이블3</hp:t></hp:run></hp:p></hp:subList>
+              </hp:tc>
+            </hp:tr>
+          </hp:tbl>
+        </hp:subList>
+      </hp:tc>
+    </hp:tr>
+  </hp:tbl>
+
+  <hp:p id="p4"><hp:run><hp:t>문서 끝</hp:t></hp:run></hp:p>
+</hs:sec>`;
+
+      zip.file('Contents/header.xml', headerXml);
+      zip.file('Contents/section0.xml', sectionXml);
+      zip.file('Contents/content.hpf', '<?xml version="1.0"?><pkg:package xmlns:pkg="http://www.hancom.co.kr/hwpml/2011/package"><pkg:manifest><pkg:item id="section0" href="section0.xml"/></pkg:manifest></pkg:package>');
+      zip.file('version.xml', '<?xml version="1.0"?><hwpml version="1.0"/>');
+      zip.file('mimetype', 'application/hwp+zip');
+
+      return await zip.generateAsync({ type: 'nodebuffer' });
+    }
+
+    // Helper: XML 태그 균형 검사
+    function checkTagBalance(xml: string, tagName: string): { open: number; close: number; balanced: boolean } {
+      const openRegex = new RegExp(`<hp:${tagName}\\b`, 'g');
+      const closeRegex = new RegExp(`</hp:${tagName}>`, 'g');
+      const openCount = (xml.match(openRegex) || []).length;
+      const closeCount = (xml.match(closeRegex) || []).length;
+      return { open: openCount, close: closeCount, balanced: openCount === closeCount };
+    }
+
+    it('should maintain XML tag balance after deleting table with nested tables', async () => {
+      const buffer = await createNestedTableDocument();
+      const testPath = path.join(testOutputDir, 'nested-table-delete-test.hwpx');
+      fs.writeFileSync(testPath, buffer);
+
+      let doc = await HwpxDocument.createFromBuffer('nested-test', testPath, buffer);
+
+      // 원본 상태 확인
+      const originalZip = await JSZip.loadAsync(buffer);
+      const originalXml = await originalZip.file('Contents/section0.xml')?.async('string') || '';
+      const originalBalance = checkTagBalance(originalXml, 'tbl');
+
+      console.log('=== 중첩 테이블 삭제 테스트 ===');
+      console.log(`원본: <hp:tbl> ${originalBalance.open}개, </hp:tbl> ${originalBalance.close}개`);
+      expect(originalBalance.balanced).toBe(true);
+      expect(originalBalance.open).toBe(6); // outer1 + inner1 + inner2 + simple + outer2 + inner3
+
+      // 외부 테이블 1 삭제 (index 0) - 내부에 중첩 테이블 2개 포함
+      const deleteResult = doc.deleteTable(0, 0);
+      expect(deleteResult).toBe(true);
+      console.log('외부 테이블 1 삭제 (중첩 테이블 2개 포함)');
+
+      // 저장
+      const savedBuffer = await doc.save();
+      fs.writeFileSync(testPath, savedBuffer);
+
+      // 저장된 XML 태그 균형 검사
+      const savedZip = await JSZip.loadAsync(savedBuffer);
+      const savedXml = await savedZip.file('Contents/section0.xml')?.async('string') || '';
+      const savedBalance = checkTagBalance(savedXml, 'tbl');
+
+      console.log(`저장 후: <hp:tbl> ${savedBalance.open}개, </hp:tbl> ${savedBalance.close}개`);
+      console.log(`태그 균형: ${savedBalance.balanced ? '✅ OK' : '❌ FAIL'}`);
+
+      // 핵심 검증: 태그 균형이 맞아야 함
+      expect(savedBalance.balanced).toBe(true);
+      // outer1 + inner1 + inner2 가 삭제되어 3개 감소
+      expect(savedBalance.open).toBe(3); // simple + outer2 + inner3
+
+      // 내용 검증: 삭제된 테이블 내용이 없어야 함
+      expect(savedXml).not.toContain('외부1-셀00');
+      expect(savedXml).not.toContain('내부테이블1');
+      expect(savedXml).not.toContain('내부테이블2');
+
+      // 남은 테이블 내용은 있어야 함
+      expect(savedXml).toContain('단순셀0');
+      expect(savedXml).toContain('외부2-셀');
+      expect(savedXml).toContain('내부테이블3');
+
+      // 재로드 검증
+      doc = await HwpxDocument.createFromBuffer('reload', testPath, savedBuffer);
+      const reloadedTables = doc.getTables();
+      expect(reloadedTables.length).toBe(3); // simple, outer2, inner3
+
+      console.log('✅ 중첩 테이블 포함 삭제 성공');
+
+      // Cleanup
+      if (fs.existsSync(testPath)) fs.unlinkSync(testPath);
+    });
+
+    it('should correctly delete multiple tables with nested structures', async () => {
+      const buffer = await createNestedTableDocument();
+      const testPath = path.join(testOutputDir, 'multi-nested-delete-test.hwpx');
+      fs.writeFileSync(testPath, buffer);
+
+      let doc = await HwpxDocument.createFromBuffer('multi-nested', testPath, buffer);
+
+      console.log('=== 여러 중첩 테이블 삭제 테스트 ===');
+
+      // 역순으로 삭제 (인덱스 시프트 방지)
+      // 테이블 인덱스: 0=outer1, 1=simple, 2=outer2
+      // (중첩 테이블은 루트 레벨이 아니므로 인덱스에 포함되지 않음)
+
+      // outer2 삭제 (index 2)
+      expect(doc.deleteTable(0, 2)).toBe(true);
+      console.log('외부 테이블 2 삭제 (중첩 테이블 1개 포함)');
+
+      // simple 삭제 (index 1)
+      expect(doc.deleteTable(0, 1)).toBe(true);
+      console.log('단순 테이블 삭제');
+
+      // 저장
+      const savedBuffer = await doc.save();
+      fs.writeFileSync(testPath, savedBuffer);
+
+      // 검증
+      const savedZip = await JSZip.loadAsync(savedBuffer);
+      const savedXml = await savedZip.file('Contents/section0.xml')?.async('string') || '';
+      const savedBalance = checkTagBalance(savedXml, 'tbl');
+
+      console.log(`저장 후: <hp:tbl> ${savedBalance.open}개, </hp:tbl> ${savedBalance.close}개`);
+      console.log(`태그 균형: ${savedBalance.balanced ? '✅ OK' : '❌ FAIL'}`);
+
+      expect(savedBalance.balanced).toBe(true);
+      expect(savedBalance.open).toBe(3); // outer1 + inner1 + inner2 만 남음
+
+      // 삭제된 내용 확인
+      expect(savedXml).not.toContain('단순셀0');
+      expect(savedXml).not.toContain('외부2-셀');
+      expect(savedXml).not.toContain('내부테이블3');
+
+      // 남은 내용 확인
+      expect(savedXml).toContain('외부1-셀00');
+      expect(savedXml).toContain('내부테이블1');
+      expect(savedXml).toContain('내부테이블2');
+
+      console.log('✅ 여러 중첩 테이블 삭제 성공');
+
+      // Cleanup
+      if (fs.existsSync(testPath)) fs.unlinkSync(testPath);
+    });
+
+    it('should delete all tables and maintain valid XML', async () => {
+      const buffer = await createNestedTableDocument();
+      const testPath = path.join(testOutputDir, 'delete-all-tables-test.hwpx');
+      fs.writeFileSync(testPath, buffer);
+
+      let doc = await HwpxDocument.createFromBuffer('delete-all', testPath, buffer);
+
+      console.log('=== 모든 테이블 삭제 테스트 ===');
+
+      // 역순으로 모든 루트 레벨 테이블 삭제
+      expect(doc.deleteTable(0, 2)).toBe(true); // outer2
+      expect(doc.deleteTable(0, 1)).toBe(true); // simple
+      expect(doc.deleteTable(0, 0)).toBe(true); // outer1
+
+      console.log('모든 루트 레벨 테이블 삭제');
+
+      // 저장
+      const savedBuffer = await doc.save();
+      fs.writeFileSync(testPath, savedBuffer);
+
+      // 검증
+      const savedZip = await JSZip.loadAsync(savedBuffer);
+      const savedXml = await savedZip.file('Contents/section0.xml')?.async('string') || '';
+      const savedBalance = checkTagBalance(savedXml, 'tbl');
+
+      console.log(`저장 후: <hp:tbl> ${savedBalance.open}개, </hp:tbl> ${savedBalance.close}개`);
+      console.log(`태그 균형: ${savedBalance.balanced ? '✅ OK' : '❌ FAIL'}`);
+
+      expect(savedBalance.balanced).toBe(true);
+      expect(savedBalance.open).toBe(0); // 모든 테이블 삭제됨
+
+      // 문단은 남아있어야 함
+      expect(savedXml).toContain('문서 시작');
+      expect(savedXml).toContain('중간 문단');
+      expect(savedXml).toContain('문서 끝');
+
+      // 테이블 내용은 모두 삭제되어야 함
+      expect(savedXml).not.toContain('외부1-셀00');
+      expect(savedXml).not.toContain('단순셀0');
+      expect(savedXml).not.toContain('내부테이블');
+
+      // 재로드
+      doc = await HwpxDocument.createFromBuffer('reload', testPath, savedBuffer);
+      expect(doc.getTables().length).toBe(0);
+
+      console.log('✅ 모든 테이블 삭제 성공');
+
+      // Cleanup
+      if (fs.existsSync(testPath)) fs.unlinkSync(testPath);
+    });
+
+    it('should handle consecutive deletes with index recalculation', async () => {
+      const buffer = await createNestedTableDocument();
+      const testPath = path.join(testOutputDir, 'consecutive-delete-test.hwpx');
+      fs.writeFileSync(testPath, buffer);
+
+      let doc = await HwpxDocument.createFromBuffer('consecutive', testPath, buffer);
+
+      console.log('=== 연속 삭제 인덱스 재계산 테스트 ===');
+
+      // 앞에서부터 삭제 (인덱스가 계속 바뀜)
+      // 처음: [outer1(0), simple(1), outer2(2)]
+      expect(doc.deleteTable(0, 0)).toBe(true); // outer1 삭제
+      console.log('Step 1: index 0 삭제 후 남은 테이블 확인');
+
+      // 이제: [simple(0), outer2(1)]
+      expect(doc.deleteTable(0, 0)).toBe(true); // simple 삭제
+      console.log('Step 2: index 0 삭제 후 남은 테이블 확인');
+
+      // 이제: [outer2(0)]
+      expect(doc.deleteTable(0, 0)).toBe(true); // outer2 삭제
+      console.log('Step 3: index 0 삭제 후 남은 테이블 확인');
+
+      // 저장
+      const savedBuffer = await doc.save();
+      fs.writeFileSync(testPath, savedBuffer);
+
+      // 검증
+      const savedZip = await JSZip.loadAsync(savedBuffer);
+      const savedXml = await savedZip.file('Contents/section0.xml')?.async('string') || '';
+      const savedBalance = checkTagBalance(savedXml, 'tbl');
+
+      console.log(`저장 후: <hp:tbl> ${savedBalance.open}개, </hp:tbl> ${savedBalance.close}개`);
+
+      expect(savedBalance.balanced).toBe(true);
+      expect(savedBalance.open).toBe(0);
+
+      console.log('✅ 연속 삭제 인덱스 재계산 성공');
+
+      // Cleanup
+      if (fs.existsSync(testPath)) fs.unlinkSync(testPath);
+    });
+
+    it('should preserve XML structure integrity after nested table delete', async () => {
+      const buffer = await createNestedTableDocument();
+      const testPath = path.join(testOutputDir, 'xml-integrity-test.hwpx');
+      fs.writeFileSync(testPath, buffer);
+
+      let doc = await HwpxDocument.createFromBuffer('integrity', testPath, buffer);
+
+      console.log('=== XML 구조 무결성 테스트 ===');
+
+      // 중첩 테이블 포함 테이블 삭제
+      doc.deleteTable(0, 0);
+
+      const savedBuffer = await doc.save();
+      fs.writeFileSync(testPath, savedBuffer);
+
+      // XML 파싱 테스트 - 유효한 XML이어야 함
+      const savedZip = await JSZip.loadAsync(savedBuffer);
+      const savedXml = await savedZip.file('Contents/section0.xml')?.async('string') || '';
+
+      // 모든 주요 태그 균형 검사
+      const tagsToCheck = ['tbl', 'tr', 'tc', 'p', 'run', 'subList'];
+      let allBalanced = true;
+
+      for (const tag of tagsToCheck) {
+        const balance = checkTagBalance(savedXml, tag);
+        console.log(`  <hp:${tag}>: ${balance.open}/${balance.close} ${balance.balanced ? '✅' : '❌'}`);
+        if (!balance.balanced) allBalanced = false;
+      }
+
+      expect(allBalanced).toBe(true);
+      console.log('✅ XML 구조 무결성 유지됨');
+
+      // Cleanup
+      if (fs.existsSync(testPath)) fs.unlinkSync(testPath);
+    });
+  });
 });
