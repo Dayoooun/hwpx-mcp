@@ -152,6 +152,11 @@ export class HwpxDocument {
     imageId: string;
     binaryId: string;
   }> = [];
+  private _pendingTableDeletes: Array<{
+    sectionIndex: number;
+    tableIndex: number;
+    tableId?: string;
+  }> = [];
   private _pendingCellMerges: Array<{
     sectionIndex: number;
     tableIndex: number;
@@ -2207,12 +2212,14 @@ export class HwpxDocument {
     // Find the table's index in elements array
     let tableCount = 0;
     let elementIndex = -1;
+    let tableId: string | undefined;
 
     for (let i = 0; i < section.elements.length; i++) {
       const el = section.elements[i];
       if (el.type === 'table') {
         if (tableCount === tableIndex) {
           elementIndex = i;
+          tableId = el.id;
           break;
         }
         tableCount++;
@@ -2222,6 +2229,15 @@ export class HwpxDocument {
     if (elementIndex === -1) return false;
 
     this.saveState();
+
+    // Add to pending deletes for XML processing
+    this._pendingTableDeletes.push({
+      sectionIndex,
+      tableIndex,
+      tableId
+    });
+
+    // Remove from memory model
     section.elements.splice(elementIndex, 1);
     this.markModified();
     return true;
@@ -4048,6 +4064,12 @@ export class HwpxDocument {
       this._pendingTableInserts = [];
     }
 
+    // Apply table deletes
+    if (this._pendingTableDeletes && this._pendingTableDeletes.length > 0) {
+      await this.applyTableDeletesToXml();
+      this._pendingTableDeletes = [];
+    }
+
     // Apply table moves/copies
     if (this._pendingTableMoves && this._pendingTableMoves.length > 0) {
       await this.applyTableMovesToXml();
@@ -4341,6 +4363,72 @@ export class HwpxDocument {
       if (this._zip.file(binPathNoExt)) {
         this._zip.remove(binPathNoExt);
       }
+    }
+  }
+
+  /**
+   * Apply table deletes to XML.
+   * Removes tables from the section XML.
+   */
+  private async applyTableDeletesToXml(): Promise<void> {
+    if (!this._zip) return;
+
+    // Sort by tableIndex descending to avoid index shifting issues
+    const sortedDeletes = [...this._pendingTableDeletes].sort(
+      (a, b) => b.tableIndex - a.tableIndex
+    );
+
+    // Group by section
+    const deletesBySection = new Map<number, Array<{ tableIndex: number; tableId?: string }>>();
+    for (const del of sortedDeletes) {
+      if (!deletesBySection.has(del.sectionIndex)) {
+        deletesBySection.set(del.sectionIndex, []);
+      }
+      deletesBySection.get(del.sectionIndex)!.push({
+        tableIndex: del.tableIndex,
+        tableId: del.tableId
+      });
+    }
+
+    for (const [sectionIndex, deletes] of deletesBySection) {
+      const sectionFile = `Contents/section${sectionIndex}.xml`;
+      const file = this._zip.file(sectionFile);
+      if (!file) continue;
+
+      let xml = await file.async('string');
+
+      for (const del of deletes) {
+        // Find and remove the table from XML
+        // Method 1: Try to find by table ID if available
+        if (del.tableId) {
+          const idPattern = new RegExp(
+            `<hp:tbl[^>]*\\bid=["']${del.tableId}["'][^>]*>[\\s\\S]*?</hp:tbl>`,
+            'g'
+          );
+          const beforeLen = xml.length;
+          xml = xml.replace(idPattern, '');
+          if (xml.length < beforeLen) continue; // Success
+        }
+
+        // Method 2: Find by index (count tables)
+        const tableRegex = /<hp:tbl\b[^>]*>[\s\S]*?<\/hp:tbl>/g;
+        const tables: Array<{ match: string; start: number; end: number }> = [];
+        let match;
+        while ((match = tableRegex.exec(xml)) !== null) {
+          tables.push({
+            match: match[0],
+            start: match.index,
+            end: match.index + match[0].length
+          });
+        }
+
+        if (del.tableIndex < tables.length) {
+          const target = tables[del.tableIndex];
+          xml = xml.slice(0, target.start) + xml.slice(target.end);
+        }
+      }
+
+      this._zip.file(sectionFile, xml);
     }
   }
 
