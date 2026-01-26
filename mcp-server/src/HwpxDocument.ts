@@ -4393,6 +4393,7 @@ export class HwpxDocument {
   /**
    * Apply table deletes to XML.
    * Removes tables from the section XML.
+   * Uses findAllTables for proper nested table handling.
    */
   private async applyTableDeletesToXml(): Promise<void> {
     if (!this._zip) return;
@@ -4421,34 +4422,14 @@ export class HwpxDocument {
 
       let xml = await file.async('string');
 
+      // Process each delete (already sorted by descending index)
       for (const del of deletes) {
-        // Find and remove the table from XML
-        // Method 1: Try to find by table ID if available
-        if (del.tableId) {
-          const idPattern = new RegExp(
-            `<hp:tbl[^>]*\\bid=["']${del.tableId}["'][^>]*>[\\s\\S]*?</hp:tbl>`,
-            'g'
-          );
-          const beforeLen = xml.length;
-          xml = xml.replace(idPattern, '');
-          if (xml.length < beforeLen) continue; // Success
-        }
-
-        // Method 2: Find by index (count tables)
-        const tableRegex = /<hp:tbl\b[^>]*>[\s\S]*?<\/hp:tbl>/g;
-        const tables: Array<{ match: string; start: number; end: number }> = [];
-        let match;
-        while ((match = tableRegex.exec(xml)) !== null) {
-          tables.push({
-            match: match[0],
-            start: match.index,
-            end: match.index + match[0].length
-          });
-        }
+        // Use findAllTables for proper nested table handling
+        const tables = this.findAllTables(xml);
 
         if (del.tableIndex < tables.length) {
           const target = tables[del.tableIndex];
-          xml = xml.slice(0, target.start) + xml.slice(target.end);
+          xml = xml.slice(0, target.startIndex) + xml.slice(target.endIndex);
         }
       }
 
