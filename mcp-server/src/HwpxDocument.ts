@@ -214,6 +214,9 @@ export class HwpxDocument {
   // Cache for character properties (id → font size in pt)
   private _charPrCache: Map<number, number> | null = null;
 
+  // Original charPr count for integrity validation
+  private _originalCharPrCount?: number;
+
   private constructor(id: string, path: string, zip: JSZip | null, content: HwpxContent, format: DocumentFormat) {
     this._id = id;
     this._path = path;
@@ -279,7 +282,15 @@ export class HwpxDocument {
     } else {
       const zip = await JSZip.loadAsync(data);
       const content = await HwpxParser.parse(zip);
-      return new HwpxDocument(id, path, zip, content, 'hwpx');
+      const doc = new HwpxDocument(id, path, zip, content, 'hwpx');
+
+      // Store original charPr count for integrity validation
+      const headerXml = await zip.file('Contents/header.xml')?.async('string');
+      if (headerXml) {
+        doc._originalCharPrCount = (headerXml.match(/<hh:charPr\b/g) || []).length;
+      }
+
+      return doc;
     }
   }
 
@@ -4204,6 +4215,18 @@ export class HwpxDocument {
     // (textColor, shadeColor, symMark, underline, strikeout, outline, shadow).
     // Original header.xml charPr/charShape elements should be preserved as-is.
     // Only sync charShapes when they are explicitly modified.
+
+    // Validate charPr integrity - ensure no elements were lost during sync
+    {
+      const headerPath = 'Contents/header.xml';
+      const headerXml = await this._zip.file(headerPath)?.async('string');
+      if (headerXml) {
+        const charPrCount = (headerXml.match(/<hh:charPr\b/g) || []).length;
+        if (this._originalCharPrCount !== undefined && charPrCount < this._originalCharPrCount) {
+          console.error(`[WARNING] charPr count dropped: ${this._originalCharPrCount} → ${charPrCount}. Possible corruption.`);
+        }
+      }
+    }
 
     // Remove Fasoo DRM tracking info if present (causes "corrupted file" warning in Hancom Office)
     await this.removeFasooDrmTracking();
@@ -11204,7 +11227,7 @@ export class HwpxDocument {
       const newId = ++maxParaPrId;
 
       // Build paraPr element with alignment
-      const align = update.style.align ? alignMap[update.style.align] || 'LEFT' : 'LEFT';
+      const align = update.style.align ? alignMap[update.style.align.toLowerCase()] || 'LEFT' : 'LEFT';
       const lineSpacing = update.style.lineSpacing ?? 160; // default 160%
 
       // Build paraPr element with hp:switch structure for Hangul compatibility
@@ -11278,15 +11301,17 @@ export class HwpxDocument {
       let sectionXml = await this._zip.file(sectionPath)?.async('string');
       if (!sectionXml) continue;
 
-      // Find all paragraph elements
-      const paragraphElements: Array<{ start: number; end: number; content: string }> = [];
-      const pRegex = /<hp:p\s[^>]*>/g;
+      // Find all top-level elements (paragraphs AND tables) to match elementIndex
+      // elementIndex counts both <hp:p> and <hp:tbl> elements
+      const allElementsRegex = /<hp:(p|tbl)\s[^>]*>/g;
+      const allElements: Array<{ start: number; end: number; content: string; type: string }> = [];
       let match;
-      while ((match = pRegex.exec(sectionXml)) !== null) {
-        paragraphElements.push({
+      while ((match = allElementsRegex.exec(sectionXml)) !== null) {
+        allElements.push({
           start: match.index,
           end: match.index + match[0].length,
           content: match[0],
+          type: match[1],
         });
       }
 
@@ -11295,16 +11320,17 @@ export class HwpxDocument {
       const sortedUpdates = [...updates].sort((a, b) => b.elementIndex - a.elementIndex);
 
       for (const update of sortedUpdates) {
-        if (update.elementIndex < paragraphElements.length) {
-          const para = paragraphElements[update.elementIndex];
+        if (update.elementIndex < allElements.length) {
+          const elem = allElements[update.elementIndex];
+          if (elem.type !== 'p') continue; // Skip tables
           // Replace paraPrIDRef in the paragraph element
-          const updatedContent = para.content.replace(
+          const updatedContent = elem.content.replace(
             /paraPrIDRef="(\d+)"/,
             `paraPrIDRef="${update.newParaPrId}"`
           );
-          sectionXml = sectionXml.substring(0, para.start) +
+          sectionXml = sectionXml.substring(0, elem.start) +
             updatedContent +
-            sectionXml.substring(para.end);
+            sectionXml.substring(elem.end);
         }
       }
 
