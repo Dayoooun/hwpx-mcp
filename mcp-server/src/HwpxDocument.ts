@@ -204,6 +204,12 @@ export class HwpxDocument {
     elementIndex: number;
     style: Partial<ParagraphStyle>;
   }> = [];
+  private _pendingCharacterStyles: Array<{
+    sectionIndex: number;
+    elementIndex: number;
+    runIndex: number;
+    style: Partial<CharacterStyle>;
+  }> = [];
 
   // Cache for character properties (id → font size in pt)
   private _charPrCache: Map<number, number> | null = null;
@@ -813,6 +819,15 @@ export class HwpxDocument {
     this.saveState();
     const run = paragraph.runs[runIndex];
     run.charStyle = { ...run.charStyle, ...style };
+
+    // Add to pending list for XML sync
+    this._pendingCharacterStyles.push({
+      sectionIndex,
+      elementIndex,
+      runIndex,
+      style,
+    });
+
     this.markModified();
   }
 
@@ -4176,6 +4191,12 @@ export class HwpxDocument {
     if (this._pendingParagraphStyles && this._pendingParagraphStyles.length > 0) {
       await this.applyParagraphStylesToXml();
       this._pendingParagraphStyles = [];
+    }
+
+    // Apply character style changes (font, size, etc.)
+    if (this._pendingCharacterStyles && this._pendingCharacterStyles.length > 0) {
+      await this.applyCharacterStylesToXml();
+      this._pendingCharacterStyles = [];
     }
 
     // NOTE: Do NOT call syncCharShapesToZip() here.
@@ -11288,6 +11309,189 @@ export class HwpxDocument {
       }
 
       this._zip.file(sectionPath, sectionXml);
+    }
+  }
+
+  /**
+   * Apply character style changes (font, size, bold, italic) to XML files.
+   * Creates new charPr elements in header.xml and updates run references in section XML.
+   */
+  private async applyCharacterStylesToXml(): Promise<void> {
+    if (!this._zip || this._pendingCharacterStyles.length === 0) return;
+
+    // Read header.xml to find existing charPr elements and their max ID
+    const headerPath = 'Contents/header.xml';
+    let headerXml = await this._zip.file(headerPath)?.async('string');
+    if (!headerXml) return;
+
+    // Find max charPr id
+    const charPrIdRegex = /<hh:charPr\s+[^>]*id="(\d+)"/g;
+    let maxCharPrId = 0;
+    let match;
+    while ((match = charPrIdRegex.exec(headerXml)) !== null) {
+      maxCharPrId = Math.max(maxCharPrId, parseInt(match[1], 10));
+    }
+    // Also check charShape
+    const charShapeIdRegex = /<hh:charShape\s+[^>]*id="(\d+)"/g;
+    while ((match = charShapeIdRegex.exec(headerXml)) !== null) {
+      maxCharPrId = Math.max(maxCharPrId, parseInt(match[1], 10));
+    }
+
+    // Parse fontface sections to build per-lang maps: {HANGUL: {fontName: id}, LATIN: {fontName: id}, ...}
+    const langToFontMap = new Map<string, Map<string, number>>();
+    const fontfaceRegex = /<hh:fontface\s+lang="([^"]+)"[^>]*>([\s\S]*?)<\/hh:fontface>/g;
+    let ffMatch;
+    while ((ffMatch = fontfaceRegex.exec(headerXml)) !== null) {
+      const lang = ffMatch[1];
+      const fontMap = new Map<string, number>();
+      const fontRegex = /<hh:font\s+id="(\d+)"\s+face="([^"]+)"/g;
+      let fMatch;
+      while ((fMatch = fontRegex.exec(ffMatch[2])) !== null) {
+        fontMap.set(fMatch[2], parseInt(fMatch[1], 10));
+      }
+      langToFontMap.set(lang, fontMap);
+    }
+
+    const langToAttr: Record<string, string> = {
+      HANGUL: 'hangul',
+      LATIN: 'latin',
+      HANJA: 'hanja',
+      JAPANESE: 'japanese',
+      OTHER: 'other',
+      SYMBOL: 'symbol',
+      USER: 'user'
+    };
+
+    // Read base charPr (id=0) as template
+    const baseCharPrMatch = headerXml.match(/<hh:charPr\s+[^>]*id="0"[^>]*>([\s\S]*?)<\/hh:charPr>/);
+    let baseInnerXml = '';
+    if (baseCharPrMatch) {
+      // Remove fontRef line, we'll create our own
+      baseInnerXml = baseCharPrMatch[1]
+        .replace(/<hh:fontRef[^/]*\/>/g, '')  // remove fontRef
+        .trim();
+    }
+
+    // Map to track new charPr IDs for each unique style
+    const styleToIdMap = new Map<string, number>();
+    const newCharPrs: string[] = [];
+
+    // Group updates by section
+    const updatesBySection = new Map<number, Array<typeof this._pendingCharacterStyles[0]>>();
+    for (const update of this._pendingCharacterStyles) {
+      if (!updatesBySection.has(update.sectionIndex)) {
+        updatesBySection.set(update.sectionIndex, []);
+      }
+      updatesBySection.get(update.sectionIndex)!.push(update);
+    }
+
+    // Process each section
+    for (const [sectionIndex, updates] of updatesBySection) {
+      const sectionPath = `Contents/section${sectionIndex}.xml`;
+      let sectionXml = await this._zip.file(sectionPath)?.async('string');
+      if (!sectionXml) continue;
+
+      for (const update of updates) {
+        // Create style key for deduplication
+        const fontSize = update.style.fontSize ? Math.round(update.style.fontSize * 100) : 1000;
+        const fontName = update.style.fontName || '함초롬바탕';
+        const bold = update.style.bold ? '1' : '0';
+        const italic = update.style.italic ? '1' : '0';
+        const styleKey = `${fontName}-${fontSize}-${bold}-${italic}`;
+
+        let charPrId: number;
+        if (styleToIdMap.has(styleKey)) {
+          charPrId = styleToIdMap.get(styleKey)!;
+        } else {
+          charPrId = ++maxCharPrId;
+          styleToIdMap.set(styleKey, charPrId);
+
+          // Build fontRef with numeric IDs
+          const fontRefParts: string[] = [];
+          for (const [lang, attr] of Object.entries(langToAttr)) {
+            const fontMap = langToFontMap.get(lang);
+            const fontId = fontMap?.get(fontName) ?? 0;
+            fontRefParts.push(`${attr}="${fontId}"`);
+          }
+          const fontRefStr = `<hh:fontRef ${fontRefParts.join(' ')}/>`;
+
+          // Build charPr with base template
+          const boldTag = bold === '1' ? '<hh:bold/>' : '';
+          const italicTag = italic === '1' ? '<hh:italic/>' : '';
+
+          // Reconstruct from base, inserting fontRef first
+          const charPr = `      <hh:charPr id="${charPrId}" height="${fontSize}" textColor="#000000" shadeColor="none" useFontSpace="0" useKerning="0" symMark="NONE" borderFillIDRef="1">
+        ${fontRefStr}
+        ${baseInnerXml}${boldTag ? '\n        ' + boldTag : ''}${italicTag ? '\n        ' + italicTag : ''}
+      </hh:charPr>`;
+          newCharPrs.push(charPr);
+        }
+
+        // Update section XML - find the paragraph and update run's charPrIDRef
+        // Find all paragraphs and tables in order
+        const allElementsRegex = /<hp:(p|tbl)\b/g;
+        let elementCount = 0;
+        let targetParagraphStart = -1;
+        let targetParagraphEnd = -1;
+
+        while ((match = allElementsRegex.exec(sectionXml)) !== null) {
+          if (elementCount === update.elementIndex) {
+            if (match[1] === 'p') {
+              targetParagraphStart = match.index;
+              // Find the end of this paragraph
+              const closeTag = '</hp:p>';
+              targetParagraphEnd = sectionXml.indexOf(closeTag, targetParagraphStart) + closeTag.length;
+            }
+            break;
+          }
+          elementCount++;
+        }
+
+        if (targetParagraphStart >= 0 && targetParagraphEnd > targetParagraphStart) {
+          let paraXml = sectionXml.slice(targetParagraphStart, targetParagraphEnd);
+
+          // Find and update the run at runIndex
+          const runRegex = /<hp:run\s+charPrIDRef="(\d+)"/g;
+          let runCount = 0;
+          let runMatch;
+          while ((runMatch = runRegex.exec(paraXml)) !== null) {
+            if (runCount === update.runIndex) {
+              const oldAttr = runMatch[0];
+              const newAttr = `<hp:run charPrIDRef="${charPrId}"`;
+              paraXml = paraXml.slice(0, runMatch.index) + newAttr + paraXml.slice(runMatch.index + oldAttr.length);
+              break;
+            }
+            runCount++;
+          }
+
+          sectionXml = sectionXml.slice(0, targetParagraphStart) + paraXml + sectionXml.slice(targetParagraphEnd);
+        }
+      }
+
+      // Save updated section XML
+      this._zip.file(sectionPath, sectionXml);
+    }
+
+    // Add new charPr elements to header.xml
+    if (newCharPrs.length > 0) {
+      // Find charProperties section and insert before closing tag
+      const charPropsMatch = headerXml.match(/<hh:charProperties\s+itemCnt="(\d+)">/);
+      if (charPropsMatch) {
+        const oldCount = parseInt(charPropsMatch[1], 10);
+        const newCount = oldCount + newCharPrs.length;
+        headerXml = headerXml.replace(
+          /<hh:charProperties\s+itemCnt="\d+">/,
+          `<hh:charProperties itemCnt="${newCount}">`
+        );
+
+        // Insert new charPr elements before </hh:charProperties>
+        headerXml = headerXml.replace(
+          '</hh:charProperties>',
+          newCharPrs.join('\n') + '\n    </hh:charProperties>'
+        );
+      }
+
+      this._zip.file(headerPath, headerXml);
     }
   }
 
