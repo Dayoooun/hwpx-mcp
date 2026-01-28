@@ -211,6 +211,48 @@ export class HwpxDocument {
     style: Partial<CharacterStyle>;
   }> = [];
 
+  private _pendingTableRowInserts: Array<{
+    sectionIndex: number;
+    tableIndex: number;
+    afterRowIndex: number;
+    cellTexts?: string[];
+  }> = [];
+  private _pendingTableRowDeletes: Array<{
+    sectionIndex: number;
+    tableIndex: number;
+    rowIndex: number;
+  }> = [];
+  private _pendingTableColumnInserts: Array<{
+    sectionIndex: number;
+    tableIndex: number;
+    afterColIndex: number;
+  }> = [];
+  private _pendingTableColumnDeletes: Array<{
+    sectionIndex: number;
+    tableIndex: number;
+    colIndex: number;
+  }> = [];
+  private _pendingParagraphCopies: Array<{
+    sourceSection: number;
+    sourceParagraph: number;
+    targetSection: number;
+    targetAfter: number;
+  }> = [];
+  private _pendingParagraphMoves: Array<{
+    sourceSection: number;
+    sourceParagraph: number;
+    targetSection: number;
+    targetAfter: number;
+  }> = [];
+  private _pendingHeaderUpdates: Array<{
+    sectionIndex: number;
+    text: string;
+  }> = [];
+  private _pendingFooterUpdates: Array<{
+    sectionIndex: number;
+    text: string;
+  }> = [];
+
   // Cache for character properties (id → font size in pt)
   private _charPrCache: Map<number, number> | null = null;
 
@@ -464,6 +506,7 @@ export class HwpxDocument {
     this._redoStack.push(currentState);
     const previousState = this._undoStack.pop()!;
     this.deserializeContent(previousState);
+    this.clearAllPendingArrays();
     this.markModified();
     return true;
   }
@@ -474,8 +517,42 @@ export class HwpxDocument {
     this._undoStack.push(currentState);
     const nextState = this._redoStack.pop()!;
     this.deserializeContent(nextState);
+    this.clearAllPendingArrays();
     this.markModified();
     return true;
+  }
+
+  /**
+   * Clear all pending operation arrays.
+   * Called by undo/redo to prevent memory/XML desync.
+   */
+  private clearAllPendingArrays(): void {
+    this._pendingTextReplacements = [];
+    this._pendingDirectTextUpdates = [];
+    this._pendingTableCellUpdates = [];
+    this._pendingNestedTableInserts = [];
+    this._pendingImageInserts = [];
+    this._pendingCellImageInserts = [];
+    this._pendingTableInserts = [];
+    this._pendingImageDeletes = [];
+    this._pendingTableDeletes = [];
+    this._pendingParagraphDeletes = [];
+    this._pendingCellMerges = [];
+    this._pendingCellSplits = [];
+    this._pendingHangingIndents = [];
+    this._pendingTableCellHangingIndents = [];
+    this._pendingParagraphInserts = [];
+    this._pendingParagraphStyles = [];
+    this._pendingCharacterStyles = [];
+    this._pendingTableRowInserts = [];
+    this._pendingTableRowDeletes = [];
+    this._pendingTableColumnInserts = [];
+    this._pendingTableColumnDeletes = [];
+    this._pendingParagraphCopies = [];
+    this._pendingParagraphMoves = [];
+    this._pendingHeaderUpdates = [];
+    this._pendingFooterUpdates = [];
+    if (this._pendingTableMoves) this._pendingTableMoves = [];
   }
 
   /**
@@ -2227,6 +2304,14 @@ export class HwpxDocument {
     };
 
     table.rows.splice(afterRowIndex + 1, 0, newRow as any);
+
+    this._pendingTableRowInserts.push({
+      sectionIndex,
+      tableIndex,
+      afterRowIndex,
+      cellTexts,
+    });
+
     this.markModified();
     return true;
   }
@@ -2242,6 +2327,13 @@ export class HwpxDocument {
 
     this.saveState();
     table.rows.splice(rowIndex, 1);
+
+    this._pendingTableRowDeletes.push({
+      sectionIndex,
+      tableIndex,
+      rowIndex,
+    });
+
     this.markModified();
     return true;
   }
@@ -2300,6 +2392,13 @@ export class HwpxDocument {
         }],
       } as any);
     }
+
+    this._pendingTableColumnInserts.push({
+      sectionIndex,
+      tableIndex,
+      afterColIndex,
+    });
+
     this.markModified();
     return true;
   }
@@ -2312,6 +2411,13 @@ export class HwpxDocument {
     for (const row of table.rows) {
       row.cells.splice(colIndex, 1);
     }
+
+    this._pendingTableColumnDeletes.push({
+      sectionIndex,
+      tableIndex,
+      colIndex,
+    });
+
     this.markModified();
     return true;
   }
@@ -2614,6 +2720,14 @@ export class HwpxDocument {
     const copy = JSON.parse(JSON.stringify(srcElement));
     copy.data.id = Math.random().toString(36).substring(2, 11);
     tgtSection.elements.splice(targetAfter + 1, 0, copy);
+
+    this._pendingParagraphCopies.push({
+      sourceSection,
+      sourceParagraph,
+      targetSection,
+      targetAfter,
+    });
+
     this.markModified();
     return true;
   }
@@ -2628,7 +2742,22 @@ export class HwpxDocument {
 
     this.saveState();
     srcSection.elements.splice(sourceParagraph, 1);
-    tgtSection.elements.splice(targetAfter + 1, 0, srcElement);
+
+    // Fix same-section index shift: if source was before target, adjust target down
+    let adjustedTargetAfter = targetAfter;
+    if (sourceSection === targetSection && sourceParagraph < targetAfter) {
+      adjustedTargetAfter -= 1;
+    }
+
+    tgtSection.elements.splice(adjustedTargetAfter + 1, 0, srcElement);
+
+    this._pendingParagraphMoves.push({
+      sourceSection,
+      sourceParagraph,
+      targetSection,
+      targetAfter,
+    });
+
     this.markModified();
     return true;
   }
@@ -3167,6 +3296,8 @@ export class HwpxDocument {
       section.header.paragraphs = [headerParagraph];
     }
 
+    this._pendingHeaderUpdates.push({ sectionIndex, text });
+
     this.markModified();
     return true;
   }
@@ -3201,6 +3332,8 @@ export class HwpxDocument {
     } else {
       section.footer.paragraphs = [footerParagraph];
     }
+
+    this._pendingFooterUpdates.push({ sectionIndex, text });
 
     this.markModified();
     return true;
@@ -4099,6 +4232,11 @@ export class HwpxDocument {
     });
   }
 
+  // WARNING: syncContentToZip reads and writes header.xml and section XML files sequentially.
+  // Each apply*ToXml() method may read header.xml independently, so the order of operations matters.
+  // If multiple methods modify header.xml, later methods will see changes from earlier ones.
+  // Be cautious when adding new apply* methods that modify header.xml - ensure they read the
+  // latest version and don't overwrite changes made by prior steps.
   private async syncContentToZip(): Promise<void> {
     if (!this._zip) return;
 
@@ -4208,6 +4346,50 @@ export class HwpxDocument {
     if (this._pendingCharacterStyles && this._pendingCharacterStyles.length > 0) {
       await this.applyCharacterStylesToXml();
       this._pendingCharacterStyles = [];
+    }
+
+    // Apply table row inserts
+    if (this._pendingTableRowInserts && this._pendingTableRowInserts.length > 0) {
+      await this.applyTableRowInsertsToXml();
+      this._pendingTableRowInserts = [];
+    }
+
+    // Apply table row deletes
+    if (this._pendingTableRowDeletes && this._pendingTableRowDeletes.length > 0) {
+      await this.applyTableRowDeletesToXml();
+      this._pendingTableRowDeletes = [];
+    }
+
+    // Apply table column inserts
+    if (this._pendingTableColumnInserts && this._pendingTableColumnInserts.length > 0) {
+      await this.applyTableColumnInsertsToXml();
+      this._pendingTableColumnInserts = [];
+    }
+
+    // Apply table column deletes
+    if (this._pendingTableColumnDeletes && this._pendingTableColumnDeletes.length > 0) {
+      await this.applyTableColumnDeletesToXml();
+      this._pendingTableColumnDeletes = [];
+    }
+
+    // Apply paragraph copies
+    if (this._pendingParagraphCopies && this._pendingParagraphCopies.length > 0) {
+      await this.applyParagraphCopiesToXml();
+      this._pendingParagraphCopies = [];
+    }
+
+    // Apply paragraph moves
+    if (this._pendingParagraphMoves && this._pendingParagraphMoves.length > 0) {
+      await this.applyParagraphMovesToXml();
+      this._pendingParagraphMoves = [];
+    }
+
+    // Apply header/footer updates
+    if (this._pendingHeaderUpdates && this._pendingHeaderUpdates.length > 0 ||
+        this._pendingFooterUpdates && this._pendingFooterUpdates.length > 0) {
+      await this.applyHeaderFooterUpdatesToXml();
+      this._pendingHeaderUpdates = [];
+      this._pendingFooterUpdates = [];
     }
 
     // NOTE: Do NOT call syncCharShapesToZip() here.
@@ -5342,6 +5524,7 @@ export class HwpxDocument {
     }
 
     let result = tableXml;
+    let rowSearchStartPos = 0;
 
     // Process rows in reverse order to maintain indices
     for (let rowIdx = endRow; rowIdx >= startRow; rowIdx--) {
@@ -5385,22 +5568,18 @@ export class HwpxDocument {
             updatedCellXml = updatedCellXml.replace(/<(hp|hs):tc\b/, `<$1:tc rowSpan="${rowSpan}"`);
           }
 
-          // Replace in row XML
-          const cellStart = updatedRowXml.indexOf(cell.xml);
-          if (cellStart !== -1) {
-            updatedRowXml = updatedRowXml.substring(0, cellStart) + updatedCellXml + updatedRowXml.substring(cellStart + cell.xml.length);
-          }
+          // Replace in row XML using startIndex from depth-aware search
+          const cellStart = cell.startIndex;
+          updatedRowXml = updatedRowXml.substring(0, cellStart) + updatedCellXml + updatedRowXml.substring(cellStart + cell.xml.length);
         } else {
           // This cell should be removed (it's covered by the master cell)
-          const cellStart = updatedRowXml.indexOf(cell.xml);
-          if (cellStart !== -1) {
-            updatedRowXml = updatedRowXml.substring(0, cellStart) + updatedRowXml.substring(cellStart + cell.xml.length);
-          }
+          const cellStart = cell.startIndex;
+          updatedRowXml = updatedRowXml.substring(0, cellStart) + updatedRowXml.substring(cellStart + cell.xml.length);
         }
       }
 
-      // Replace the row in result
-      const rowStart = result.indexOf(row.xml);
+      // Replace the row in result using sequential search position
+      const rowStart = result.indexOf(row.xml, rowSearchStartPos);
       if (rowStart !== -1) {
         result = result.substring(0, rowStart) + updatedRowXml + result.substring(rowStart + row.xml.length);
       }
@@ -5567,11 +5746,14 @@ export class HwpxDocument {
           return aAddr - bAddr;
         });
 
-        // Find position to insert
+        // Find position to insert using sequential search
+        let cellSearchPos = 0;
         for (const cell of sortedCells) {
           const cellColAddr = parseInt(cell.xml.match(/colAddr="(\d+)"/)?.[1] || '0');
-          if (cellColAddr < masterCol) {
-            insertPoint = updatedRowXml.indexOf(cell.xml) + cell.xml.length;
+          const cellPos = updatedRowXml.indexOf(cell.xml, cellSearchPos);
+          if (cellPos !== -1) cellSearchPos = cellPos + cell.xml.length;
+          if (cellColAddr < masterCol && cellPos !== -1) {
+            insertPoint = cellPos + cell.xml.length;
           }
         }
 
@@ -5998,6 +6180,105 @@ export class HwpxDocument {
   /**
    * Find all tables in XML and return their positions and content.
    */
+  /**
+   * Find top-level paragraph and table elements (direct children of section).
+   * Uses depth tracking to skip elements nested inside <hp:tbl>, <hp:tc>, <hp:secPr>, etc.
+   * Only counts <hp:p> and <hp:tbl> at depth 0 (relative to section root).
+   */
+  private findTopLevelElements(sectionXml: string): Array<{ start: number; tagLength: number; content: string; type: 'p' | 'tbl' }> {
+    const results: Array<{ start: number; tagLength: number; content: string; type: 'p' | 'tbl' }> = [];
+
+    // Find section body start (after <hs:sec ...> or <hp:sec ...>)
+    const secOpenMatch = sectionXml.match(/<(?:hs|hp):sec[^>]*>/);
+    if (!secOpenMatch) return results;
+    const bodyStart = secOpenMatch.index! + secOpenMatch[0].length;
+
+    // Find section body end (before </hs:sec> or </hp:sec>)
+    const secCloseIdx = Math.max(
+      sectionXml.lastIndexOf('</hs:sec>'),
+      sectionXml.lastIndexOf('</hp:sec>')
+    );
+    const bodyEnd = secCloseIdx === -1 ? sectionXml.length : secCloseIdx;
+
+    // Scan through the body tracking depth of nesting elements
+    let depth = 0;
+    let pos = bodyStart;
+    const depthTags = ['tbl', 'tc', 'secPr', 'subList'];
+    const prefixes = ['hp', 'hs', 'hc'];
+
+    while (pos < bodyEnd) {
+      const nextTag = sectionXml.indexOf('<', pos);
+      if (nextTag === -1 || nextTag >= bodyEnd) break;
+
+      // Check for closing tags that decrease depth
+      let isClose = false;
+      for (const prefix of prefixes) {
+        for (const tag of depthTags) {
+          const closeStr = `</${prefix}:${tag}>`;
+          if (sectionXml.startsWith(closeStr, nextTag)) {
+            depth--;
+            pos = nextTag + closeStr.length;
+            isClose = true;
+            break;
+          }
+        }
+        if (isClose) break;
+      }
+      if (isClose) continue;
+
+      // Check for opening tags we care about at depth 0
+      if (depth === 0) {
+        for (const prefix of prefixes) {
+          // Check <prefix:p ...>
+          const pOpenStr = `<${prefix}:p `;
+          const pOpenSelf = `<${prefix}:p>`;
+          if (sectionXml.startsWith(pOpenStr, nextTag) || sectionXml.startsWith(pOpenSelf, nextTag)) {
+            const tagEnd = sectionXml.indexOf('>', nextTag);
+            if (tagEnd !== -1) {
+              const tagContent = sectionXml.substring(nextTag, tagEnd + 1);
+              results.push({ start: nextTag, tagLength: tagContent.length, content: tagContent, type: 'p' });
+            }
+            break;
+          }
+          // Check <prefix:tbl ...>
+          const tblOpenStr = `<${prefix}:tbl `;
+          const tblOpenSelf = `<${prefix}:tbl>`;
+          if (sectionXml.startsWith(tblOpenStr, nextTag) || sectionXml.startsWith(tblOpenSelf, nextTag)) {
+            const tagEnd = sectionXml.indexOf('>', nextTag);
+            if (tagEnd !== -1) {
+              const tagContent = sectionXml.substring(nextTag, tagEnd + 1);
+              results.push({ start: nextTag, tagLength: tagContent.length, content: tagContent, type: 'tbl' });
+            }
+            break;
+          }
+        }
+      }
+
+      // Check for opening tags that increase depth
+      let isOpen = false;
+      for (const prefix of prefixes) {
+        for (const tag of depthTags) {
+          const openStr = `<${prefix}:${tag}`;
+          if (sectionXml.startsWith(openStr, nextTag)) {
+            const afterTag = nextTag + openStr.length;
+            if (afterTag < sectionXml.length && (sectionXml[afterTag] === ' ' || sectionXml[afterTag] === '>' || sectionXml[afterTag] === '/')) {
+              depth++;
+              isOpen = true;
+              break;
+            }
+          }
+        }
+        if (isOpen) break;
+      }
+
+      // Move past this tag
+      const tagEndPos = sectionXml.indexOf('>', nextTag);
+      pos = tagEndPos !== -1 ? tagEndPos + 1 : nextTag + 1;
+    }
+
+    return results;
+  }
+
   private findAllTables(xml: string): Array<{ xml: string; startIndex: number; endIndex: number }> {
     const tables: Array<{ xml: string; startIndex: number; endIndex: number }> = [];
 
@@ -8411,9 +8692,13 @@ export class HwpxDocument {
         }
 
         // Replace text within <hp:t> tags while preserving XML structure
-        xml = xml.replace(/<hp:t([^>]*)>([^<]*)<\/hp:t>/g, (match, attrs, textContent) => {
-          const newTextContent = textContent.replace(searchPattern, this.escapeXml(newText));
-          return `<hp:t${attrs}>${newTextContent}</hp:t>`;
+        // First unescape XML entities so search patterns match raw text, then re-escape
+        xml = xml.replace(/<hp:t([^>]*)>([^<]*)<\/hp:t>/g, (_match, attrs, textContent) => {
+          const unescaped = textContent
+            .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+            .replace(/&quot;/g, '"').replace(/&apos;/g, "'");
+          const replaced = unescaped.replace(searchPattern, newText);
+          return `<hp:t${attrs}>${this.escapeXml(replaced)}</hp:t>`;
         });
       }
 
@@ -11302,18 +11587,8 @@ export class HwpxDocument {
       if (!sectionXml) continue;
 
       // Find all top-level elements (paragraphs AND tables) to match elementIndex
-      // elementIndex counts both <hp:p> and <hp:tbl> elements
-      const allElementsRegex = /<hp:(p|tbl)\s[^>]*>/g;
-      const allElements: Array<{ start: number; end: number; content: string; type: string }> = [];
-      let match;
-      while ((match = allElementsRegex.exec(sectionXml)) !== null) {
-        allElements.push({
-          start: match.index,
-          end: match.index + match[0].length,
-          content: match[0],
-          type: match[1],
-        });
-      }
+      // Uses depth-aware helper to avoid matching elements nested inside tables/secPr
+      const allElements = this.findTopLevelElements(sectionXml);
 
       // Update paraPrIDRef for each affected paragraph
       // Sort updates by elementIndex in reverse order to avoid offset issues
@@ -11330,7 +11605,7 @@ export class HwpxDocument {
           );
           sectionXml = sectionXml.substring(0, elem.start) +
             updatedContent +
-            sectionXml.substring(elem.end);
+            sectionXml.substring(elem.start + elem.tagLength);
         }
       }
 
@@ -11454,23 +11729,21 @@ export class HwpxDocument {
         }
 
         // Update section XML - find the paragraph and update run's charPrIDRef
-        // Find all paragraphs and tables in order
-        const allElementsRegex = /<hp:(p|tbl)\b/g;
-        let elementCount = 0;
+        // Uses depth-aware helper to only match top-level elements
+        const allTopElements = this.findTopLevelElements(sectionXml);
         let targetParagraphStart = -1;
         let targetParagraphEnd = -1;
 
-        while ((match = allElementsRegex.exec(sectionXml)) !== null) {
-          if (elementCount === update.elementIndex) {
-            if (match[1] === 'p') {
-              targetParagraphStart = match.index;
-              // Find the end of this paragraph
-              const closeTag = '</hp:p>';
-              targetParagraphEnd = sectionXml.indexOf(closeTag, targetParagraphStart) + closeTag.length;
-            }
-            break;
+        if (update.elementIndex < allTopElements.length) {
+          const elem = allTopElements[update.elementIndex];
+          if (elem.type === 'p') {
+            targetParagraphStart = elem.start;
+            // Find end of this paragraph - need to find matching close tag
+            const prefixMatch = elem.content.match(/<(hp|hs):p/);
+            const pPrefix = prefixMatch ? prefixMatch[1] : 'hp';
+            const closeTag = `</${pPrefix}:p>`;
+            targetParagraphEnd = sectionXml.indexOf(closeTag, targetParagraphStart) + closeTag.length;
           }
-          elementCount++;
         }
 
         if (targetParagraphStart >= 0 && targetParagraphEnd > targetParagraphStart) {
@@ -11877,5 +12150,551 @@ export class HwpxDocument {
       startIndex: absoluteStart,
       endIndex: absoluteEnd,
     };
+  }
+
+  // ============================================================
+  // Table Row Insert/Delete XML Persistence
+  // ============================================================
+
+  private async applyTableRowInsertsToXml(): Promise<void> {
+    if (!this._zip) return;
+
+    // Group by section
+    const bySection = new Map<number, typeof this._pendingTableRowInserts>();
+    for (const insert of this._pendingTableRowInserts) {
+      const arr = bySection.get(insert.sectionIndex) || [];
+      arr.push(insert);
+      bySection.set(insert.sectionIndex, arr);
+    }
+
+    for (const [sectionIndex, inserts] of bySection) {
+      const sectionPath = `Contents/section${sectionIndex}.xml`;
+      let xml = await this._zip.file(sectionPath)?.async('string');
+      if (!xml) continue;
+
+      // Process each insert (process in reverse order of afterRowIndex to maintain indices)
+      const sorted = [...inserts].sort((a, b) => b.afterRowIndex - a.afterRowIndex);
+
+      for (const insert of sorted) {
+        const tables = this.findAllTables(xml);
+        if (insert.tableIndex >= tables.length) continue;
+        const tableXml = tables[insert.tableIndex].xml;
+
+        const rows = this.findAllElementsWithDepth(tableXml, 'tr');
+        if (insert.afterRowIndex >= rows.length) continue;
+
+        const templateRow = rows[insert.afterRowIndex];
+
+        // Clone the template row - clear text content but preserve XML structure
+        let newRowXml = templateRow.xml;
+
+        // Clear text inside <hp:t> and <hs:t> tags but preserve the tags themselves
+        newRowXml = newRowXml.replace(/<(hp|hs):t([^>]*)>[\s\S]*?<\/\1:t>/g, '<$1:t$2></$1:t>');
+
+        // Update rowAddr in each cell
+        const newRowAddr = insert.afterRowIndex + 1;
+        newRowXml = newRowXml.replace(/rowAddr="(\d+)"/g, `rowAddr="${newRowAddr}"`);
+
+        // Set cell texts if provided
+        if (insert.cellTexts) {
+          let cellIdx = 0;
+          newRowXml = newRowXml.replace(/<(hp|hs):t([^>]*)><\/\1:t>/g, (match, prefix, attrs) => {
+            if (cellIdx < insert.cellTexts!.length) {
+              const text = this.escapeXml(insert.cellTexts![cellIdx]);
+              cellIdx++;
+              return `<${prefix}:t${attrs}>${text}</${prefix}:t>`;
+            }
+            cellIdx++;
+            return match;
+          });
+        }
+
+        // Insert after the template row
+        const insertPos = templateRow.startIndex + templateRow.xml.length;
+        const newTableXml = tableXml.substring(0, insertPos) + '\n' + newRowXml + tableXml.substring(insertPos);
+
+        // Update rowCnt attribute
+        const updatedTableXml = newTableXml.replace(/rowCnt="(\d+)"/, (_m, cnt) => `rowCnt="${parseInt(cnt) + 1}"`);
+
+        xml = xml.substring(0, tables[insert.tableIndex].startIndex) + updatedTableXml + xml.substring(tables[insert.tableIndex].endIndex);
+      }
+
+      this._zip.file(sectionPath, xml);
+    }
+  }
+
+  private async applyTableRowDeletesToXml(): Promise<void> {
+    if (!this._zip) return;
+
+    const bySection = new Map<number, typeof this._pendingTableRowDeletes>();
+    for (const del of this._pendingTableRowDeletes) {
+      const arr = bySection.get(del.sectionIndex) || [];
+      arr.push(del);
+      bySection.set(del.sectionIndex, arr);
+    }
+
+    for (const [sectionIndex, deletes] of bySection) {
+      const sectionPath = `Contents/section${sectionIndex}.xml`;
+      let xml = await this._zip.file(sectionPath)?.async('string');
+      if (!xml) continue;
+
+      // Process in reverse order
+      const sorted = [...deletes].sort((a, b) => b.rowIndex - a.rowIndex);
+
+      for (const del of sorted) {
+        const tables = this.findAllTables(xml);
+        if (del.tableIndex >= tables.length) continue;
+        const tableXml = tables[del.tableIndex].xml;
+
+        const rows = this.findAllElementsWithDepth(tableXml, 'tr');
+        if (del.rowIndex >= rows.length) continue;
+
+        const row = rows[del.rowIndex];
+        const newTableXml = tableXml.substring(0, row.startIndex) + tableXml.substring(row.endIndex);
+
+        // Update rowCnt
+        const updatedTableXml = newTableXml.replace(/rowCnt="(\d+)"/, (_m, cnt) => `rowCnt="${Math.max(0, parseInt(cnt) - 1)}"`);
+
+        xml = xml.substring(0, tables[del.tableIndex].startIndex) + updatedTableXml + xml.substring(tables[del.tableIndex].endIndex);
+      }
+
+      this._zip.file(sectionPath, xml);
+    }
+  }
+
+  // ============================================================
+  // Table Column Insert/Delete XML Persistence
+  // ============================================================
+
+  private async applyTableColumnInsertsToXml(): Promise<void> {
+    if (!this._zip) return;
+
+    const bySection = new Map<number, typeof this._pendingTableColumnInserts>();
+    for (const insert of this._pendingTableColumnInserts) {
+      const arr = bySection.get(insert.sectionIndex) || [];
+      arr.push(insert);
+      bySection.set(insert.sectionIndex, arr);
+    }
+
+    for (const [sectionIndex, inserts] of bySection) {
+      const sectionPath = `Contents/section${sectionIndex}.xml`;
+      let xml = await this._zip.file(sectionPath)?.async('string');
+      if (!xml) continue;
+
+      for (const insert of inserts) {
+        const tables = this.findAllTables(xml);
+        if (insert.tableIndex >= tables.length) continue;
+        let tableXml = tables[insert.tableIndex].xml;
+
+        const rows = this.findAllElementsWithDepth(tableXml, 'tr');
+
+        // Process rows in reverse to maintain indices
+        for (let r = rows.length - 1; r >= 0; r--) {
+          const row = rows[r];
+          const cells = this.findAllElementsWithDepth(row.xml, 'tc');
+
+          // Find template cell at afterColIndex
+          let templateCell: { xml: string; startIndex: number; endIndex: number } | null = null;
+          for (const cell of cells) {
+            const colAddrMatch = cell.xml.match(/colAddr="(\d+)"/);
+            if (colAddrMatch && parseInt(colAddrMatch[1]) === insert.afterColIndex) {
+              templateCell = cell;
+              break;
+            }
+          }
+          if (!templateCell) {
+            // Fallback: use last cell
+            templateCell = cells[cells.length - 1] || null;
+          }
+          if (!templateCell) continue;
+
+          // Clone template and clear text
+          let newCellXml = templateCell.xml;
+          newCellXml = newCellXml.replace(/<(hp|hs):t([^>]*)>[\s\S]*?<\/\1:t>/g, '<$1:t$2></$1:t>');
+
+          // Update colAddr to afterColIndex + 1
+          newCellXml = newCellXml.replace(/colAddr="(\d+)"/, `colAddr="${insert.afterColIndex + 1}"`);
+
+          // Also update <hp:cellAddr colAddr="..."> inside the cell
+          newCellXml = newCellXml.replace(/<(hp|hs):cellAddr([^>]*)colAddr="(\d+)"/, `<$1:cellAddr$2colAddr="${insert.afterColIndex + 1}"`);
+
+          // Shift colAddr of subsequent cells
+          let updatedRowXml = row.xml;
+          for (let c = cells.length - 1; c >= 0; c--) {
+            const cell = cells[c];
+            const colAddrMatch = cell.xml.match(/colAddr="(\d+)"/);
+            if (colAddrMatch) {
+              const addr = parseInt(colAddrMatch[1]);
+              if (addr > insert.afterColIndex) {
+                const shifted = cell.xml.replace(/colAddr="(\d+)"/, `colAddr="${addr + 1}"`);
+                updatedRowXml = updatedRowXml.substring(0, cell.startIndex) + shifted + updatedRowXml.substring(cell.endIndex);
+              }
+            }
+          }
+
+          // Insert new cell after template
+          const insertPos = templateCell.startIndex + templateCell.xml.length;
+          updatedRowXml = updatedRowXml.substring(0, insertPos) + '\n' + newCellXml + updatedRowXml.substring(insertPos);
+
+          // Replace row in table
+          tableXml = tableXml.substring(0, row.startIndex) + updatedRowXml + tableXml.substring(row.endIndex);
+        }
+
+        // Update colCnt
+        tableXml = tableXml.replace(/colCnt="(\d+)"/, (_m, cnt) => `colCnt="${parseInt(cnt) + 1}"`);
+
+        xml = xml.substring(0, tables[insert.tableIndex].startIndex) + tableXml + xml.substring(tables[insert.tableIndex].endIndex);
+      }
+
+      this._zip.file(sectionPath, xml);
+    }
+  }
+
+  private async applyTableColumnDeletesToXml(): Promise<void> {
+    if (!this._zip) return;
+
+    const bySection = new Map<number, typeof this._pendingTableColumnDeletes>();
+    for (const del of this._pendingTableColumnDeletes) {
+      const arr = bySection.get(del.sectionIndex) || [];
+      arr.push(del);
+      bySection.set(del.sectionIndex, arr);
+    }
+
+    for (const [sectionIndex, deletes] of bySection) {
+      const sectionPath = `Contents/section${sectionIndex}.xml`;
+      let xml = await this._zip.file(sectionPath)?.async('string');
+      if (!xml) continue;
+
+      for (const del of deletes) {
+        const tables = this.findAllTables(xml);
+        if (del.tableIndex >= tables.length) continue;
+        let tableXml = tables[del.tableIndex].xml;
+
+        const rows = this.findAllElementsWithDepth(tableXml, 'tr');
+
+        // Process rows in reverse
+        for (let r = rows.length - 1; r >= 0; r--) {
+          const row = rows[r];
+          const cells = this.findAllElementsWithDepth(row.xml, 'tc');
+
+          let updatedRowXml = row.xml;
+
+          // Find and remove cell at colIndex, shift subsequent
+          for (let c = cells.length - 1; c >= 0; c--) {
+            const cell = cells[c];
+            const colAddrMatch = cell.xml.match(/colAddr="(\d+)"/);
+            if (!colAddrMatch) continue;
+            const addr = parseInt(colAddrMatch[1]);
+
+            if (addr === del.colIndex) {
+              // Remove this cell
+              updatedRowXml = updatedRowXml.substring(0, cell.startIndex) + updatedRowXml.substring(cell.endIndex);
+            } else if (addr > del.colIndex) {
+              // Shift down
+              const shifted = cell.xml.replace(/colAddr="(\d+)"/, `colAddr="${addr - 1}"`);
+              updatedRowXml = updatedRowXml.substring(0, cell.startIndex) + shifted + updatedRowXml.substring(cell.endIndex);
+            }
+          }
+
+          tableXml = tableXml.substring(0, row.startIndex) + updatedRowXml + tableXml.substring(row.endIndex);
+        }
+
+        // Update colCnt
+        tableXml = tableXml.replace(/colCnt="(\d+)"/, (_m, cnt) => `colCnt="${Math.max(0, parseInt(cnt) - 1)}"`);
+
+        xml = xml.substring(0, tables[del.tableIndex].startIndex) + tableXml + xml.substring(tables[del.tableIndex].endIndex);
+      }
+
+      this._zip.file(sectionPath, xml);
+    }
+  }
+
+  // ============================================================
+  // Paragraph Copy/Move XML Persistence
+  // ============================================================
+
+  /**
+   * Find top-level paragraph/table XML elements in section XML with full content.
+   * Returns elements with their complete XML (including closing tags).
+   */
+  private findTopLevelFullElements(sectionXml: string): Array<{ xml: string; startIndex: number; endIndex: number; type: 'p' | 'tbl' }> {
+    const results: Array<{ xml: string; startIndex: number; endIndex: number; type: 'p' | 'tbl' }> = [];
+    const topLevel = this.findTopLevelElements(sectionXml);
+
+    for (const elem of topLevel) {
+      // Find the matching closing tag
+      const prefixMatch = elem.content.match(/<(hp|hs|hc):(p|tbl)/);
+      if (!prefixMatch) continue;
+      const prefix = prefixMatch[1];
+      const tag = prefixMatch[2];
+      const closeTag = `</${prefix}:${tag}>`;
+
+      // For paragraphs, find the close tag accounting for nesting
+      if (tag === 'p') {
+        // Paragraphs don't nest, so find the next close tag
+        const closeIdx = sectionXml.indexOf(closeTag, elem.start);
+        if (closeIdx !== -1) {
+          const endIndex = closeIdx + closeTag.length;
+          results.push({
+            xml: sectionXml.substring(elem.start, endIndex),
+            startIndex: elem.start,
+            endIndex,
+            type: 'p',
+          });
+        }
+      } else if (tag === 'tbl') {
+        // Tables can nest, use depth tracking
+        let depth = 1;
+        let pos = elem.start + elem.tagLength;
+        const openTag = `<${prefix}:tbl`;
+        while (depth > 0 && pos < sectionXml.length) {
+          const nextOpen = sectionXml.indexOf(openTag, pos);
+          const nextClose = sectionXml.indexOf(closeTag, pos);
+          if (nextClose === -1) break;
+          if (nextOpen !== -1 && nextOpen < nextClose) {
+            depth++;
+            pos = nextOpen + 1;
+          } else {
+            depth--;
+            if (depth === 0) {
+              const endIndex = nextClose + closeTag.length;
+              results.push({
+                xml: sectionXml.substring(elem.start, endIndex),
+                startIndex: elem.start,
+                endIndex,
+                type: 'tbl',
+              });
+            }
+            pos = nextClose + 1;
+          }
+        }
+      }
+    }
+
+    return results;
+  }
+
+  private async applyParagraphCopiesToXml(): Promise<void> {
+    if (!this._zip) return;
+
+    for (const copy of this._pendingParagraphCopies) {
+      const srcPath = `Contents/section${copy.sourceSection}.xml`;
+      const srcXml = await this._zip.file(srcPath)?.async('string');
+      if (!srcXml) continue;
+
+      const srcElements = this.findTopLevelFullElements(srcXml);
+      if (copy.sourceParagraph >= srcElements.length) continue;
+
+      const srcElem = srcElements[copy.sourceParagraph];
+      if (srcElem.type !== 'p') continue;
+
+      // Clone and regenerate ID
+      let clonedXml = srcElem.xml;
+      const newId = Math.random().toString(36).substring(2, 11);
+      clonedXml = clonedXml.replace(/<(hp|hs):p\s+([^>]*?)id="[^"]*"/, `<$1:p $2id="${newId}"`);
+
+      // Read target section
+      const tgtPath = `Contents/section${copy.targetSection}.xml`;
+      let tgtXml = await this._zip.file(tgtPath)?.async('string');
+      if (!tgtXml) continue;
+
+      const tgtElements = this.findTopLevelFullElements(tgtXml);
+
+      // Insert after targetAfter element
+      let insertPos: number;
+      if (copy.targetAfter >= 0 && copy.targetAfter < tgtElements.length) {
+        insertPos = tgtElements[copy.targetAfter].endIndex;
+      } else if (copy.targetAfter < 0) {
+        // Insert at beginning - find first element
+        if (tgtElements.length > 0) {
+          insertPos = tgtElements[0].startIndex;
+        } else {
+          const secMatch = tgtXml.match(/<(?:hs|hp):sec[^>]*>/);
+          insertPos = secMatch ? secMatch.index! + secMatch[0].length : 0;
+        }
+      } else {
+        // After last element
+        insertPos = tgtElements.length > 0 ? tgtElements[tgtElements.length - 1].endIndex : tgtXml.lastIndexOf('</');
+      }
+
+      tgtXml = tgtXml.substring(0, insertPos) + '\n' + clonedXml + tgtXml.substring(insertPos);
+      this._zip.file(tgtPath, tgtXml);
+    }
+  }
+
+  private async applyParagraphMovesToXml(): Promise<void> {
+    if (!this._zip) return;
+
+    for (const move of this._pendingParagraphMoves) {
+      const srcPath = `Contents/section${move.sourceSection}.xml`;
+      let srcXml = await this._zip.file(srcPath)?.async('string');
+      if (!srcXml) continue;
+
+      const srcElements = this.findTopLevelFullElements(srcXml);
+      if (move.sourceParagraph >= srcElements.length) continue;
+
+      const srcElem = srcElements[move.sourceParagraph];
+      if (srcElem.type !== 'p') continue;
+
+      const extractedXml = srcElem.xml;
+
+      // Remove from source
+      srcXml = srcXml.substring(0, srcElem.startIndex) + srcXml.substring(srcElem.endIndex);
+      this._zip.file(srcPath, srcXml);
+
+      // Read target section (re-read if same section since we modified it)
+      const tgtPath = `Contents/section${move.targetSection}.xml`;
+      let tgtXml = await this._zip.file(tgtPath)?.async('string');
+      if (!tgtXml) continue;
+
+      const tgtElements = this.findTopLevelFullElements(tgtXml);
+
+      // Adjust target index for same-section moves
+      let adjustedTarget = move.targetAfter;
+      if (move.sourceSection === move.targetSection && move.sourceParagraph < move.targetAfter) {
+        adjustedTarget -= 1;
+      }
+
+      let insertPos: number;
+      if (adjustedTarget >= 0 && adjustedTarget < tgtElements.length) {
+        insertPos = tgtElements[adjustedTarget].endIndex;
+      } else if (adjustedTarget < 0) {
+        if (tgtElements.length > 0) {
+          insertPos = tgtElements[0].startIndex;
+        } else {
+          const secMatch = tgtXml.match(/<(?:hs|hp):sec[^>]*>/);
+          insertPos = secMatch ? secMatch.index! + secMatch[0].length : 0;
+        }
+      } else {
+        insertPos = tgtElements.length > 0 ? tgtElements[tgtElements.length - 1].endIndex : tgtXml.lastIndexOf('</');
+      }
+
+      tgtXml = tgtXml.substring(0, insertPos) + '\n' + extractedXml + tgtXml.substring(insertPos);
+      this._zip.file(tgtPath, tgtXml);
+    }
+  }
+
+  // ============================================================
+  // Header/Footer XML Persistence
+  // ============================================================
+
+  private async applyHeaderFooterUpdatesToXml(): Promise<void> {
+    if (!this._zip) return;
+
+    // Collect all updates by section
+    const updatesBySection = new Map<number, { header?: string; footer?: string }>();
+
+    for (const update of this._pendingHeaderUpdates) {
+      const existing = updatesBySection.get(update.sectionIndex) || {};
+      existing.header = update.text;
+      updatesBySection.set(update.sectionIndex, existing);
+    }
+
+    for (const update of this._pendingFooterUpdates) {
+      const existing = updatesBySection.get(update.sectionIndex) || {};
+      existing.footer = update.text;
+      updatesBySection.set(update.sectionIndex, existing);
+    }
+
+    for (const [sectionIndex, updates] of updatesBySection) {
+      const sectionPath = `Contents/section${sectionIndex}.xml`;
+      let xml = await this._zip.file(sectionPath)?.async('string');
+      if (!xml) continue;
+
+      // Find <hp:secPr> or <hs:secPr>
+      const secPrMatch = xml.match(/<(hp|hs):secPr[^>]*>/);
+      if (!secPrMatch) continue;
+
+      const secPrPrefix = secPrMatch[1];
+      const secPrStart = secPrMatch.index!;
+      const secPrCloseTag = `</${secPrPrefix}:secPr>`;
+      const secPrEnd = xml.indexOf(secPrCloseTag, secPrStart);
+      if (secPrEnd === -1) continue;
+
+      let secPrContent = xml.substring(secPrStart, secPrEnd + secPrCloseTag.length);
+
+      // Build header/footer XML
+      const buildParagraphXml = (text: string, prefix: string): string => {
+        const pid = Math.random().toString(36).substring(2, 11);
+        return `<${prefix}:p id="${pid}" paraPrIDRef="0" styleIDRef="0">
+              <${prefix}:run charPrIDRef="0">
+                <${prefix}:t>${this.escapeXml(text)}</${prefix}:t>
+              </${prefix}:run>
+            </${prefix}:p>`;
+      };
+
+      // Look for existing <hp:headerFooter>
+      const hfOpenRegex = new RegExp(`<${secPrPrefix}:headerFooter[^>]*>`);
+      const hfCloseTag = `</${secPrPrefix}:headerFooter>`;
+      const hfMatch = secPrContent.match(hfOpenRegex);
+
+      if (hfMatch) {
+        // headerFooter exists - update/create header and footer inside it
+        const hfStart = hfMatch.index!;
+        const hfEnd = secPrContent.indexOf(hfCloseTag, hfStart);
+        if (hfEnd !== -1) {
+          let hfContent = secPrContent.substring(hfStart, hfEnd + hfCloseTag.length);
+
+          if (updates.header !== undefined) {
+            const headerRegex = new RegExp(`<${secPrPrefix}:header[^>]*>[\\s\\S]*?<\\/${secPrPrefix}:header>`);
+            const headerXml = `<${secPrPrefix}:header>
+            <${secPrPrefix}:subList>
+              ${buildParagraphXml(updates.header, secPrPrefix)}
+            </${secPrPrefix}:subList>
+          </${secPrPrefix}:header>`;
+
+            if (headerRegex.test(hfContent)) {
+              hfContent = hfContent.replace(headerRegex, headerXml);
+            } else {
+              // Insert before closing headerFooter
+              hfContent = hfContent.replace(hfCloseTag, headerXml + '\n' + hfCloseTag);
+            }
+          }
+
+          if (updates.footer !== undefined) {
+            const footerRegex = new RegExp(`<${secPrPrefix}:footer[^>]*>[\\s\\S]*?<\\/${secPrPrefix}:footer>`);
+            const footerXml = `<${secPrPrefix}:footer>
+            <${secPrPrefix}:subList>
+              ${buildParagraphXml(updates.footer, secPrPrefix)}
+            </${secPrPrefix}:subList>
+          </${secPrPrefix}:footer>`;
+
+            if (footerRegex.test(hfContent)) {
+              hfContent = hfContent.replace(footerRegex, footerXml);
+            } else {
+              hfContent = hfContent.replace(hfCloseTag, footerXml + '\n' + hfCloseTag);
+            }
+          }
+
+          secPrContent = secPrContent.substring(0, hfStart) + hfContent + secPrContent.substring(hfEnd + hfCloseTag.length);
+        }
+      } else {
+        // No headerFooter - create one before </secPr>
+        let hfXml = `<${secPrPrefix}:headerFooter>`;
+
+        if (updates.header !== undefined) {
+          hfXml += `\n          <${secPrPrefix}:header>
+            <${secPrPrefix}:subList>
+              ${buildParagraphXml(updates.header, secPrPrefix)}
+            </${secPrPrefix}:subList>
+          </${secPrPrefix}:header>`;
+        }
+
+        if (updates.footer !== undefined) {
+          hfXml += `\n          <${secPrPrefix}:footer>
+            <${secPrPrefix}:subList>
+              ${buildParagraphXml(updates.footer, secPrPrefix)}
+            </${secPrPrefix}:subList>
+          </${secPrPrefix}:footer>`;
+        }
+
+        hfXml += `\n        </${secPrPrefix}:headerFooter>`;
+
+        secPrContent = secPrContent.replace(secPrCloseTag, hfXml + '\n' + secPrCloseTag);
+      }
+
+      xml = xml.substring(0, secPrStart) + secPrContent + xml.substring(secPrEnd + secPrCloseTag.length);
+      this._zip.file(sectionPath, xml);
+    }
   }
 }
