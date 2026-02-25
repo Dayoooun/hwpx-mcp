@@ -12638,13 +12638,85 @@ export class HwpxDocument {
       for (const del of sorted) {
         const tables = this.findAllTables(xml);
         if (del.tableIndex >= tables.length) continue;
-        const tableXml = tables[del.tableIndex].xml;
+        let tableXml = tables[del.tableIndex].xml;
 
         const rows = this.findAllElementsWithDepth(tableXml, 'tr');
         if (del.rowIndex >= rows.length) continue;
 
-        const row = rows[del.rowIndex];
-        const newTableXml = tableXml.substring(0, row.startIndex) + tableXml.substring(row.endIndex);
+        // --- Fix rowSpan for cells in OTHER rows that span into the deleted row ---
+        // Process rows before the deleted row (in reverse to preserve indices)
+        for (let r = del.rowIndex - 1; r >= 0; r--) {
+          const rowXml = rows[r].xml;
+          const cells = this.findAllElementsWithDepth(rowXml, 'tc');
+          let updatedRowXml = rowXml;
+          let offsetShift = 0;
+
+          for (const cell of cells) {
+            const rowAddrMatch = cell.xml.match(/rowAddr="(\d+)"/);
+            const rowSpanMatch = cell.xml.match(/rowSpan="(\d+)"/);
+            if (!rowAddrMatch || !rowSpanMatch) continue;
+
+            const cellRowAddr = parseInt(rowAddrMatch[1]);
+            const cellRowSpan = parseInt(rowSpanMatch[1]);
+            if (cellRowSpan <= 1) continue;
+
+            // Check if this cell's span covers the deleted row
+            if (cellRowAddr + cellRowSpan > del.rowIndex) {
+              const newSpan = cellRowSpan - 1;
+              const oldStr = `rowSpan="${cellRowSpan}"`;
+              const newStr = `rowSpan="${newSpan}"`;
+              const updatedCellXml = cell.xml.replace(oldStr, newStr);
+
+              const adjustedStart = cell.startIndex + offsetShift;
+              const adjustedEnd = cell.endIndex + offsetShift;
+              updatedRowXml = updatedRowXml.substring(0, adjustedStart) + updatedCellXml + updatedRowXml.substring(adjustedEnd);
+              offsetShift += updatedCellXml.length - cell.xml.length;
+            }
+          }
+
+          if (updatedRowXml !== rowXml) {
+            tableXml = tableXml.substring(0, rows[r].startIndex) + updatedRowXml + tableXml.substring(rows[r].endIndex);
+          }
+        }
+
+        // Re-find rows after potential rowSpan fixes (indices may have shifted)
+        const rowsAfterSpanFix = this.findAllElementsWithDepth(tableXml, 'tr');
+        if (del.rowIndex >= rowsAfterSpanFix.length) continue;
+
+        // --- Remove the target row ---
+        const row = rowsAfterSpanFix[del.rowIndex];
+        let newTableXml = tableXml.substring(0, row.startIndex) + tableXml.substring(row.endIndex);
+
+        // --- Re-number rowAddr for all remaining rows ---
+        const remainingRows = this.findAllElementsWithDepth(newTableXml, 'tr');
+        // Process in reverse to preserve string indices
+        for (let r = remainingRows.length - 1; r >= 0; r--) {
+          const rRow = remainingRows[r];
+          const cells = this.findAllElementsWithDepth(rRow.xml, 'tc');
+          let updatedRowXml = rRow.xml;
+          let offsetShift = 0;
+
+          for (const cell of cells) {
+            const rowAddrMatch = cell.xml.match(/rowAddr="(\d+)"/);
+            if (!rowAddrMatch) continue;
+            const oldAddr = parseInt(rowAddrMatch[1]);
+            if (oldAddr <= del.rowIndex) continue; // Only shift rows after deleted one
+
+            const newAddr = oldAddr - 1;
+            const oldStr = `rowAddr="${oldAddr}"`;
+            const newStr = `rowAddr="${newAddr}"`;
+            const updatedCellXml = cell.xml.replace(oldStr, newStr);
+
+            const adjustedStart = cell.startIndex + offsetShift;
+            const adjustedEnd = cell.endIndex + offsetShift;
+            updatedRowXml = updatedRowXml.substring(0, adjustedStart) + updatedCellXml + updatedRowXml.substring(adjustedEnd);
+            offsetShift += updatedCellXml.length - cell.xml.length;
+          }
+
+          if (updatedRowXml !== rRow.xml) {
+            newTableXml = newTableXml.substring(0, rRow.startIndex) + updatedRowXml + newTableXml.substring(rRow.endIndex);
+          }
+        }
 
         // Update rowCnt
         const updatedTableXml = newTableXml.replace(/rowCnt="(\d+)"/, (_m, cnt) => `rowCnt="${Math.max(0, parseInt(cnt) - 1)}"`);
