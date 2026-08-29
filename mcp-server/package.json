@@ -5,8 +5,8 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
-    "hwpx-mcp": "./dist/index.js",
-    "dayoun-hwpx-mcp": "./dist/index.js"
+    "hwpx-mcp": "dist/index.js",
+    "dayoun-hwpx-mcp": "dist/index.js"
   },
   "files": [
     "dist",
