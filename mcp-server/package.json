@@ -1,5 +1,5 @@
 {
-  "name": "@dayoun/hwpx-mcp",
+  "name": "@kimdayoun/hwpx-mcp",
   "version": "0.3.0",
   "description": "한글 문서(HWPX)를 읽고 쓰는 MCP 서버 — 125개 도구. 문단·표·스타일·이미지·머리말/꼬리말까지 XML 수준으로 편집한다. MCP Server for Korean HWPX documents.",
   "main": "dist/index.js",

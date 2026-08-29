@@ -1,7 +1,11 @@
-# HWPX MCP Server — `@dayoun/hwpx-mcp`
+# HWPX MCP Server — `@kimdayoun/hwpx-mcp`
+
+[![npm](https://img.shields.io/npm/v/@kimdayoun/hwpx-mcp)](https://www.npmjs.com/package/@kimdayoun/hwpx-mcp)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![MCP](https://img.shields.io/badge/MCP-Compatible-blue)](https://modelcontextprotocol.io/)
 
 > **이 저장소가 원본입니다.** 정본: https://github.com/Dayoooun/hwpx-mcp
-> npm 배포본은 **`@dayoun/hwpx-mcp`** 하나뿐입니다.
+> npm 배포본은 **`@kimdayoun/hwpx-mcp`** 하나뿐입니다.
 > `hwpx-mcp`, `hwpx-mcp-server` 등 스코프 없는 동명 패키지는 이 프로젝트와 무관한 제3자 배포본입니다.
 
 HWP/HWPX 문서를 AI로 읽고 편집할 수 있는 Model Context Protocol (MCP) 서버입니다.
@@ -17,13 +21,13 @@ HWP/HWPX 문서를 AI로 읽고 편집할 수 있는 Model Context Protocol (MCP
 ## 설치
 
 ```bash
-npm install -g @dayoun/hwpx-mcp
+npm install -g @kimdayoun/hwpx-mcp
 ```
 
 설치 없이 바로 실행하려면:
 
 ```bash
-npx -y @dayoun/hwpx-mcp
+npx -y @kimdayoun/hwpx-mcp
 ```
 
 소스에서 빌드하려면:
@@ -46,7 +50,7 @@ npm run build
   "mcpServers": {
     "hwpx-mcp": {
       "command": "npx",
-      "args": ["-y", "@dayoun/hwpx-mcp"]
+      "args": ["-y", "@kimdayoun/hwpx-mcp"]
     }
   }
 }
@@ -62,7 +66,7 @@ npm run build
   "mcpServers": {
     "hwpx-mcp": {
       "command": "npx",
-      "args": ["-y", "@dayoun/hwpx-mcp"]
+      "args": ["-y", "@kimdayoun/hwpx-mcp"]
     }
   }
 }
