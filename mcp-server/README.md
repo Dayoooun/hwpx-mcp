@@ -1,10 +1,14 @@
-# HWPX MCP Server
+# HWPX MCP Server — `@dayoun/hwpx-mcp`
+
+> **이 저장소가 원본입니다.** 정본: https://github.com/Dayoooun/hwpx-mcp
+> npm 배포본은 **`@dayoun/hwpx-mcp`** 하나뿐입니다.
+> `hwpx-mcp`, `hwpx-mcp-server` 등 스코프 없는 동명 패키지는 이 프로젝트와 무관한 제3자 배포본입니다.
 
 HWP/HWPX 문서를 AI로 읽고 편집할 수 있는 Model Context Protocol (MCP) 서버입니다.
 
 ## 특징
 
-- **89개 도구**: 문서의 모든 요소를 프로그래밍 방식으로 제어
+- **125개 도구**: 문서의 모든 요소를 프로그래밍 방식으로 제어
 - **HWPX 완전 편집**: 텍스트, 테이블, 이미지, 스타일, 머리글/꼬리글 등
 - **HWP 읽기 지원**: 레거시 HWP 바이너리 포맷 읽기
 - **XML 무결성 보장**: 모든 편집이 HWPML 규격에 맞게 XML에 저장
@@ -13,7 +17,20 @@ HWP/HWPX 문서를 AI로 읽고 편집할 수 있는 Model Context Protocol (MCP
 ## 설치
 
 ```bash
-cd mcp-server
+npm install -g @dayoun/hwpx-mcp
+```
+
+설치 없이 바로 실행하려면:
+
+```bash
+npx -y @dayoun/hwpx-mcp
+```
+
+소스에서 빌드하려면:
+
+```bash
+git clone https://github.com/Dayoooun/hwpx-mcp.git
+cd hwpx-mcp/mcp-server
 npm install
 npm run build
 ```
@@ -28,8 +45,8 @@ npm run build
 {
   "mcpServers": {
     "hwpx-mcp": {
-      "command": "node",
-      "args": ["/absolute/path/to/mcp-server/dist/index.js"]
+      "command": "npx",
+      "args": ["-y", "@dayoun/hwpx-mcp"]
     }
   }
 }
@@ -44,14 +61,14 @@ npm run build
 {
   "mcpServers": {
     "hwpx-mcp": {
-      "command": "node",
-      "args": ["/absolute/path/to/mcp-server/dist/index.js"]
+      "command": "npx",
+      "args": ["-y", "@dayoun/hwpx-mcp"]
     }
   }
 }
 ```
 
-## 도구 목록 (89개)
+## 도구 목록 (125개)
 
 ### 문서 관리 (7개)
 | 도구 | 설명 |

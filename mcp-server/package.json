@@ -1,13 +1,52 @@
 {
-  "name": "hwpx-mcp-server",
-  "version": "0.2.0",
-  "description": "MCP Server for HWPX document manipulation",
+  "name": "@dayoun/hwpx-mcp",
+  "version": "0.3.0",
+  "description": "한글 문서(HWPX)를 읽고 쓰는 MCP 서버 — 125개 도구. 문단·표·스타일·이미지·머리말/꼬리말까지 XML 수준으로 편집한다. MCP Server for Korean HWPX documents.",
   "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "bin": {
-    "hwpx-mcp-server": "./dist/index.js"
+    "hwpx-mcp": "./dist/index.js",
+    "dayoun-hwpx-mcp": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "hwpx",
+    "hwp",
+    "hangul",
+    "한글",
+    "korean",
+    "document",
+    "claude",
+    "codex",
+    "llm",
+    "ai"
+  ],
+  "author": "Dayoun Kim <dayoooun@gmail.com>",
+  "license": "MIT",
+  "homepage": "https://github.com/Dayoooun/hwpx-mcp#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Dayoooun/hwpx-mcp.git",
+    "directory": "mcp-server"
+  },
+  "bugs": {
+    "url": "https://github.com/Dayoooun/hwpx-mcp/issues"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "build": "tsc",
+    "prepublishOnly": "npm run build",
     "start": "node dist/index.js",
     "test": "vitest run",
     "test:watch": "vitest"
