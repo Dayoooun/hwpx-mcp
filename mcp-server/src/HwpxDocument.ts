@@ -7599,10 +7599,10 @@ export class HwpxDocument {
         updates.sort((a, b) => a.runIndex - b.runIndex);
 
         // Apply the update directly using pre-computed target location
-        if (updates.length > 1) {
+        if (updates.length > 1 || /<hp:t\b/.test(target.xml)) {
           xml = this.replaceRunsInParagraphDirect(xml, target, updates);
         } else {
-          // For single update, use the existing method with pre-computed target
+          // Empty runs without text tags need a new hp:t element.
           xml = this.replaceTextInElementDirect(xml, target, updates[0].oldText, updates[0].newText);
         }
       }
@@ -8483,32 +8483,46 @@ export class HwpxDocument {
     // Memory model only counts runs with text, not runs with only <hp:ctrl> etc.
     const textRuns = runs.filter(run => /<hp:t\b/.test(run.xml) || /<hp:t\s*\/>/.test(run.xml));
 
+    // The parser creates a model run per non-empty hp:t, not per hp:run.
+    // Merge those updates back into their shared XML run without losing a suffix.
+    const xmlRunUpdates = new Map<number, string>();
+    let modelRunIndex = 0;
+    for (let i = 0; i < textRuns.length; i++) {
+      const textNodes = [...textRuns[i].xml.matchAll(/<hp:t\b[^>]*>([^<]+)<\/hp:t>/g)];
+      const count = Math.max(1, textNodes.length);
+      let changed = false;
+      let escapedText = '';
+      for (let offset = 0; offset < count; offset++) {
+        const index = modelRunIndex + offset;
+        if (updateMap.has(index)) {
+          escapedText += this.escapeXml(updateMap.get(index)!);
+          changed = true;
+        } else {
+          escapedText += textNodes[offset]?.[1] || '';
+        }
+      }
+      if (changed) xmlRunUpdates.set(i, escapedText);
+      modelRunIndex += count;
+    }
+
     // Process text runs in reverse order to maintain positions
     for (let i = textRuns.length - 1; i >= 0; i--) {
-      if (!updateMap.has(i)) continue;
+      if (!xmlRunUpdates.has(i)) continue;
 
       const run = textRuns[i];
-      const newText = updateMap.get(i)!;
-      const escapedNew = this.escapeXml(newText);
+      const escapedNew = xmlRunUpdates.get(i)!;
       let newRunXml = run.xml;
 
-      // Find and replace hp:t content within this run
-      if (/<hp:t\s*\/>/.test(newRunXml)) {
-        // Self-closing tag: <hp:t/> -> <hp:t>newText</hp:t>
-        newRunXml = newRunXml.replace(/<hp:t\s*\/>/, `<hp:t>${escapedNew}</hp:t>`);
-      } else if (/<hp:t\b[^>]*>/.test(newRunXml)) {
-        // Has content: replace first hp:t content only
-        newRunXml = newRunXml.replace(
-          /(<hp:t\b[^>]*>)[^<]*(<\/hp:t>)/,
-          `$1${escapedNew}$2`
-        );
-      } else {
-        // No hp:t tag - add one after the opening hp:run tag
-        newRunXml = newRunXml.replace(
-          /(<hp:run\b[^>]*>)/,
-          `$1<hp:t>${escapedNew}</hp:t>`
-        );
-      }
+      // Write each XML run's combined text once, preserving text-tag attributes.
+      let textWritten = false;
+      newRunXml = newRunXml.replace(
+        /<hp:t\b([^>]*?)\/>|<hp:t\b([^>]*)>[^<]*<\/hp:t>/g,
+        (_match, selfClosingAttrs: string | undefined, attrs: string | undefined) => {
+          const text = textWritten ? '' : escapedNew;
+          textWritten = true;
+          return `<hp:t${selfClosingAttrs ?? attrs ?? ''}>${text}</hp:t>`;
+        }
+      );
 
       // Replace in paragraph XML
       paragraphXml = paragraphXml.slice(0, run.start) + newRunXml + paragraphXml.slice(run.end);

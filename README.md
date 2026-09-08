@@ -219,6 +219,11 @@ claude mcp add hwpx-mcp node /path/to/hwpx-mcp/mcp-server/dist/index.js
 | `save_document` | 문서 저장 (백업/무결성 검증 지원) | `doc_id`, `output_path?`, `create_backup?`, `verify_integrity?` |
 | `list_open_documents` | 현재 열린 문서 목록 조회 | - |
 
+**보안 범위:** 현재 npm 서버와 VS Code 번들 서버 모두 파일 경로를 작업 폴더 안으로 제한하지 않습니다.
+절대경로·상위경로·디렉터리 심볼릭 링크를 통한 외부 파일 접근이 가능하므로, 신뢰하는 로컬 MCP
+클라이언트에서만 사용하고 OS 권한 또는 컨테이너로 접근 범위를 제한하세요.
+npm 서버의 저장 임시 파일·백업 보호는 파일 접근 범위 제한을 대신하지 않습니다.
+
 ### 📄 문서 정보 (Document Info) - 5개
 
 | Tool | 설명 | 주요 파라미터 |
@@ -479,6 +484,10 @@ await mcp.replace_text_in_cell({
   - content.hpf 매니페스트 자동 등록
   - 파일 손상 없이 이미지 삽입 보장
 
+### v0.3.1 (npm server maintenance)
+- npm 서버의 임시 파일·백업 링크 공격 방어 및 저장 실패 시 원본 보존
+- 분리된 텍스트 태그 저장 누락 수정, 의존성 갱신 및 이식 가능한 회귀 테스트 보완
+- 기존 파일 경로 사용법 유지. 작업 폴더 접근 제한 및 수식 저장 수정은 포함하지 않음
 ### v0.3.0 (Nested Table Support)
 - 🆕 **New Feature**: `insert_nested_table` - 테이블 셀 안에 중첩 테이블 삽입 기능
   - 부모 테이블의 특정 셀에 새 테이블을 삽입

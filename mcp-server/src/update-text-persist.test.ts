@@ -1,61 +1,35 @@
-import { describe, it, expect, afterAll } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { HwpxDocument } from './HwpxDocument';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
 describe('Update paragraph text persistence', () => {
-  const testFile = 'D:/rlaek/doc-cursor(26new)/26년-지원사업/초기창업패키지-딥테크특화형/별첨/(별첨1) 2026년도 초기창업패키지(딥테크 특화형) 사업계획서 양식.hwpx';
-  let tempFile: string;
-
-  afterAll(() => {
-    // Clean up temp file
-    if (tempFile && fs.existsSync(tempFile)) {
-      fs.unlinkSync(tempFile);
-    }
-  });
-
   it('should persist paragraph text update after save and reload', async () => {
-    // 1. Open document using createFromBuffer
-    const buffer = fs.readFileSync(testFile);
-    const doc = await HwpxDocument.createFromBuffer('test-id', testFile, buffer);
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'hwpx-text-persist-'));
+    try {
+      const testFile = path.join(directory, '사업계획서 양식.hwpx');
+      const fixture = HwpxDocument.createNew('fixture');
+      fixture.insertParagraph(0, 0, '앞 문단 보존');
+      fixture.insertParagraph(0, 1, ' ◦ 수정 대상 항목');
+      fixture.insertParagraph(0, 2, '뒤 문단 보존');
+      fs.writeFileSync(testFile, await fixture.save());
 
-    // 2. Find paragraph with " ◦ "
-    const paragraphs = doc.getParagraphs(0);
-    const targetPara = paragraphs.find(p => p.text.includes(' ◦ '));
+      const doc = await HwpxDocument.createFromBuffer('test-id', testFile, fs.readFileSync(testFile));
+      const paragraphs = doc.getParagraphs(0);
+      const target = paragraphs.find(paragraph => paragraph.text.includes(' ◦ '));
+      expect(target).toBeDefined();
+      const newText = '수정 완료: 매출 <계획> & 검토';
+      doc.updateParagraphText(0, target!.index, 0, newText);
+      expect(doc.getParagraph(0, target!.index)?.text).toBe(newText);
+      fs.writeFileSync(testFile, await doc.save());
 
-    expect(targetPara).toBeDefined();
-    console.log(`Found paragraph at index ${targetPara!.index} with text: "${targetPara!.text}"`);
-    const originalText = targetPara!.text;
-
-    // 3. Update paragraph text
-    const newText = '테스트 업데이트 ' + Date.now();
-    doc.updateParagraphText(0, targetPara!.index, 0, newText);
-
-    // Verify in-memory update
-    const updatedParas = doc.getParagraphs(0);
-    const updatedPara = updatedParas.find(p => p.index === targetPara!.index);
-    expect(updatedPara?.text).toBe(newText);
-    console.log(`In-memory update verified: "${updatedPara?.text}"`);
-
-    // 4. Save to buffer then write to temp file
-    const savedBuffer = await doc.save();
-    tempFile = path.join(os.tmpdir(), `test-update-${Date.now()}.hwpx`);
-    fs.writeFileSync(tempFile, savedBuffer);
-    console.log(`Saved to: ${tempFile}`);
-
-    // 5. Reopen and verify
-    const reopenBuffer = fs.readFileSync(tempFile);
-    const doc2 = await HwpxDocument.createFromBuffer('test-id-2', tempFile, reopenBuffer);
-
-    const reloadedParas = doc2.getParagraphs(0);
-    const reloadedPara = reloadedParas.find(p => p.index === targetPara!.index);
-
-    console.log(`After reload, paragraph at index ${targetPara!.index} has text: "${reloadedPara?.text}"`);
-    console.log(`Original was: "${originalText}"`);
-    console.log(`Expected: "${newText}"`);
-
-    // 6. Assert the text was persisted
-    expect(reloadedPara?.text).toBe(newText);
+      const reopened = await HwpxDocument.createFromBuffer('reopened', testFile, fs.readFileSync(testFile));
+      expect(reopened.getParagraphs(0).map(paragraph => paragraph.text)).toEqual(
+        paragraphs.map(paragraph => paragraph.index === target!.index ? newText : paragraph.text)
+      );
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
   });
 });

@@ -730,7 +730,15 @@ describe('Complex Workflow E2E Tests', () => {
       // 재로드 검증
       doc = await HwpxDocument.createFromBuffer('reload', testPath, savedBuffer);
       const reloadedTables = doc.getTables();
-      expect(reloadedTables.length).toBe(3); // simple, outer2, inner3
+      // getTables enumerates section-level tables; nested tables belong to cells.
+      expect(reloadedTables).toEqual([
+        { section: 0, index: 0, rows: 1, cols: 2 },
+        { section: 0, index: 1, rows: 1, cols: 1 },
+      ]);
+      const remainingNested = doc.findTable(0, 1)?.rows[0].cells[0].nestedTables;
+      expect(remainingNested).toHaveLength(1);
+      expect(remainingNested![0].rows[0].cells[0].paragraphs[0].runs.map(run => run.text).join(''))
+        .toBe('내부테이블3');
 
       console.log('✅ 중첩 테이블 포함 삭제 성공');
 

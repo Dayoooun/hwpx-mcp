@@ -10,8 +10,7 @@ import * as path from 'path';
 import { HwpxDocument, ImagePositionOptions } from './HwpxDocument';
 import { HangingIndentCalculator } from './HangingIndentCalculator';
 
-// Version marker for debugging
-const MCP_VERSION = 'v2-fixed-xml-replacement';
+const MCP_VERSION: string = require('../package.json').version;
 console.error(`[HWPX MCP] Server starting - ${MCP_VERSION} - ${new Date().toISOString()}`);
 
 // Document storage
@@ -2138,7 +2137,7 @@ Call this after modifying the document to ensure fresh data on next read operati
 const server = new Server(
   {
     name: 'hwpx-mcp-server',
-    version: '0.3.0',
+    version: MCP_VERSION,
   },
   {
     capabilities: {
@@ -2358,23 +2357,26 @@ Call get_tool_guide with: template, table, image, search, read, create`
           const createBackup = args?.create_backup !== false; // default: true
           const verifyIntegrity = args?.verify_integrity !== false; // default: true
           let backupPath: string | null = null;
-          const tempPath = savePath + '.tmp';
-
-          // Create backup if file exists and backup is enabled
-          if (createBackup && fs.existsSync(savePath)) {
-            backupPath = savePath + '.bak';
-            try {
-              fs.copyFileSync(savePath, backupPath);
-            } catch (backupErr) {
-              return error(`Failed to create backup: ${backupErr}`);
-            }
-          }
+          // A private directory prevents pre-created .tmp symlinks from redirecting writes.
+          const tempDirectory = fs.mkdtempSync(path.join(path.dirname(savePath), '.hwpx-save-'));
+          const tempPath = path.join(tempDirectory, 'document.hwpx');
 
           try {
+            if (createBackup && fs.existsSync(savePath)) {
+              backupPath = savePath + '.bak';
+              const existingBackup = fs.lstatSync(backupPath, { throwIfNoEntry: false });
+              if (existingBackup && !existingBackup.isFile()) {
+                return error('Backup destination must be a regular file');
+              }
+              const stagedBackup = path.join(tempDirectory, 'backup.hwpx');
+              fs.copyFileSync(savePath, stagedBackup, fs.constants.COPYFILE_EXCL);
+              // Rename replaces the directory entry instead of following a destination symlink.
+              fs.renameSync(stagedBackup, backupPath);
+            }
             const data = await doc.save();
 
             // Phase 1: Write to temp file first (atomic write pattern)
-            fs.writeFileSync(tempPath, data);
+            fs.writeFileSync(tempPath, data, { flag: 'wx', mode: 0o600 });
 
             // Verify integrity on temp file before moving
             if (verifyIntegrity) {
@@ -2434,10 +2436,7 @@ Call get_tool_guide with: template, table, image, search, read, create`
               }
             }
 
-            // Phase 2: Atomic move - rename temp to final (atomic on same filesystem)
-            if (fs.existsSync(savePath)) {
-              fs.unlinkSync(savePath);
-            }
+            // Do not unlink first: a failed rename must leave the original document intact.
             fs.renameSync(tempPath, savePath);
 
             return success({
@@ -2446,16 +2445,9 @@ Call get_tool_guide with: template, table, image, search, read, create`
               integrity_verified: verifyIntegrity
             });
           } catch (saveErr) {
-            // Clean up temp file if exists
-            if (fs.existsSync(tempPath)) {
-              try { fs.unlinkSync(tempPath); } catch {}
-            }
-            // Restore from backup if save fails
-            if (backupPath && fs.existsSync(backupPath)) {
-              fs.copyFileSync(backupPath, savePath);
-              return error(`Save failed, restored from backup: ${saveErr}`);
-            }
-            return error(`Save failed: ${saveErr}`);
+            return error(`Save failed; original document preserved: ${saveErr}`);
+          } finally {
+            fs.rmSync(tempDirectory, { recursive: true, force: true });
           }
         });
       }

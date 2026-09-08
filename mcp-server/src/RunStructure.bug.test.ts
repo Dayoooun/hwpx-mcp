@@ -149,14 +149,14 @@ describe('Run Structure Edge Cases', () => {
 
   // Test: Multiple hp:t tags in single run (malformed but might exist)
   describe('Multiple hp:t tags in single run', () => {
-    it('should handle multiple hp:t tags properly', async () => {
+    it.each(['Single text', '', '가격 $& $1 $$ < & >'])('should persist split text nodes as %j', async (replacement) => {
       const zip = new JSZip();
       const sectionXml = `<?xml version="1.0" encoding="UTF-8"?>
 <hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section"
         xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">
   <hp:p id="para0">
     <hp:run charPrIDRef="0">
-      <hp:t>Part 1</hp:t>
+      <hp:t xml:space="preserve">Part 1</hp:t>
       <hp:t>Part 2</hp:t>
     </hp:run>
   </hp:p>
@@ -172,7 +172,8 @@ describe('Run Structure Edge Cases', () => {
       console.log('Initial runs:', doc.getParagraph(0, 0)?.runs);
 
       // Update
-      doc.updateParagraphText(0, 0, 0, 'Single text');
+      doc.updateParagraphText(0, 0, 0, replacement);
+      expect(doc.getParagraph(0, 0)?.text).toBe(replacement);
       console.log('After update:', doc.getParagraph(0, 0)?.text);
 
       // Save
@@ -181,21 +182,18 @@ describe('Run Structure Edge Cases', () => {
       const savedXml = await savedZip.file('Contents/section0.xml')?.async('string');
       console.log('Saved XML:', savedXml);
 
-      // Check: should NOT duplicate the new text
-      const occurrences = (savedXml?.match(/Single text/g) || []).length;
-      console.log('Occurrences of "Single text":', occurrences);
-
-      // This might be a bug - with multiple hp:t tags, they'd all get the same text
-      expect(occurrences).toBe(1); // Should be exactly 1
+      const escapedReplacement = replacement.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      if (replacement) expect(savedXml!.split(escapedReplacement)).toHaveLength(2);
+      expect(savedXml).not.toContain('Part 1');
+      expect(savedXml).not.toContain('Part 2');
+      expect(savedXml).toContain('xml:space="preserve"');
 
       // Reload
       const reloadedDoc = await HwpxDocument.createFromBuffer('reload', testFilePath, savedBuffer);
       const finalText = reloadedDoc.getParagraph(0, 0)?.text;
       console.log('Reloaded:', finalText);
 
-      // Should NOT have duplicated text
-      expect(finalText).toBe('Single text');
-      expect(finalText).not.toContain('Single textSingle text');
+      expect(finalText).toBe(replacement);
     });
   });
 
