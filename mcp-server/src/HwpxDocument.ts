@@ -33,6 +33,17 @@ type DocumentFormat = 'hwpx' | 'hwp';
 
 const MAX_UNDO_STACK_SIZE = 50;
 
+/**
+ * HWPX 텍스트 노드 `<hp:t>` / `<hs:t>` 전용 매처.
+ *
+ * `<(hp|hs):t([^>]*)>` 처럼 태그명 뒤 경계를 두지 않으면 `<hp:tc>`·`<hp:tr>`·
+ * `<hp:tbl>` 같은 형제 태그의 접두사까지 삼킨다. 그 상태로 본문을 지우면
+ * 셀 구조가 통째로 사라지고 닫는 태그만 남아 한/글이 파일을 열지 못한다.
+ * 뒤에 오는 문자가 공백·`/`·`>` 중 하나임을 강제해 태그명을 정확히 끊는다.
+ */
+const T_TAG_WITH_CONTENT = /<(hp|hs):t((?:\s[^>]*)?)>[\s\S]*?<\/\1:t>/g;
+const T_TAG_EMPTY = /<(hp|hs):t((?:\s[^>]*)?)><\/\1:t>/g;
+
 // Image positioning options
 export interface ImagePositionOptions {
   /** Position type: 'inline' (flows with text like a character) or 'floating' (positioned relative to anchor) */
@@ -461,11 +472,21 @@ export class HwpxDocument {
     // Create empty BinData folder
     zip.folder('BinData');
 
-    return new HwpxDocument(id, 'new-document.hwpx', zip, content, 'hwpx');
+    // A new document has no location on disk yet. Seeding a bare filename here
+    // made save_document resolve it against the server process cwd, so callers
+    // could not find the file they had just written.
+    return new HwpxDocument(id, '', zip, content, 'hwpx');
   }
 
   get id(): string { return this._id; }
   get path(): string { return this._path; }
+  /** True once the document has a real location on disk. */
+  get hasPath(): boolean { return this._path.length > 0; }
+  /**
+   * Record where the document now lives after a successful write, so the next
+   * save without an explicit path targets the same file.
+   */
+  setPath(newPath: string): void { this._path = newPath; }
   get format(): DocumentFormat { return this._format; }
   get isDirty(): boolean { return this._isDirty; }
   get zip(): JSZip | null { return this._zip; }
@@ -617,8 +638,22 @@ export class HwpxDocument {
     return element.data;
   }
 
-  getParagraphs(sectionIndex?: number): Array<{ section: number; index: number; text: string; style?: ParagraphStyle }> {
-    const paragraphs: Array<{ section: number; index: number; text: string; style?: ParagraphStyle }> = [];
+  getParagraphs(sectionIndex?: number): Array<{
+    section: number;
+    index: number;
+    text: string;
+    style?: ParagraphStyle;
+    paraPrIDRef?: number;
+    charPrIDRef?: number;
+  }> {
+    const paragraphs: Array<{
+      section: number;
+      index: number;
+      text: string;
+      style?: ParagraphStyle;
+      paraPrIDRef?: number;
+      charPrIDRef?: number;
+    }> = [];
     const sections = sectionIndex !== undefined
       ? [{ section: this._content.sections[sectionIndex], idx: sectionIndex }]
       : this._content.sections.map((s, i) => ({ section: s, idx: i }));
@@ -632,6 +667,8 @@ export class HwpxDocument {
             index: ei,
             text: el.data.runs.map(r => r.text).join(''),
             style: el.data.paraStyle,
+            paraPrIDRef: el.data.paraPrId,
+            charPrIDRef: el.data.runs.find(r => r.charPrIDRef !== undefined)?.charPrIDRef,
           });
         }
       });
@@ -639,13 +676,22 @@ export class HwpxDocument {
     return paragraphs;
   }
 
-  getParagraph(sectionIndex: number, paragraphIndex: number): { text: string; runs: TextRun[]; style?: ParagraphStyle } | null {
+  getParagraph(sectionIndex: number, paragraphIndex: number): {
+    text: string;
+    runs: TextRun[];
+    style?: ParagraphStyle;
+    paraPrIDRef?: number;
+    charPrIDRef?: number;
+  } | null {
     const para = this.findParagraphByPath(sectionIndex, paragraphIndex);
     if (!para) return null;
     return {
       text: para.runs.map(r => r.text).join(''),
       runs: para.runs,
       style: para.paraStyle,
+      // Raw header.xml references, so callers can build XML without scraping it.
+      paraPrIDRef: para.paraPrId,
+      charPrIDRef: para.runs.find(r => r.charPrIDRef !== undefined)?.charPrIDRef,
     };
   }
 
@@ -4659,6 +4705,20 @@ export class HwpxDocument {
       this._pendingParagraphInserts = [];
     }
 
+    // Apply paragraph copies and moves BEFORE any text update.
+    // Both change paragraph indices, and the in-memory model already reflects
+    // the post-copy layout. Running text updates first would resolve an index
+    // against the pre-copy XML and overwrite the source paragraph instead.
+    if (this._pendingParagraphCopies && this._pendingParagraphCopies.length > 0) {
+      await this.applyParagraphCopiesToXml();
+      this._pendingParagraphCopies = [];
+    }
+
+    if (this._pendingParagraphMoves && this._pendingParagraphMoves.length > 0) {
+      await this.applyParagraphMovesToXml();
+      this._pendingParagraphMoves = [];
+    }
+
     // Apply table cell updates (preserves original XML structure)
     if (this._pendingTableCellUpdates && this._pendingTableCellUpdates.length > 0) {
       await this.applyTableCellUpdatesToXml();
@@ -4759,18 +4819,6 @@ export class HwpxDocument {
     if (this._pendingTableColumnDeletes && this._pendingTableColumnDeletes.length > 0) {
       await this.applyTableColumnDeletesToXml();
       this._pendingTableColumnDeletes = [];
-    }
-
-    // Apply paragraph copies
-    if (this._pendingParagraphCopies && this._pendingParagraphCopies.length > 0) {
-      await this.applyParagraphCopiesToXml();
-      this._pendingParagraphCopies = [];
-    }
-
-    // Apply paragraph moves
-    if (this._pendingParagraphMoves && this._pendingParagraphMoves.length > 0) {
-      await this.applyParagraphMovesToXml();
-      this._pendingParagraphMoves = [];
     }
 
     // Apply header/footer updates
@@ -12596,8 +12644,12 @@ export class HwpxDocument {
         // Clone the template row - clear text content but preserve XML structure
         let newRowXml = templateRow.xml;
 
-        // Clear text inside <hp:t> and <hs:t> tags but preserve the tags themselves
-        newRowXml = newRowXml.replace(/<(hp|hs):t([^>]*)>[\s\S]*?<\/\1:t>/g, '<$1:t$2></$1:t>');
+        // Clear text inside <hp:t> and <hs:t> tags but preserve the tags themselves.
+        // The tag-name boundary in T_TAG_WITH_CONTENT keeps <hp:tc>/<hp:tr> intact.
+        newRowXml = newRowXml.replace(T_TAG_WITH_CONTENT, '<$1:t$2></$1:t>');
+        // The cloned cells carry the template row's line geometry; reset it so
+        // text of a different length does not overlap.
+        newRowXml = this.resetLinesegInXml(newRowXml);
 
         // Update rowAddr in each cell
         const newRowAddr = insert.afterRowIndex + 1;
@@ -12606,7 +12658,7 @@ export class HwpxDocument {
         // Set cell texts if provided
         if (insert.cellTexts) {
           let cellIdx = 0;
-          newRowXml = newRowXml.replace(/<(hp|hs):t([^>]*)><\/\1:t>/g, (match, prefix, attrs) => {
+          newRowXml = newRowXml.replace(T_TAG_EMPTY, (match, prefix, attrs) => {
             if (cellIdx < insert.cellTexts!.length) {
               const text = this.escapeXml(insert.cellTexts![cellIdx]);
               cellIdx++;
@@ -12788,9 +12840,11 @@ export class HwpxDocument {
           }
           if (!templateCell) continue;
 
-          // Clone template and clear text
+          // Clone template and clear text.
+          // The tag-name boundary in T_TAG_WITH_CONTENT keeps <hp:tc> structure intact.
           let newCellXml = templateCell.xml;
-          newCellXml = newCellXml.replace(/<(hp|hs):t([^>]*)>[\s\S]*?<\/\1:t>/g, '<$1:t$2></$1:t>');
+          newCellXml = newCellXml.replace(T_TAG_WITH_CONTENT, '<$1:t$2></$1:t>');
+          newCellXml = this.resetLinesegInXml(newCellXml);
 
           // Update colAddr to afterColIndex + 1
           newCellXml = newCellXml.replace(/colAddr="(\d+)"/, `colAddr="${insert.afterColIndex + 1}"`);
@@ -12972,6 +13026,11 @@ export class HwpxDocument {
       let clonedXml = srcElem.xml;
       const newId = Math.random().toString(36).substring(2, 11);
       clonedXml = clonedXml.replace(/<(hp|hs):p\s+([^>]*?)id="[^"]*"/, `<$1:p $2id="${newId}"`);
+
+      // The clone inherits the source paragraph's fixed <hp:lineseg> geometry.
+      // Once its text is replaced with a different length, those coordinates
+      // place glyphs on top of each other. Reset them so Hancom Word relays out.
+      clonedXml = this.resetLinesegInXml(clonedXml);
 
       // Read target section
       const tgtPath = `Contents/section${copy.targetSection}.xml`;

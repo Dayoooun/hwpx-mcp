@@ -79,8 +79,8 @@ npm run build
 |------|------|
 | `get_tool_guide` | 도구 가이드 조회 |
 | `open_document` | 문서 열기 (HWPX/HWP) |
-| `create_document` | 새 HWPX 문서 생성 |
-| `save_document` | 문서 저장 |
+| `create_document` | 새 HWPX 문서 생성. `file_path`를 주면 이후 `save_document`가 그 경로에 씁니다 |
+| `save_document` | 문서 저장. `output_path`(또는 `file_path`)로 대상 지정, 응답에 절대경로 반환 |
 | `close_document` | 문서 닫기 |
 | `list_open_documents` | 열린 문서 목록 |
 | `get_document_metadata` | 메타데이터 조회 |
@@ -319,6 +319,37 @@ node test-new-persistence-e2e.mjs  # 8개 persistence E2E 테스트
 - **저장 안전성**: `save_document`는 목적지와 같은 디렉터리 안에 비공개 임시 디렉터리를 만들고 검증 후 rename합니다. 기존 `.tmp` 파일은 사용하지 않으며, `.bak`이 심볼릭 링크 등 일반 파일이 아니면 저장을 거부합니다. 이 조치는 작업 폴더 밖 접근 제한을 대신하지 않습니다.
 
 ## 변경 이력
+
+### 0.3.2 (2026-09-22)
+
+외부 사용 리뷰에서 보고된 8건을 실측 재현해 수정했습니다.
+
+- **표 행·열 삽입이 저장본을 깨뜨리던 문제 수정.** 복제한 행·셀의 본문을 비우는
+  정규식 `<(hp|hs):t([^>]*)>` 이 태그명 뒤 경계가 없어 `<hp:tc>` 를 `<hp:t>` 로
+  삼켰습니다. `<hp:subList>` 이하가 통째로 사라지고 닫는 태그만 남아 한/글이
+  파일을 열지 못했습니다. `insert_table_row` · `insert_table_column` 모두 해당.
+- **`copy_paragraph` 직후 텍스트를 교체하면 원본까지 바뀌던 문제 수정.**
+  저장 파이프라인이 텍스트 갱신을 문단 복제보다 먼저 적용해, 복제 후 인덱스로
+  지정한 대상이 복제 전 XML 의 원본 문단으로 해석됐습니다. 복제·이동을 모든
+  텍스트 갱신보다 앞으로 옮겼습니다. 중간 저장 우회가 더 이상 필요 없습니다.
+- **`create_document` · `save_document` 의 경로 무시 수정.** 새 문서에 실제 위치가
+  없는데 `new-document.hwpx` 라는 상대 파일명을 들고 있어 서버 프로세스 cwd 에
+  저장됐습니다. `create_document({file_path})` 로 목적지를 지정할 수 있고,
+  `save_document` 는 `output_path` 와 `file_path` 를 모두 받으며 응답에
+  `path` 로 절대경로를 돌려줍니다. 목적지가 없으면 조용히 cwd 로 가지 않고
+  명시적으로 실패합니다.
+- **필수 인자 누락 메시지 개선.** `section_index` 를 빠뜨리면
+  `Failed to insert paragraph` 가 떠 문서 손상처럼 보였습니다. 스키마의
+  `required` 를 디스패처에서 검사해 `Missing required arguments for
+  insert_paragraph: section_index, after_index` 로 답합니다.
+- **`get_tool_guide` 의 `topic` 이 무시되던 문제 수정.** `workflow` 의 별칭으로
+  받고, 모르는 값은 조용히 전체 목록을 주는 대신 가능한 값을 알려줍니다.
+- **복제 문단의 `linesegarray` 자동 초기화.** 원본의 고정 줄 배치를 물려받아
+  긴 글을 넣으면 글자가 겹치던 사고가 사라집니다. `get_section_xml` →
+  문자열 치환 → `set_section_xml` 수작업이 더 이상 필요 없습니다.
+- **`paraPrIDRef` · `charPrIDRef` 노출.** `get_paragraph` · `get_paragraphs` 가
+  스타일 값과 함께 원본 숫자 ID 를 돌려줍니다. XML 을 직접 조립할 때
+  `section0.xml` 을 정규식으로 파지 않아도 됩니다.
 
 ### 0.3.1 (2026-09-08)
 - 저장 임시 파일·백업 경로의 링크 공격 방어 및 실패 시 원본 보존
