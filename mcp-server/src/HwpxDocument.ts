@@ -2697,21 +2697,27 @@ export class HwpxDocument {
     row: number,
     col: number
   ): { row: number; col: number } | null {
-    const target = table.rows?.[row]?.cells?.[col];
+    const rows = table.rows;
+    if (!rows) return null;
+
+    const target = rows[row]?.cells?.[col];
     if (target && ((target.colSpan ?? 1) > 1 || (target.rowSpan ?? 1) > 1)) {
       return null; // the position is a master cell
     }
 
-    const rows = table.rows ?? [];
-    for (let r = 0; r <= row; r++) {
-      const cells = rows[r]?.cells ?? [];
-      for (let c = 0; c <= col; c++) {
-        if (r === row && c === col) continue;
+    // Merged cells can only originate at or before (row, col), and a table with
+    // no spans at all — the common case — exits on the first row scan.
+    for (let r = 0; r <= row && r < rows.length; r++) {
+      const cells = rows[r]?.cells;
+      if (!cells) continue;
+      const lastCol = Math.min(col, cells.length - 1);
+      for (let c = 0; c <= lastCol; c++) {
         const cell = cells[c];
         if (!cell) continue;
         const rowSpan = cell.rowSpan ?? 1;
         const colSpan = cell.colSpan ?? 1;
         if (rowSpan <= 1 && colSpan <= 1) continue;
+        if (r === row && c === col) continue;
         if (row < r + rowSpan && col < c + colSpan) {
           return { row: r, col: c };
         }
