@@ -1935,14 +1935,20 @@ export class HwpxDocument {
       );
       const previousValue = cellData?.text || '';
 
-      // Update the cell
-      const updated = this.updateTableCell(
-        tableInfo.section_index,
-        tableInfo.local_index,
-        position.row,
-        position.col,
-        value
-      );
+      // Update the cell. A cell covered by a merge throws; treat it as a failed
+      // path rather than aborting the remaining entries.
+      let updated = false;
+      try {
+        updated = this.updateTableCell(
+          tableInfo.section_index,
+          tableInfo.local_index,
+          position.row,
+          position.col,
+          value
+        );
+      } catch {
+        updated = false;
+      }
 
       if (updated) {
         result.success++;
@@ -2109,11 +2115,13 @@ export class HwpxDocument {
   ): {
     success: number;
     outOfBounds: Array<{ row: number; col: number; value: string }>;
+    failed: Array<{ row: number; col: number; value: string; error: string }>;
     updated: Array<{ row: number; col: number; previousValue: string; newValue: string }>;
   } {
     const result = {
       success: 0,
       outOfBounds: [] as Array<{ row: number; col: number; value: string }>,
+      failed: [] as Array<{ row: number; col: number; value: string; error: string }>,
       updated: [] as Array<{ row: number; col: number; previousValue: string; newValue: string }>,
     };
 
@@ -2150,14 +2158,21 @@ export class HwpxDocument {
         );
         const previousValue = cellData?.text || '';
 
-        // Update cell
-        const updated = this.updateTableCell(
-          tableInfo.section_index,
-          tableInfo.local_index,
-          targetRow,
-          targetCol,
-          value
-        );
+        // Update cell. A cell covered by a merge throws; record it and keep
+        // going so one merged position does not discard the whole batch.
+        let updated = false;
+        let failure = '';
+        try {
+          updated = this.updateTableCell(
+            tableInfo.section_index,
+            tableInfo.local_index,
+            targetRow,
+            targetCol,
+            value
+          );
+        } catch (err) {
+          failure = err instanceof Error ? err.message : String(err);
+        }
 
         if (updated) {
           result.success++;
@@ -2166,6 +2181,13 @@ export class HwpxDocument {
             col: targetCol,
             previousValue,
             newValue: value,
+          });
+        } else {
+          result.failed.push({
+            row: targetRow,
+            col: targetCol,
+            value,
+            error: failure || 'Cell update failed',
           });
         }
       }

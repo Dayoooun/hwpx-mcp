@@ -201,3 +201,51 @@ describe('개선점 3: 병합으로 덮인 셀에 쓰면 성공이라 답하고 
     expect(doc.updateTableCell(0, 0, 1, 1, '정상')).toBe(true);
   });
 });
+
+describe('덮인 셀 거부가 배치 작업 전체를 죽이지 않는다', () => {
+  it('batchFillTable은 덮인 셀만 failed에 넣고 나머지를 채운다', () => {
+    const doc = HwpxDocument.createNew('d12', 'batch');
+    doc.insertParagraph(0, -1, '표');
+    doc.insertTable(0, 0, 3, 3);
+    doc.mergeCells(0, 0, 0, 0, 0, 1); // (0,1)이 덮인다
+
+    const result = doc.batchFillTable(0, [
+      ['A', 'B', 'C'],
+      ['D', 'E', 'F'],
+      ['G', 'H', 'I'],
+    ]);
+
+    // 9칸 중 덮인 1칸만 실패하고 8칸이 들어가야 한다
+    expect(result.success).toBe(8);
+    expect(result.failed).toHaveLength(1);
+    expect(result.failed[0]).toMatchObject({ row: 0, col: 1, value: 'B' });
+    expect(result.failed[0].error).toMatch(/covered by the merged cell/);
+  });
+
+  it('병합이 없으면 failed는 비어 있다', () => {
+    const doc = HwpxDocument.createNew('d13', 'batch-plain');
+    doc.insertParagraph(0, -1, '표');
+    doc.insertTable(0, 0, 2, 2);
+
+    const result = doc.batchFillTable(0, [['A', 'B'], ['C', 'D']]);
+    expect(result.success).toBe(4);
+    expect(result.failed).toHaveLength(0);
+  });
+
+  it('배치로 채운 값이 저장본에 남는다', async () => {
+    const doc = HwpxDocument.createNew('d14', 'batch-save');
+    doc.insertParagraph(0, -1, '표');
+    doc.insertTable(0, 0, 3, 3);
+    doc.mergeCells(0, 0, 0, 0, 0, 1);
+    doc.batchFillTable(0, [['A', 'B', 'C'], ['D', 'E', 'F'], ['G', 'H', 'I']]);
+
+    const out = path.join(workDir, 'batch.hwpx');
+    await saveTo(doc, out);
+    const xml = await sectionXml(out);
+
+    for (const t of ['A', 'C', 'D', 'E', 'F', 'G', 'H', 'I']) {
+      expect(xml).toContain(`>${t}<`);
+    }
+    expect(xml).not.toContain('>B<'); // 덮인 셀은 애초에 기록되지 않는다
+  });
+});
