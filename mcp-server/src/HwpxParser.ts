@@ -2164,7 +2164,10 @@ export class HwpxParser {
     // Get paragraph shape reference from the <hp:p> tag
     const paraShapeRefMatch = pTagAttrs.match(/paraPrIDRef="(\d+)"/);
     if (paraShapeRefMatch) {
-      const paraShape = this.styles.paraShapes.get(parseInt(paraShapeRefMatch[1]));
+      // Keep the raw reference: callers assembling XML by hand need the numeric
+      // ID, and resolving it to style values throws the ID away.
+      paragraph.paraPrId = parseInt(paraShapeRefMatch[1]);
+      const paraShape = this.styles.paraShapes.get(paragraph.paraPrId);
       if (paraShape) {
         paragraph.paraStyle = {
           align: paraShape.align as ParagraphStyle['align'],
@@ -2232,8 +2235,9 @@ export class HwpxParser {
     
     let charStyle: TextRun['charStyle'] | undefined;
     const charShapeRefMatch = xml.match(/charPrIDRef="(\d+)"/);
+    const charPrIDRef = charShapeRefMatch ? parseInt(charShapeRefMatch[1]) : undefined;
     if (charShapeRefMatch) {
-      const charShape = this.styles.charShapes.get(parseInt(charShapeRefMatch[1]));
+      const charShape = this.styles.charShapes.get(charPrIDRef!);
       if (charShape) {
         charStyle = {
           fontName: charShape.fontName,
@@ -2411,6 +2415,15 @@ export class HwpxParser {
         endnoteRef: endnoteNumber,
         charStyle: { ...charStyle, superscript: true, fontSize: charStyle?.fontSize ? charStyle.fontSize * 0.7 : 7 },
       });
+    }
+
+    // Attach the raw header.xml reference to every run produced here. Callers
+    // that assemble XML directly need this ID; resolving it into style values
+    // alone forces them back to regex-scraping section0.xml.
+    if (charPrIDRef !== undefined) {
+      for (const run of runs) {
+        if (run.charPrIDRef === undefined) run.charPrIDRef = charPrIDRef;
+      }
     }
 
     return runs;

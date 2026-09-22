@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterAll } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import JSZip from 'jszip';
@@ -783,4 +783,10 @@ describe('HwpxDocument - Paragraph Insert', () => {
     expect(savedXml).toContain('Cell 1,0');
     expect(savedXml).toContain('Cell 1,1');
   });
+});
+
+// This fixture was left behind in the repository root after every run.
+afterAll(() => {
+  const filePath = path.join(__dirname, '..', 'test-temp.hwpx');
+  if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
 });

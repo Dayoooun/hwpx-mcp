@@ -81,11 +81,16 @@ Example: get_tool_guide({ workflow: "template" })`,
       properties: {
         workflow: {
           type: 'string',
-          description: 'Workflow type: template, table, image, search, read, create, or all',
+          description: 'Workflow type: template, table, image, search, read, create, or all. Also accepted as topic.',
+          enum: ['template', 'table', 'image', 'search', 'read', 'create', 'all']
+        },
+        topic: {
+          type: 'string',
+          description: 'Alias for workflow.',
           enum: ['template', 'table', 'image', 'search', 'read', 'create', 'all']
         },
       },
-      required: ['workflow'],
+      anyOf: [{ required: ['workflow'] }, { required: ['topic'] }],
     },
   },
 
@@ -119,7 +124,7 @@ Example: get_tool_guide({ workflow: "template" })`,
       type: 'object',
       properties: {
         doc_id: { type: 'string', description: 'Document ID' },
-        output_path: { type: 'string', description: 'Output path (optional, saves to original if omitted)' },
+        output_path: { type: 'string', description: 'Absolute or relative output path. Required for documents from create_document that were not given a file_path. Also accepted as file_path.' },
         create_backup: { type: 'boolean', description: 'Create .bak backup before saving (default: true)' },
         verify_integrity: { type: 'boolean', description: 'Verify saved file integrity (default: true)' },
       },
@@ -1897,12 +1902,13 @@ Positioning within cell:
   // === New Document Creation ===
   {
     name: 'create_document',
-    description: 'Create a new empty HWPX document',
+    description: 'Create a new empty HWPX document. Pass file_path to fix where save_document will write it; otherwise you must pass output_path to save_document.',
     inputSchema: {
       type: 'object',
       properties: {
         title: { type: 'string', description: 'Document title (optional)' },
         creator: { type: 'string', description: 'Document author (optional)' },
+        file_path: { type: 'string', description: 'Destination path for later saves (optional). The file is written on save_document, not here.' },
       },
     },
   },
@@ -2149,17 +2155,49 @@ const server = new Server(
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
 
 // ============================================================
+// Required-argument validation
+// ============================================================
+
+const requiredArgsByTool = new Map<string, string[]>(
+  tools.map(tool => [
+    tool.name,
+    ((tool.inputSchema as { required?: string[] } | undefined)?.required) ?? [],
+  ])
+);
+
+/**
+ * Report the exact missing arguments instead of letting the handler fail with a
+ * generic message. `section_index` is declared required on the insert/update
+ * tools, but omitting it used to surface as "Failed to insert paragraph", which
+ * reads like document corruption and sends callers off inspecting the file.
+ */
+function findMissingArgs(toolName: string, args: Record<string, unknown> | undefined): string[] {
+  const required = requiredArgsByTool.get(toolName);
+  if (!required || required.length === 0) return [];
+  return required.filter(key => args?.[key] === undefined || args?.[key] === null);
+}
+
+// ============================================================
 // Tool Handlers
 // ============================================================
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
 
+  const missing = findMissingArgs(name, args as Record<string, unknown> | undefined);
+  if (missing.length > 0) {
+    return error(
+      `Missing required argument${missing.length > 1 ? 's' : ''} for ${name}: ${missing.join(', ')}`
+    );
+  }
+
   try {
     switch (name) {
       // === 🎯 Tool Guide ===
       case 'get_tool_guide': {
-        const workflow = args?.workflow as string;
+        // `topic` is the name callers reach for first; accept both rather than
+        // silently returning the same full reference for every request.
+        const workflow = (args?.workflow as string) ?? (args?.topic as string);
 
         const guides: Record<string, string> = {
           template: `📋 TEMPLATE/FORM WORKFLOW (양식 작업)
@@ -2312,8 +2350,14 @@ For best results, start with a template file instead.`,
 Call get_tool_guide with: template, table, image, search, read, create`
         };
 
-        const guide = guides[workflow] || guides['all'];
-        return success({ workflow, guide });
+        const known = Object.keys(guides);
+        const guide = guides[workflow];
+        if (!guide) {
+          return error(
+            `Unknown workflow "${workflow}". Available: ${known.join(', ')}`
+          );
+        }
+        return success({ workflow, available_workflows: known, guide });
       }
 
       // === Document Management ===
@@ -2353,12 +2397,26 @@ Call get_tool_guide with: template, table, image, search, read, create`
 
         // Use document lock to ensure all pending updates complete before save
         return await withDocumentLock(docId, async () => {
-          const savePath = (args?.output_path as string) || doc.path;
+          // `file_path` is the parameter name used by open_document/create_document,
+          // so callers reach for it here too. Accept it rather than silently
+          // falling back to the document's own path.
+          const requestedPath = (args?.output_path as string) || (args?.file_path as string);
+          if (!requestedPath && !doc.hasPath) {
+            return error(
+              'output_path is required for a document created with create_document; ' +
+              'it has no location on disk yet'
+            );
+          }
+          const savePath = path.resolve(requestedPath || doc.path);
           const createBackup = args?.create_backup !== false; // default: true
           const verifyIntegrity = args?.verify_integrity !== false; // default: true
           let backupPath: string | null = null;
+          const saveDirectory = path.dirname(savePath);
+          if (!fs.existsSync(saveDirectory)) {
+            return error(`Directory does not exist: ${saveDirectory}`);
+          }
           // A private directory prevents pre-created .tmp symlinks from redirecting writes.
-          const tempDirectory = fs.mkdtempSync(path.join(path.dirname(savePath), '.hwpx-save-'));
+          const tempDirectory = fs.mkdtempSync(path.join(saveDirectory, '.hwpx-save-'));
           const tempPath = path.join(tempDirectory, 'document.hwpx');
 
           try {
@@ -2438,10 +2496,13 @@ Call get_tool_guide with: template, table, image, search, read, create`
 
             // Do not unlink first: a failed rename must leave the original document intact.
             fs.renameSync(tempPath, savePath);
+            doc.setPath(savePath);
 
             return success({
               message: `Saved to ${savePath}`,
+              path: savePath,
               backup_created: backupPath ? true : false,
+              backup_path: backupPath,
               integrity_verified: verifyIntegrity
             });
           } catch (saveErr) {
@@ -4297,11 +4358,28 @@ Call get_tool_guide with: template, table, image, search, read, create`
       case 'create_document': {
         const docId = generateId();
         const doc = HwpxDocument.createNew(docId, args?.title as string, args?.creator as string);
+
+        // Remember the intended destination so a later save_document without an
+        // explicit path writes where the caller asked, not into the server cwd.
+        const requestedPath = (args?.file_path as string) || (args?.output_path as string);
+        let plannedPath: string | null = null;
+        if (requestedPath) {
+          plannedPath = path.resolve(requestedPath);
+          const parentDirectory = path.dirname(plannedPath);
+          if (!fs.existsSync(parentDirectory)) {
+            return error(`Directory does not exist: ${parentDirectory}`);
+          }
+          doc.setPath(plannedPath);
+        }
+
         openDocuments.set(docId, doc);
         return success({
           doc_id: docId,
           format: 'hwpx',
-          message: 'New document created',
+          path: plannedPath,
+          message: plannedPath
+            ? `New document created; save_document will write to ${plannedPath}`
+            : 'New document created; pass output_path to save_document to choose where it is written',
         });
       }
 
