@@ -249,3 +249,74 @@ describe('덮인 셀 거부가 배치 작업 전체를 죽이지 않는다', () 
     expect(xml).not.toContain('>B<'); // 덮인 셀은 애초에 기록되지 않는다
   });
 });
+
+describe('개선점 5: 복제 문단이 원본의 고정 줄배치를 물려받아 글자가 겹친다', () => {
+  /**
+   * 새 문서의 문단은 lineseg가 1개뿐이라 이 회귀를 드러내지 못한다.
+   * 한/글이 줄 배치를 계산해 둔 상태를 재현하려면 다중 lineseg를 주입해야 한다.
+   */
+  async function injectLinesegs(filePath: string, count: number): Promise<void> {
+    const zip = await JSZip.loadAsync(fs.readFileSync(filePath));
+    const file = zip.file('Contents/section0.xml');
+    if (!file) throw new Error('section0.xml missing');
+    let xml = await file.async('string');
+
+    const segs =
+      '<hp:linesegarray>' +
+      Array.from({ length: count }, (_, i) =>
+        `<hp:lineseg textpos="${i * 30}" vertpos="${i * 1000}" vertsize="1000" ` +
+        `textheight="1000" baseline="850" spacing="600" horzpos="0" ` +
+        `horzsize="42520" flags="393216"/>`
+      ).join('') +
+      '</hp:linesegarray>';
+
+    const lastParaClose = xml.lastIndexOf('</hp:p>');
+    xml = xml.slice(0, lastParaClose) + segs + xml.slice(lastParaClose);
+    zip.file('Contents/section0.xml', xml);
+    fs.writeFileSync(filePath, await zip.generateAsync({ type: 'nodebuffer' }));
+  }
+
+  function linesegCounts(xml: string): number[] {
+    return [...xml.matchAll(/<hp:linesegarray>([\s\S]*?)<\/hp:linesegarray>/g)]
+      .map(m => (m[1].match(/<hp:lineseg/g) || []).length);
+  }
+
+  it('복제본의 linesegarray만 초기화되고 원본은 그대로다', async () => {
+    const base = path.join(workDir, 'lineseg-base.hwpx');
+    const seed = HwpxDocument.createNew('d15', 'lineseg');
+    seed.insertParagraph(0, -1, '가'.repeat(80));
+    await saveTo(seed, base);
+    await injectLinesegs(base, 3);
+
+    expect(linesegCounts(await sectionXml(base))).toEqual([3]);
+
+    const doc = await reopen('d16', base);
+    const paragraphs = doc.getParagraphs(0);
+    const srcIndex = paragraphs.findIndex(p => p.text.startsWith('가가'));
+    expect(srcIndex).toBeGreaterThanOrEqual(0);
+    expect(doc.copyParagraph(0, srcIndex, 0, srcIndex)).toBe(true);
+
+    const out = path.join(workDir, 'lineseg-copy.hwpx');
+    await saveTo(doc, out);
+
+    // 리뷰 증상: 복제본이 원본의 3줄 좌표를 물려받아 글자가 포개진다
+    const counts = linesegCounts(await sectionXml(out));
+    expect(counts).toHaveLength(2);
+    expect(counts.filter(c => c > 1)).toHaveLength(1); // 원본만 다중 유지
+    expect(counts).toContain(1); // 복제본은 초기화
+  });
+
+  it('표 행 복제본의 linesegarray도 초기화된다', async () => {
+    const doc = HwpxDocument.createNew('d17', 'row-lineseg');
+    doc.insertParagraph(0, -1, '표');
+    doc.insertTable(0, 0, 2, 2);
+    doc.insertTableRow(0, 0, 0);
+
+    const out = path.join(workDir, 'row-lineseg.hwpx');
+    await saveTo(doc, out);
+
+    // 삽입된 행의 셀에 원본 줄배치가 남아 있으면 안 된다
+    const counts = linesegCounts(await sectionXml(out));
+    expect(counts.every(c => c <= 1)).toBe(true);
+  });
+});
