@@ -154,3 +154,50 @@ describe('개선점 2: 저장 경로가 응답에 절대경로로 돌아온다',
     expect(doc.path).toBe('');
   });
 });
+
+describe('개선점 3: 병합으로 덮인 셀에 쓰면 성공이라 답하고 저장 시 사라진다', () => {
+  it('덮인 셀 쓰기는 성공 대신 마스터 셀을 알려주며 거부한다', () => {
+    const doc = HwpxDocument.createNew('d8', 'merged');
+    doc.insertParagraph(0, -1, '표');
+    doc.insertTable(0, 0, 3, 3);
+    expect(doc.mergeCells(0, 0, 0, 0, 0, 1)).toBe(true);
+
+    // 리뷰 증상: {"message":"Cell updated"} 뒤 저장본엔 글자 없음
+    expect(() => doc.updateTableCell(0, 0, 0, 1, '덮인셀')).toThrow(/covered by the merged cell at \(0, 0\)/);
+  });
+
+  it('마스터 셀 쓰기는 정상이고 저장본에 남는다', async () => {
+    const doc = HwpxDocument.createNew('d9', 'merged-master');
+    doc.insertParagraph(0, -1, '표');
+    doc.insertTable(0, 0, 3, 3);
+    doc.mergeCells(0, 0, 0, 0, 0, 1);
+    expect(doc.updateTableCell(0, 0, 0, 0, '마스터')).toBe(true);
+
+    const out = path.join(workDir, 'merged.hwpx');
+    await saveTo(doc, out);
+    expect(await sectionXml(out)).toContain('>마스터<');
+  });
+
+  it('병합이 없으면 어떤 셀이든 쓸 수 있다', () => {
+    const doc = HwpxDocument.createNew('d10', 'plain');
+    doc.insertParagraph(0, -1, '표');
+    doc.insertTable(0, 0, 3, 3);
+    for (let r = 0; r < 3; r++) {
+      for (let c = 0; c < 3; c++) {
+        expect(doc.updateTableCell(0, 0, r, c, `R${r}C${c}`)).toBe(true);
+      }
+    }
+  });
+
+  it('세로 병합에 덮인 셀도 거부한다', () => {
+    const doc = HwpxDocument.createNew('d11', 'vmerge');
+    doc.insertParagraph(0, -1, '표');
+    doc.insertTable(0, 0, 3, 3);
+    doc.mergeCells(0, 0, 0, 0, 1, 0); // (0,0)~(1,0) 세로 병합
+
+    expect(() => doc.updateTableCell(0, 0, 1, 0, '덮인셀')).toThrow(/covered by the merged cell at \(0, 0\)/);
+    // 병합 범위 밖은 영향 없다
+    expect(doc.updateTableCell(0, 0, 2, 0, '정상')).toBe(true);
+    expect(doc.updateTableCell(0, 0, 1, 1, '정상')).toBe(true);
+  });
+});

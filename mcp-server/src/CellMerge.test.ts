@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterAll } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import JSZip from 'jszip';
@@ -774,4 +774,12 @@ describe('HwpxDocument - Cell Merge/Split Integrity Checks', () => {
       }
     }
   });
+});
+
+// These fixtures were left behind in the repository root after every run.
+afterAll(() => {
+  for (const file of ['test-merge.hwpx', 'test-split.hwpx', 'test-integrity.hwpx']) {
+    const filePath = path.join(__dirname, '..', file);
+    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+  }
 });

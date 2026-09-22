@@ -2687,11 +2687,53 @@ export class HwpxDocument {
     };
   }
 
+  /**
+   * Find the merged cell that covers (row, col), if that position is not itself
+   * a master cell. A covered cell has no <hp:tc> of its own in the saved XML,
+   * so writing to it succeeds in memory and then silently vanishes on save.
+   */
+  private findCoveringMergedCell(
+    table: HwpxTable,
+    row: number,
+    col: number
+  ): { row: number; col: number } | null {
+    const target = table.rows?.[row]?.cells?.[col];
+    if (target && ((target.colSpan ?? 1) > 1 || (target.rowSpan ?? 1) > 1)) {
+      return null; // the position is a master cell
+    }
+
+    const rows = table.rows ?? [];
+    for (let r = 0; r <= row; r++) {
+      const cells = rows[r]?.cells ?? [];
+      for (let c = 0; c <= col; c++) {
+        if (r === row && c === col) continue;
+        const cell = cells[c];
+        if (!cell) continue;
+        const rowSpan = cell.rowSpan ?? 1;
+        const colSpan = cell.colSpan ?? 1;
+        if (rowSpan <= 1 && colSpan <= 1) continue;
+        if (row < r + rowSpan && col < c + colSpan) {
+          return { row: r, col: c };
+        }
+      }
+    }
+    return null;
+  }
+
   updateTableCell(sectionIndex: number, tableIndex: number, row: number, col: number, text: string, charShapeId?: number): boolean {
     const table = this.findTable(sectionIndex, tableIndex);
     if (!table) return false;
     const cell = table.rows[row]?.cells[col];
     if (!cell) return false;
+
+    // Refuse instead of reporting success and losing the text at save time.
+    const covering = this.findCoveringMergedCell(table, row, col);
+    if (covering) {
+      throw new Error(
+        `Cell (${row}, ${col}) is covered by the merged cell at ` +
+        `(${covering.row}, ${covering.col}); write to the master cell instead`
+      );
+    }
 
     // Track cell update for XML sync (works for both empty and non-empty cells)
     // Store table ID for reliable XML matching

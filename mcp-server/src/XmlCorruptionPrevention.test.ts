@@ -438,7 +438,10 @@ describe('XML 손상 방지 - 데이터 무결성', () => {
 
   beforeEach(async () => {
     const buffer = await createBasicTestHwpx();
-    testFilePath = path.join(__dirname, '..', 'test-integrity.hwpx');
+    // Distinct from CellMerge.test.ts's fixture: vitest runs test files in
+    // parallel, and a shared name let one file's afterAll delete the other's
+    // fixture mid-run.
+    testFilePath = path.join(__dirname, '..', 'test-corruption-integrity.hwpx');
     fs.writeFileSync(testFilePath, buffer);
   });
 
@@ -550,7 +553,7 @@ afterAll(() => {
     'test-corruption-basic.hwpx',
     'test-corruption-nested.hwpx',
     'test-corruption-complex.hwpx',
-    'test-integrity.hwpx',
+    'test-corruption-integrity.hwpx',
     'test-edge.hwpx'
   ];
 
