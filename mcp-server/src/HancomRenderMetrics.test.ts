@@ -124,4 +124,20 @@ describe('표 안 표가 부모 셀 안에 들어간다', () => {
     // 실측: 수정 전 `<hp:t> </hp:t>` 공백 한 칸이 표 앞에 들어가 한 줄이 비었다.
     expect(xml.slice(runStart, inner)).not.toMatch(/<hp:t>\s+<\/hp:t>/);
   });
+
+  it('이미 중첩 표가 있는 셀에 또 넣어도 부모 셀 폭 기준으로 맞춘다', async () => {
+    const doc = HwpxDocument.createNew('n5', 'nested');
+    doc.insertTable(0, 0, 2, 2);             // 부모 셀 폭 21260
+    doc.insertNestedTable(0, 0, 1, 1, 2, 3); // 첫 중첩 표: 셀 폭 ≈ 7086
+    doc.insertNestedTable(0, 0, 1, 1, 2, 2); // 같은 셀에 두 번째
+
+    const xml = await sectionXml(await doc.save());
+    const widths = [...xml.matchAll(/<hp:tbl [^>]*colCnt="(\d+)"[^>]*>[\s\S]*?<hp:sz width="(\d+)"/g)]
+      .map(m => ({ cols: Number(m[1]), width: Number(m[2]) }));
+    const nested = widths.slice(1);
+    expect(nested).toHaveLength(2);
+    // 실측(CodeRabbit 지적 재현): 수정 전 두 번째 표가 첫 중첩 표의 셀 폭 7086 을 부모 폭으로 읽었다.
+    // 두 중첩 표 모두 같은 부모 셀 안쪽 폭을 써야 한다.
+    expect(nested[0].width).toBe(nested[1].width);
+  });
 });

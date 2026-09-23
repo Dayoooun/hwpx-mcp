@@ -5815,16 +5815,29 @@ export class HwpxDocument {
    *
    * A cell with hasMargin="0" takes its padding from the table's inMargin, so
    * the cell's own cellMargin is only authoritative when hasMargin="1".
+   *
+   * Every lookup is scoped to the cell's (or table's) own markup. A nested
+   * table inside the cell carries its own cellSz/cellMargin/inMargin, and a
+   * first-match regex over the whole cell would read those instead — which
+   * sized a second nested table to the first one's column (7086 vs 21260).
    */
   private getCellInnerWidth(cellXml: string, tableXml: string): number | null {
-    const size = cellXml.match(/<hp:cellSz width="(\d+)"/);
+    // hp:tc children are subList → cellAddr → cellSpan → cellSz → cellMargin,
+    // so the cell's own properties are everything after its last </hp:subList>.
+    const subListEnd = cellXml.lastIndexOf('</hp:subList>');
+    const cellProps = subListEnd === -1 ? cellXml : cellXml.slice(subListEnd);
+    const size = cellProps.match(/<hp:cellSz width="(\d+)"/);
     if (!size) return null;
     const width = parseInt(size[1], 10);
 
-    const usesOwnMargin = /<hp:tc\b[^>]*\bhasMargin="1"/.test(cellXml);
+    const openTag = cellXml.slice(0, cellXml.indexOf('>') + 1);
+    const usesOwnMargin = /\bhasMargin="1"/.test(openTag);
+    // Table-level inMargin precedes the first row.
+    const firstRow = tableXml.indexOf('<hp:tr');
+    const tableHead = firstRow === -1 ? tableXml : tableXml.slice(0, firstRow);
     const margin = usesOwnMargin
-      ? cellXml.match(/<hp:cellMargin left="(\d+)" right="(\d+)"/)
-      : tableXml.match(/<hp:inMargin left="(\d+)" right="(\d+)"/);
+      ? cellProps.match(/<hp:cellMargin left="(\d+)" right="(\d+)"/)
+      : tableHead.match(/<hp:inMargin left="(\d+)" right="(\d+)"/);
     const padding = margin ? parseInt(margin[1], 10) + parseInt(margin[2], 10) : 0;
 
     return Math.max(width - padding, 0);
