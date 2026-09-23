@@ -150,9 +150,8 @@ describe('Auto Hanging Indent Integration (자동 내어쓰기 통합)', () => {
       // "○ 불릿 마커 항목" - 첫 번째 단락
       const indent = doc.setAutoHangingIndent(0, 0, 10);
 
-      // v2: ○ (1em) + 공백 (0.5em) = 1.5em × 10pt × 1.3 = 19.5pt
-      expect(indent).toBeGreaterThan(15);
-      expect(indent).toBeLessThan(25);
+      // 한/글 실측: "○ " = 14.99pt (함초롬바탕 10pt, fixtures/hancom-marker-widths.json)
+      expect(indent).toBeCloseTo(14.99, 0);
 
       // 실제로 설정되었는지 확인
       const appliedIndent = doc.getHangingIndent(0, 0);
@@ -165,9 +164,8 @@ describe('Auto Hanging Indent Integration (자동 내어쓰기 통합)', () => {
       // "1. 숫자 마커 항목" - 두 번째 단락
       const indent = doc.setAutoHangingIndent(0, 1, 10);
 
-      // v2: 1 (0.6em) + . (0.35em) + 공백 (0.5em) = 1.45em × 10pt × 1.3 = 18.85pt
-      expect(indent).toBeGreaterThan(15);
-      expect(indent).toBeLessThan(25);
+      // 한/글 실측: "1. " = 13.67pt
+      expect(indent).toBeCloseTo(13.67, 0);
     });
 
     it('should auto-detect and apply hanging indent for Korean marker', async () => {
@@ -176,9 +174,8 @@ describe('Auto Hanging Indent Integration (자동 내어쓰기 통합)', () => {
       // "가. 한글 마커 항목" - 세 번째 단락
       const indent = doc.setAutoHangingIndent(0, 2, 10);
 
-      // v2: 가 (1em) + . (0.35em) + 공백 (0.5em) = 1.85em × 10pt × 1.3 = 24.05pt
-      expect(indent).toBeGreaterThan(20);
-      expect(indent).toBeLessThan(30);
+      // 한/글 실측: "가. " = 17.63pt
+      expect(indent).toBeCloseTo(17.63, 0);
     });
 
     it('should return 0 for text without marker', async () => {
@@ -196,9 +193,8 @@ describe('Auto Hanging Indent Integration (자동 내어쓰기 통합)', () => {
       // "- 대시 마커 항목" - 다섯 번째 단락
       const indent = doc.setAutoHangingIndent(0, 4, 10);
 
-      // v2: - (0.5em) + 공백 (0.5em) = 1em × 10pt × 1.3 = 13pt
-      expect(indent).toBeGreaterThan(10);
-      expect(indent).toBeLessThan(18);
+      // 한/글 실측: "- " = 13.31pt
+      expect(indent).toBeCloseTo(13.31, 0);
     });
 
     it('should scale with font size', async () => {
@@ -225,9 +221,8 @@ describe('Auto Hanging Indent Integration (자동 내어쓰기 통합)', () => {
       // "① 원문자 셀" - 테이블 (0,0) 셀
       const indent = doc.setTableCellAutoHangingIndent(0, 0, 0, 0, 0, 10);
 
-      // v2: ① (1em) + 공백 (0.5em) = 1.5em × 10pt × 1.3 = 19.5pt
-      expect(indent).toBeGreaterThan(15);
-      expect(indent).toBeLessThan(25);
+      // 한/글 실측: "① " = 14.99pt
+      expect(indent).toBeCloseTo(14.99, 0);
 
       // 실제로 설정되었는지 확인
       const appliedIndent = doc.getTableCellHangingIndent(0, 0, 0, 0, 0);
@@ -240,9 +235,8 @@ describe('Auto Hanging Indent Integration (자동 내어쓰기 통합)', () => {
       // "(1) 괄호 숫자 셀" - 테이블 (0,1) 셀
       const indent = doc.setTableCellAutoHangingIndent(0, 0, 0, 1, 0, 10);
 
-      // v2: ( (0.4em) + 1 (0.6em) + ) (0.4em) + 공백 (0.5em) = 1.9em × 10pt × 1.3 = 24.7pt
-      expect(indent).toBeGreaterThan(20);
-      expect(indent).toBeLessThan(30);
+      // 한/글 실측: "(1) " = 20.75pt
+      expect(indent).toBeCloseTo(20.75, 0);
     });
 
     it('should return 0 for cell without marker', async () => {
@@ -260,9 +254,8 @@ describe('Auto Hanging Indent Integration (자동 내어쓰기 통합)', () => {
       // "A. 알파벳 셀" - 테이블 (1,1) 셀
       const indent = doc.setTableCellAutoHangingIndent(0, 0, 1, 1, 0, 10);
 
-      // v2: A (0.7em) + . (0.35em) + 공백 (0.5em) = 1.55em × 10pt × 1.3 = 20.15pt
-      expect(indent).toBeGreaterThan(16);
-      expect(indent).toBeLessThan(25);
+      // 한/글 실측: "A. " = 15.35pt
+      expect(indent).toBeCloseTo(15.35, 0);
     });
   });
 
@@ -345,10 +338,9 @@ describe('Auto Hanging Indent Integration (자동 내어쓰기 통합)', () => {
       // fontSize를 제공하지 않음
       const indent = doc.setAutoHangingIndent(0, 0);
 
-      // v2: 기본 폰트 크기(12pt)로 계산됨
-      // ○ (1em) + 공백 (0.5em) = 1.5em × 12pt × 1.3 = 23.4pt
-      expect(indent).toBeGreaterThan(18);
-      expect(indent).toBeLessThan(30);
+      // setAutoHangingIndent 의 기본 글자 크기는 10pt 다 (HwpxDocument.setAutoHangingIndent).
+      // 한/글 실측: "○ " = 14.99pt
+      expect(indent).toBeCloseTo(14.99, 0);
     });
   });
 });

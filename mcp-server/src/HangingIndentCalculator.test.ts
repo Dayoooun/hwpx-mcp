@@ -1,74 +1,46 @@
 /**
  * Tests for Hanging Indent Calculator (내어쓰기 자동 계산)
  *
- * TDD로 구현: RED → GREEN → REFACTOR
+ * 폭 기댓값은 Windows 한/글이 함초롬바탕으로 그린 PDF 에서 잰 값이다.
+ * 측정 원본: src/fixtures/hancom-marker-widths.json (10pt 기준).
+ * 12pt 기댓값은 10pt 실측 × 1.2 다 — 폰트 크기 비례는 별도 테스트로 확인한다.
  *
- * 목표: 80% 이상의 정확성으로 마커 기반 내어쓰기 값 계산
- *
- * v3: 복합 법률 마커 패턴, 폰트별 보정, 앞 공백 포함 테스트 포괄
+ * 허용 오차는 0.5pt(≈0.18mm)다. 종전 추정식(× 1.3)은 평균 4.14pt 어긋났다.
  */
 import { describe, it, test, expect } from 'vitest';
 import { HangingIndentCalculator } from './HangingIndentCalculator';
 
+/** 10pt 한/글 실측 폭(pt). */
+const MEASURED_10PT: Record<string, number> = {
+  '○ ': 14.992,
+  '- ': 13.313,
+  '1. ': 13.673,
+  '가. ': 17.63,
+  '(1) ': 20.749,
+  '① ': 14.992,
+  '제1조 ': 30.224,
+  '제1조의2 ': 45.815,
+  '제10항 ': 36.1,
+  '1호 ': 20.509,
+  '15호 ': 26.386,
+  '제100조의99 ': 63.326,
+  ' 제1조 ': 35.261,
+  '  1호 ': 30.463,
+};
+const at = (marker: string, sizePt: number) => MEASURED_10PT[marker] * (sizePt / 10);
+
 describe('HangingIndentCalculator (내어쓰기 자동 계산)', () => {
   // ============================================================
   // 기본 마커 너비 계산 테스트
-  // 한글 폰트 보정 계수(1.3) 적용됨
+  // 한/글 실측 폭 (함초롬바탕)
   // ============================================================
   describe('calculateMarkerWidth (마커 너비 계산)', () => {
-    it('should calculate width for bullet marker "○ "', () => {
-      const calc = new HangingIndentCalculator();
-      const width = calc.calculateMarkerWidth('○ ', 10); // 10pt 폰트
-
-      // ○ (1em) + 공백 (0.5em) = 1.5em × 10pt × 1.3 = 19.5pt
-      expect(width).toBeGreaterThan(15);
-      expect(width).toBeLessThan(25);
-    });
-
-    it('should calculate width for dash marker "- "', () => {
-      const calc = new HangingIndentCalculator();
-      const width = calc.calculateMarkerWidth('- ', 10);
-
-      // - (0.5em) + 공백 (0.5em) = 1em × 10pt × 1.3 = 13pt
-      expect(width).toBeGreaterThan(10);
-      expect(width).toBeLessThan(18);
-    });
-
-    it('should calculate width for numbered marker "1. "', () => {
-      const calc = new HangingIndentCalculator();
-      const width = calc.calculateMarkerWidth('1. ', 10);
-
-      // 1 (0.6em) + . (0.35em) + 공백 (0.5em) = 1.45em × 10pt × 1.3 = 18.85pt
-      expect(width).toBeGreaterThan(15);
-      expect(width).toBeLessThan(25);
-    });
-
-    it('should calculate width for Korean marker "가. "', () => {
-      const calc = new HangingIndentCalculator();
-      const width = calc.calculateMarkerWidth('가. ', 10);
-
-      // 가 (1em) + . (0.35em) + 공백 (0.5em) = 1.85em × 10pt × 1.3 = 24.05pt
-      expect(width).toBeGreaterThan(20);
-      expect(width).toBeLessThan(30);
-    });
-
-    it('should calculate width for parenthesized marker "(1) "', () => {
-      const calc = new HangingIndentCalculator();
-      const width = calc.calculateMarkerWidth('(1) ', 10);
-
-      // ( (0.4em) + 1 (0.6em) + ) (0.4em) + 공백 (0.5em) = 1.9em × 10pt × 1.3 = 24.7pt
-      expect(width).toBeGreaterThan(20);
-      expect(width).toBeLessThan(30);
-    });
-
-    it('should calculate width for circled number "① "', () => {
-      const calc = new HangingIndentCalculator();
-      const width = calc.calculateMarkerWidth('① ', 10);
-
-      // ① (1em) + 공백 (0.5em) = 1.5em × 10pt × 1.3 = 19.5pt
-      expect(width).toBeGreaterThan(15);
-      expect(width).toBeLessThan(25);
-    });
+    for (const marker of ['○ ', '- ', '1. ', '가. ', '(1) ', '① ']) {
+      it(`${JSON.stringify(marker)} 는 한/글 실측 ${at(marker, 10).toFixed(2)}pt 와 같다`, () => {
+        const calc = new HangingIndentCalculator();
+        expect(calc.calculateMarkerWidth(marker, 10)).toBeCloseTo(at(marker, 10), 0);
+      });
+    }
   });
 
   // ============================================================
@@ -87,20 +59,12 @@ describe('HangingIndentCalculator (내어쓰기 자동 계산)', () => {
 
     it('should handle small font sizes', () => {
       const calc = new HangingIndentCalculator();
-      const width = calc.calculateMarkerWidth('- ', 8);
-
-      // 1em × 8pt × 1.3 = 10.4pt
-      expect(width).toBeGreaterThan(8);
-      expect(width).toBeLessThan(15);
+      expect(calc.calculateMarkerWidth('- ', 8)).toBeCloseTo(at('- ', 8), 0);
     });
 
     it('should handle large font sizes', () => {
       const calc = new HangingIndentCalculator();
-      const width = calc.calculateMarkerWidth('1. ', 24);
-
-      // 1.45em × 24pt × 1.3 = 45.24pt
-      expect(width).toBeGreaterThan(35);
-      expect(width).toBeLessThan(55);
+      expect(calc.calculateMarkerWidth('1. ', 24)).toBeCloseTo(at('1. ', 24), 0);
     });
   });
 
@@ -194,11 +158,7 @@ describe('HangingIndentCalculator (내어쓰기 자동 계산)', () => {
   describe('calculateHangingIndent (자동 계산)', () => {
     it('should calculate hanging indent from text with marker', () => {
       const calc = new HangingIndentCalculator();
-      const indent = calc.calculateHangingIndent('○ 항목 내용', 10);
-
-      // 1.5em × 10pt × 1.3 = 19.5pt
-      expect(indent).toBeGreaterThan(15);
-      expect(indent).toBeLessThan(25);
+      expect(calc.calculateHangingIndent('○ 항목 내용', 10)).toBeCloseTo(at('○ ', 10), 0);
     });
 
     it('should return 0 for text without marker', () => {
@@ -232,10 +192,8 @@ describe('HangingIndentCalculator (내어쓰기 자동 계산)', () => {
     it('should calculate hanging indent in HWPUNIT', () => {
       const calc = new HangingIndentCalculator();
       const hwpUnit = calc.calculateHangingIndentInHwpUnit('○ 항목', 10);
-
-      // 약 19.5pt → 1950 HWPUNIT
-      expect(hwpUnit).toBeGreaterThan(1500);
-      expect(hwpUnit).toBeLessThan(2500);
+      // 1pt = 100 HWPUNIT. 실측 14.99pt → 1499 HWPUNIT (±50 = ±0.5pt)
+      expect(Math.abs(hwpUnit - Math.round(at('○ ', 10) * 100))).toBeLessThanOrEqual(50);
     });
   });
 
@@ -363,109 +321,36 @@ describe('HangingIndentCalculator - 복합 마커 패턴', () => {
     });
   });
 
-  describe('calculateHangingIndent - 복합 마커 계산', () => {
-    test('제1조 내어쓰기 계산 (12pt)', () => {
-      const indent = calculator.calculateHangingIndent('제1조 내용', 12);
-      // "제1조 " = 제(1.0) + 1(0.6) + 조(1.0) + 공백(0.5) = 3.1em
-      // 3.1 × 12 × 1.3 = 48.36pt
-      expect(indent).toBeGreaterThan(40);
-      expect(indent).toBeLessThan(60);
-    });
-
-    test('제1조의2 내어쓰기 계산 (12pt)', () => {
-      const indent = calculator.calculateHangingIndent('제1조의2 내용', 12);
-      // "제1조의2 " = 제(1.0) + 1(0.6) + 조(1.0) + 의(1.0) + 2(0.6) + 공백(0.5) = 4.7em
-      // 4.7 × 12 × 1.3 = 73.32pt
-      expect(indent).toBeGreaterThan(65);
-      expect(indent).toBeLessThan(85);
-    });
-
-    test('제10항 내어쓰기 계산 (12pt)', () => {
-      const indent = calculator.calculateHangingIndent('제10항 내용', 12);
-      // "제10항 " = 제(1.0) + 1(0.6) + 0(0.6) + 항(1.0) + 공백(0.5) = 3.7em
-      // 3.7 × 12 × 1.3 = 57.72pt
-      expect(indent).toBeGreaterThan(50);
-      expect(indent).toBeLessThan(70);
-    });
-
-    test('1호 내어쓰기 계산 (12pt)', () => {
-      const indent = calculator.calculateHangingIndent('1호 내용', 12);
-      // "1호 " = 1(0.6) + 호(1.0) + 공백(0.5) = 2.1em
-      // 2.1 × 12 × 1.3 = 32.76pt
-      expect(indent).toBeGreaterThan(25);
-      expect(indent).toBeLessThan(40);
-    });
-
-    test('15호 내어쓰기 계산 (12pt)', () => {
-      const indent = calculator.calculateHangingIndent('15호 내용', 12);
-      // "15호 " = 1(0.6) + 5(0.6) + 호(1.0) + 공백(0.5) = 2.7em
-      // 2.7 × 12 × 1.3 = 42.12pt
-      expect(indent).toBeGreaterThan(35);
-      expect(indent).toBeLessThan(50);
-    });
-
-    test('제100조의99 내어쓰기 계산 (12pt)', () => {
-      const indent = calculator.calculateHangingIndent('제100조의99 내용', 12);
-      // "제100조의99 " = 제(1.0) + 1(0.6) + 0(0.6) + 0(0.6) + 조(1.0) + 의(1.0) + 9(0.6) + 9(0.6) + 공백(0.5) = 6.5em
-      // 6.5 × 12 × 1.3 = 101.4pt
-      expect(indent).toBeGreaterThan(90);
-      expect(indent).toBeLessThan(120);
-    });
+  describe('calculateHangingIndent - 복합 마커 계산 (한/글 실측)', () => {
+    for (const marker of ['제1조 ', '제1조의2 ', '제10항 ', '1호 ', '15호 ', '제100조의99 ']) {
+      test(`${JSON.stringify(marker)} 12pt = ${at(marker, 12).toFixed(2)}pt`, () => {
+        expect(calculator.calculateHangingIndent(`${marker}내용`, 12)).toBeCloseTo(at(marker, 12), 0);
+      });
+    }
   });
 
   describe('폰트별 계산', () => {
-    test('맑은 고딕 보정 계수 적용', () => {
-      const defaultIndent = calculator.calculateHangingIndent('제1조 내용', 12);
-      const malgunIndent = calculator.calculateHangingIndent('제1조 내용', 12, '맑은 고딕');
+    // 함초롬 계열만 실측했다. 나머지 폰트는 종전 표의 **함초롬 대비 비율**을 옮긴 값이다.
+    const base = () => calculator.calculateHangingIndent('제1조 내용', 12, '함초롬바탕');
 
-      // 맑은 고딕(1.35) > default(1.3)
-      expect(malgunIndent).toBeGreaterThan(defaultIndent);
-
-      // 대략 3.8% 차이 (1.35/1.3 ≈ 1.038)
-      const ratio = malgunIndent / defaultIndent;
-      expect(ratio).toBeCloseTo(1.038, 2);
+    test('함초롬바탕은 기본값과 같다 — 한/글 새 문서 기본 글꼴', () => {
+      expect(calculator.calculateHangingIndent('제1조 내용', 12)).toBe(base());
     });
 
-    test('Noto Sans KR 보정 계수 적용', () => {
-      const defaultIndent = calculator.calculateHangingIndent('제1조 내용', 12);
-      const notoIndent = calculator.calculateHangingIndent('제1조 내용', 12, 'Noto Sans KR');
-
-      // Noto Sans KR(1.25) < default(1.3)
-      expect(notoIndent).toBeLessThan(defaultIndent);
-
-      // 대략 3.8% 차이 (1.25/1.3 ≈ 0.962)
-      const ratio = notoIndent / defaultIndent;
-      expect(ratio).toBeCloseTo(0.962, 2);
+    test('맑은 고딕은 함초롬 대비 1.08배 (1.35/1.25)', () => {
+      expect(calculator.calculateHangingIndent('제1조 내용', 12, '맑은 고딕') / base()).toBeCloseTo(1.08, 2);
     });
 
-    test('함초롬바탕 보정 계수 적용', () => {
-      const defaultIndent = calculator.calculateHangingIndent('제1조 내용', 12);
-      const hamchoIndent = calculator.calculateHangingIndent('제1조 내용', 12, '함초롬바탕');
-
-      // 함초롬바탕(1.25) < default(1.3)
-      expect(hamchoIndent).toBeLessThan(defaultIndent);
+    test('Noto Sans KR 은 함초롬과 같다 (1.25/1.25)', () => {
+      expect(calculator.calculateHangingIndent('제1조 내용', 12, 'Noto Sans KR') / base()).toBeCloseTo(1.0, 2);
     });
 
-    test('나눔바른고딕 보정 계수 적용', () => {
-      const defaultIndent = calculator.calculateHangingIndent('제1조 내용', 12);
-      const nanumIndent = calculator.calculateHangingIndent('제1조 내용', 12, '나눔바른고딕');
-
-      // 나눔바른고딕(1.28) < default(1.3)
-      expect(nanumIndent).toBeLessThan(defaultIndent);
-
-      const ratio = nanumIndent / defaultIndent;
-      expect(ratio).toBeCloseTo(0.985, 2);
+    test('나눔바른고딕은 함초롬 대비 1.024배 (1.28/1.25)', () => {
+      expect(calculator.calculateHangingIndent('제1조 내용', 12, '나눔바른고딕') / base()).toBeCloseTo(1.024, 3);
     });
 
-    test('영문 폰트 (Arial)', () => {
-      const defaultIndent = calculator.calculateHangingIndent('제1조 내용', 12);
-      const arialIndent = calculator.calculateHangingIndent('제1조 내용', 12, 'Arial');
-
-      // Arial(1.0) < default(1.3)
-      expect(arialIndent).toBeLessThan(defaultIndent);
-
-      const ratio = arialIndent / defaultIndent;
-      expect(ratio).toBeCloseTo(0.769, 2); // 1.0/1.3
+    test('영문 폰트 (Arial) 는 함초롬 대비 0.8배 (1.0/1.25)', () => {
+      expect(calculator.calculateHangingIndent('제1조 내용', 12, 'Arial') / base()).toBeCloseTo(0.8, 2);
     });
   });
 
@@ -491,20 +376,18 @@ describe('HangingIndentCalculator - 복합 마커 패턴', () => {
       expect(result?.marker).toBe('    1호 ');
     });
 
-    test('앞 공백 포함 내어쓰기 계산 - 제1조', () => {
-      const indent = calculator.calculateHangingIndent('  제1조 내용', 12);
-      // "  제1조 " = 공백(0.5) + 공백(0.5) + 제(1.0) + 1(0.6) + 조(1.0) + 공백(0.5) = 4.1em
-      // 4.1 × 12 × 1.3 = 63.96pt
-      expect(indent).toBeGreaterThan(55);
-      expect(indent).toBeLessThan(75);
+    test('앞 공백 1개 포함 내어쓰기 - " 제1조 " (한/글 실측)', () => {
+      expect(calculator.calculateHangingIndent(' 제1조 내용', 12)).toBeCloseTo(at(' 제1조 ', 12), 0);
     });
 
-    test('앞 공백 포함 내어쓰기 계산 - 1호', () => {
-      const indent = calculator.calculateHangingIndent('    1호 내용', 12);
-      // "    1호 " = 공백(0.5)*4 + 1(0.6) + 호(1.0) + 공백(0.5) = 4.1em
-      // 4.1 × 12 × 1.3 = 63.96pt
-      expect(indent).toBeGreaterThan(55);
-      expect(indent).toBeLessThan(75);
+    test('앞 공백 2개 포함 내어쓰기 - "  1호 " (한/글 실측)', () => {
+      expect(calculator.calculateHangingIndent('  1호 내용', 12)).toBeCloseTo(at('  1호 ', 12), 0);
+    });
+
+    test('앞 공백 한 칸마다 공백 실측폭(0.498em)만큼 늘어난다', () => {
+      const one = calculator.calculateHangingIndent(' 제1조 내용', 12);
+      const two = calculator.calculateHangingIndent('  제1조 내용', 12);
+      expect(two - one).toBeCloseTo(0.498 * 12, 1);
     });
   });
 
@@ -515,25 +398,20 @@ describe('HangingIndentCalculator - 복합 마커 패턴', () => {
       expect(calculator.toHwpUnit(48.36)).toBe(4836);
     });
 
-    test('제1조 HWPUNIT 계산 (12pt)', () => {
+    // ±50 HWPUNIT = ±0.5pt
+    test('제1조 HWPUNIT 계산 (12pt) — 한/글 실측', () => {
       const hwpunit = calculator.calculateHangingIndentInHwpUnit('제1조 내용', 12);
-      // 약 48.36pt × 100 = 4836 hwpunit
-      expect(hwpunit).toBeGreaterThan(4000);
-      expect(hwpunit).toBeLessThan(6000);
+      expect(Math.abs(hwpunit - Math.round(at('제1조 ', 12) * 100))).toBeLessThanOrEqual(50);
     });
 
-    test('제1조의2 HWPUNIT 계산 (12pt)', () => {
+    test('제1조의2 HWPUNIT 계산 (12pt) — 한/글 실측', () => {
       const hwpunit = calculator.calculateHangingIndentInHwpUnit('제1조의2 내용', 12);
-      // 약 73.32pt × 100 = 7332 hwpunit
-      expect(hwpunit).toBeGreaterThan(6500);
-      expect(hwpunit).toBeLessThan(8500);
+      expect(Math.abs(hwpunit - Math.round(at('제1조의2 ', 12) * 100))).toBeLessThanOrEqual(50);
     });
 
-    test('1호 HWPUNIT 계산 (맑은 고딕, 12pt)', () => {
+    test('1호 HWPUNIT 계산 (맑은 고딕, 12pt) — 함초롬 실측 × 1.08', () => {
       const hwpunit = calculator.calculateHangingIndentInHwpUnit('1호 내용', 12, '맑은 고딕');
-      // "1호 " = 2.1em × 12 × 1.35 = 34.02pt → 3402 hwpunit
-      expect(hwpunit).toBeGreaterThan(3000);
-      expect(hwpunit).toBeLessThan(4000);
+      expect(Math.abs(hwpunit - Math.round(at('1호 ', 12) * 1.08 * 100))).toBeLessThanOrEqual(50);
     });
   });
 
@@ -648,7 +526,7 @@ describe('HangingIndentCalculator - 복합 마커 패턴', () => {
       expect(result?.type).toBe('article');
 
       const indent = calculator.calculateHangingIndent('제1조 대한민국은 민주공화국이다.', 12);
-      expect(indent).toBeGreaterThan(40);
+      expect(indent).toBeCloseTo(at('제1조 ', 12), 0);
     });
 
     test('민법 제103조', () => {
@@ -657,7 +535,8 @@ describe('HangingIndentCalculator - 복합 마커 패턴', () => {
       expect(result?.type).toBe('article');
 
       const indent = calculator.calculateHangingIndent('제103조 선량한 풍속 기타 사회질서에 위반한 사항을 내용으로 하는 법률행위는 무효로 한다.', 12);
-      expect(indent).toBeGreaterThan(50);
+      // "제103조 " = 제·조 0.972×2 + 1·0·3 (0.576+0.588+0.588) + 공백 0.498 = 4.194em
+      expect(indent).toBeCloseTo(4.194 * 12, 0);
     });
 
     test('부칙 제1조', () => {
