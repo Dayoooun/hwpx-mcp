@@ -173,3 +173,37 @@ describe('표 안 글자가 셀 테두리에 붙지 않는다', () => {
     expect(bottom).toBeGreaterThan(0);
   });
 });
+
+describe('행 삽입 시 cell_texts 는 칸마다 하나씩 들어간다', () => {
+  it('템플릿 행에 여러 줄 셀이 있어도 새 행의 각 칸에 한 값씩', async () => {
+    const doc = HwpxDocument.createNew('r1', 'row-texts');
+    doc.insertTable(0, 0, 1, 3);
+    doc.updateTableCell(0, 0, 0, 0, '원본 1');
+    doc.updateTableCell(0, 0, 0, 1, '○ 첫째\n○ 둘째\n- 셋째'); // 문단 3개
+    doc.updateTableCell(0, 0, 0, 2, '원본 3');
+    doc.insertTableRow(0, 0, 0, ['새1', '새2', '새3']);
+
+    const xml = await sectionXml(await doc.save());
+    const rows = xml.slice(xml.indexOf('<hp:tbl')).split('</hp:tr>').filter(r => r.includes('<hp:tr'));
+    const cellTexts = rows[1]
+      .split('</hp:tc>')
+      .filter(c => c.includes('<hp:tc'))
+      .map(c => [...c.matchAll(/<hp:t>([^<]*)<\/hp:t>/g)].map(m => m[1]).join(''));
+
+    // 실측: 수정 전 ["새1", "새2새3", ""] — 빈 <hp:t> 를 칸 구분 없이 순서대로 채워
+    // 둘째 칸의 문단 세 개에 새2·새3 이 들어가고 셋째 칸은 비었다.
+    expect(cellTexts).toEqual(['새1', '새2', '새3']);
+  });
+
+  it('새 행의 셀은 템플릿 셀의 추가 문단을 물려받지 않는다', async () => {
+    const doc = HwpxDocument.createNew('r2', 'row-paras');
+    doc.insertTable(0, 0, 1, 1);
+    doc.updateTableCell(0, 0, 0, 0, '가\n나\n다');
+    doc.insertTableRow(0, 0, 0, ['새']);
+
+    const xml = await sectionXml(await doc.save());
+    const rows = xml.slice(xml.indexOf('<hp:tbl')).split('</hp:tr>').filter(r => r.includes('<hp:tr'));
+    // 빈 문단 두 개가 남으면 한/글이 셀 높이를 세 줄로 잡아 글자가 위로 몰려 보인다.
+    expect((rows[1].match(/<hp:p\b/g) || []).length).toBe(1);
+  });
+});

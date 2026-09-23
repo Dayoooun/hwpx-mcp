@@ -12693,6 +12693,40 @@ export class HwpxDocument {
   // Table Row Insert/Delete XML Persistence
   // ============================================================
 
+  /**
+   * Clone a table cell for a newly inserted row: same cell attributes, same
+   * first-paragraph formatting, but a single paragraph holding `text`.
+   *
+   * Nested tables and extra paragraphs are dropped. The first run's
+   * charPrIDRef is kept so the new text matches the template cell's font.
+   */
+  private cloneCellWithText(cellXml: string, text: string): string {
+    const subListOpen = cellXml.match(/<(hp|hs):subList\b[^>]*>/);
+    const subListCloseIdx = cellXml.lastIndexOf('</hp:subList>') !== -1
+      ? cellXml.lastIndexOf('</hp:subList>')
+      : cellXml.lastIndexOf('</hs:subList>');
+    if (!subListOpen || subListOpen.index === undefined || subListCloseIdx === -1) {
+      // No sub-list to rebuild — fall back to blanking the text in place.
+      return this.resetLinesegInXml(cellXml.replace(T_TAG_WITH_CONTENT, '<$1:t$2></$1:t>'));
+    }
+
+    const prefix = subListOpen[1];
+    const inner = cellXml.slice(subListOpen.index + subListOpen[0].length, subListCloseIdx);
+    const firstPara = inner.match(new RegExp(`<${prefix}:p\\b[^>]*>`));
+    const paraOpen = firstPara
+      ? firstPara[0]
+      : `<${prefix}:p id="0" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0">`;
+    const firstRun = inner.match(new RegExp(`<${prefix}:run\\b[^>]*charPrIDRef="(\\d+)"`));
+    const charPr = firstRun ? firstRun[1] : '0';
+
+    const paragraph =
+      `${paraOpen}<${prefix}:run charPrIDRef="${charPr}"><${prefix}:t>${this.escapeXml(text)}</${prefix}:t></${prefix}:run>` +
+      `<${prefix}:linesegarray><${prefix}:lineseg textpos="0" vertpos="0" vertsize="1000" textheight="1000" baseline="850" spacing="600" horzpos="0" horzsize="0" flags="0"/></${prefix}:linesegarray>` +
+      `</${prefix}:p>`;
+
+    return cellXml.slice(0, subListOpen.index + subListOpen[0].length) + paragraph + cellXml.slice(subListCloseIdx);
+  }
+
   private async applyTableRowInsertsToXml(): Promise<void> {
     if (!this._zip) return;
 
@@ -12722,33 +12756,23 @@ export class HwpxDocument {
 
         const templateRow = rows[insert.afterRowIndex];
 
-        // Clone the template row - clear text content but preserve XML structure
+        // Clone the template row cell by cell. Each new cell keeps the
+        // template cell's formatting but only its FIRST paragraph, emptied:
+        // cloning every paragraph copied multi-line cells (e.g. "○ a\n○ b\n- c")
+        // as three empty lines, so Hancom sized the row for three lines and the
+        // one line of new text sat at the top.
+        const newRowAddr = insert.afterRowIndex + 1;
+        const templateCells = this.findAllElementsWithDepth(templateRow.xml, 'tc');
         let newRowXml = templateRow.xml;
-
-        // Clear text inside <hp:t> and <hs:t> tags but preserve the tags themselves.
-        // The tag-name boundary in T_TAG_WITH_CONTENT keeps <hp:tc>/<hp:tr> intact.
-        newRowXml = newRowXml.replace(T_TAG_WITH_CONTENT, '<$1:t$2></$1:t>');
-        // The cloned cells carry the template row's line geometry; reset it so
-        // text of a different length does not overlap.
-        newRowXml = this.resetLinesegInXml(newRowXml);
+        for (let c = templateCells.length - 1; c >= 0; c--) {
+          const cell = templateCells[c];
+          const text = insert.cellTexts?.[c] ?? '';
+          const newCellXml = this.cloneCellWithText(cell.xml, text);
+          newRowXml = newRowXml.slice(0, cell.startIndex) + newCellXml + newRowXml.slice(cell.endIndex);
+        }
 
         // Update rowAddr in each cell
-        const newRowAddr = insert.afterRowIndex + 1;
         newRowXml = newRowXml.replace(/rowAddr="(\d+)"/g, `rowAddr="${newRowAddr}"`);
-
-        // Set cell texts if provided
-        if (insert.cellTexts) {
-          let cellIdx = 0;
-          newRowXml = newRowXml.replace(T_TAG_EMPTY, (match, prefix, attrs) => {
-            if (cellIdx < insert.cellTexts!.length) {
-              const text = this.escapeXml(insert.cellTexts![cellIdx]);
-              cellIdx++;
-              return `<${prefix}:t${attrs}>${text}</${prefix}:t>`;
-            }
-            cellIdx++;
-            return match;
-          });
-        }
 
         // Insert after the template row
         const insertPos = templateRow.startIndex + templateRow.xml.length;
