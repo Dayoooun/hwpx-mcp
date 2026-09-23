@@ -36,8 +36,8 @@
 
 - **필수 인자 누락 시 원인을 밝힙니다.** `section_index` 를 빠뜨리면
   `Failed to insert paragraph` 가 떠 문서 손상처럼 보였습니다. 스키마의 `required` 를
-  디스패처에서 검사해 `Missing required arguments for insert_paragraph: section_index,
-  after_index` 로 답합니다.
+  디스패처에서 검사해 어떤 인자가 빠졌는지 이름으로 답합니다.
+  예: `Missing required arguments for insert_paragraph: section_index, after_index`
 - **`save_document` 응답에 절대경로를 돌려줍니다.** `path` 와 `backup_path` 가 추가됐고,
   `output_path` 외에 `file_path` 도 받습니다.
 - **`batch_fill_table` 이 실패한 셀을 보고하고 나머지를 계속 채웁니다.** 반환값에 `failed`
@@ -65,7 +65,7 @@
 - 의존성 갱신 및 기존 절대·상대경로 사용법의 호환성 검사 추가
 - 작업 폴더 제한은 추가하지 않았으며, 수식 저장 누락은 이 릴리스의 수정 범위에 포함하지 않음
 
-## [0.3.0] - 2026-01-28
+## 0.3.0 - 2026-01-28
 
 - **대규모 XML persistence 수정**: 8개 조작에 대한 save-reload 지원 추가
   - `insertTableRow` / `deleteTableRow`
@@ -78,7 +78,7 @@
 - **mergeCells 수정**: indexOf 모호성 해결
 - **테스트**: 24개 E2E 테스트 (16 기본 + 8 persistence)
 
-## [0.2.0]
+## 0.2.0
 
 - **신규 기능**: 테이블 셀 내 내어쓰기(Hanging Indent) 자동 적용
   - `update_table_cell` 시 마커(○, 1., 가., (1) 등) 감지하여 자동 내어쓰기
@@ -96,17 +96,16 @@
   - 중첩 테이블 + 내어쓰기 + 이미지 복합 테스트
   - 병렬 업데이트 시나리오 테스트
 
-## [0.1.1]
+## 0.1.1
 
 - **버그 수정**: `update_table_cell` 후 `save_document` 시 빈 셀 변경사항이 저장되지 않던 문제 수정
   - Self-closing XML run 태그 (`<hp:run ... />`) 처리 지원 추가
   - ID 기반 테이블 매칭으로 정확한 XML 업데이트 구현
   - 원본 XML 구조를 최대한 보존하면서 텍스트만 수정
 
-## [0.1.0]
+## 0.1.0
 
 - 최초 릴리스
 
 [0.3.2]: https://github.com/Dayoooun/hwpx-mcp/compare/v0.3.1...v0.3.2
-[0.3.1]: https://github.com/Dayoooun/hwpx-mcp/compare/v0.3.0...v0.3.1
-[0.3.0]: https://github.com/Dayoooun/hwpx-mcp/releases/tag/v0.3.0
+[0.3.1]: https://github.com/Dayoooun/hwpx-mcp/releases/tag/v0.3.1

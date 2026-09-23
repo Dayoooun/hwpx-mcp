@@ -17,7 +17,7 @@ MCP 서버는 독립적으로 버전을 매기고 npm 에 배포합니다. 서�
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/) 를 따르고,
 버전은 [유의적 버전](https://semver.org/lang/ko/) 을 따릅니다.
 
-### [0.1.0] - 2025-01-12
+### 0.1.0 - 2025-01-12
 
 #### Added
 
