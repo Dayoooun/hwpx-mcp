@@ -31,6 +31,26 @@ import {
 
 type DocumentFormat = 'hwpx' | 'hwp';
 
+/**
+ * Identifies the section-level element an insert is placed after.
+ *
+ * Positions are recorded as ids, not element indices. The in-memory element
+ * list and the section XML count elements differently — the parser splits a
+ * table wrapper paragraph into a paragraph plus a table, and drops wrappers
+ * that carry no text — so an index valid in memory names a different node in
+ * the XML. Ids are shared by both sides: a paragraph's id is its <hp:p id>,
+ * a table's id is its <hp:tbl id>. Measured on 325 Hancom-saved sections:
+ * 70,656 of 70,677 parsed paragraph ids and all 2,573 table ids exist in XML.
+ *
+ * `occurrence` disambiguates repeated ids — Hancom writes id="0" and
+ * id="2147483648" on many paragraphs of the same section.
+ */
+interface ElementAnchor {
+  kind: 'paragraph' | 'table';
+  id: string;
+  occurrence: number;
+}
+
 const MAX_UNDO_STACK_SIZE = 50;
 
 /**
@@ -105,6 +125,12 @@ export class HwpxDocument {
   private _zip: JSZip | null;
   private _content: HwpxContent;
   private _isDirty = false;
+  /**
+   * True once the section element list has changed shape since the XML was
+   * parsed (insert/delete/copy/move of paragraphs, tables or images).
+   * Parsed XML offsets are unusable from that point until the next save.
+   */
+  private _structureChanged = false;
   private _format: DocumentFormat;
 
   private _undoStack: string[] = [];
@@ -151,14 +177,22 @@ export class HwpxDocument {
   private _pendingTableInserts: Array<{
     sectionIndex: number;
     afterElementIndex: number;
+    /** Element the table goes after, resolved when the insert was recorded. */
+    anchor: ElementAnchor | null;
     rows: number;
     cols: number;
     width: number;
     cellWidth: number;
-    insertOrder: number;  // Track insertion order for proper sequencing
+    insertOrder: number;  // Shared with paragraph inserts: replay follows call order
     tableId: string;  // In-memory table ID to sync with XML
   }> = [];
-  private _tableInsertCounter = 0;  // Counter for insertion order
+  /**
+   * Monotonic counter shared by paragraph and table inserts. Both kinds are
+   * replayed into XML in this order so each insert sees exactly the elements
+   * that existed when it was made. Replaying all tables before all paragraphs
+   * wrote "A, table, A-2, table" to disk as "A, A-2, table, table".
+   */
+  private _tableInsertCounter = 0;
   private _pendingImageDeletes: Array<{
     imageId: string;
     binaryId: string;
@@ -207,6 +241,9 @@ export class HwpxDocument {
   private _pendingParagraphInserts: Array<{
     sectionIndex: number;
     afterElementIndex: number;
+    /** Element the paragraph goes after, resolved when the insert was recorded. */
+    anchor: ElementAnchor | null;
+    insertOrder: number;
     paragraphId: string;
     text: string;
   }> = [];
@@ -361,7 +398,10 @@ export class HwpxDocument {
         elements: [{
           type: 'paragraph',
           data: {
-            id: Math.random().toString(36).substring(2, 11),
+            // Must match the id written into Contents/section0.xml below. Later
+            // inserts anchor on this id; a random value here pointed at a node
+            // that does not exist in the XML.
+            id: '0',
             runs: [{ text: '' }],
           },
         }],
@@ -516,6 +556,8 @@ export class HwpxDocument {
     const parsed = JSON.parse(state);
     this._content.sections = parsed.sections;
     this._content.metadata = parsed.metadata;
+    // Undo/redo swaps in a whole element list; parse-time offsets no longer apply.
+    this.markStructureChanged();
   }
 
   canUndo(): boolean { return this._undoStack.length > 0; }
@@ -583,6 +625,41 @@ export class HwpxDocument {
   private markModified(): void {
     this._isDirty = true;
     this.invalidateReadingCache();
+  }
+
+  /**
+   * Record that the section element list changed shape. Call from every method
+   * that inserts, removes, copies or moves a section-level element. Once set,
+   * paragraph edits stop trusting offsets cached at parse time and locate their
+   * target in the current XML instead.
+   */
+  private markStructureChanged(): void {
+    this._structureChanged = true;
+  }
+
+  /**
+   * Resolve "after element N" into an id-based anchor using the memory model
+   * as it is right now (before the new element is spliced in).
+   *
+   * Returns null for "before everything" (N < 0). Elements without an XML
+   * counterpart (images, shapes) are skipped backwards to the nearest
+   * paragraph or table, which is what the XML placement needs.
+   */
+  private resolveElementAnchor(sectionIndex: number, afterElementIndex: number): ElementAnchor | null {
+    const elements = this._content.sections[sectionIndex]?.elements ?? [];
+    for (let i = Math.min(afterElementIndex, elements.length - 1); i >= 0; i--) {
+      const el = elements[i];
+      if (el.type !== 'paragraph' && el.type !== 'table') continue;
+      const kind = el.type;
+      const id = String((el.data as { id?: string }).id ?? '');
+      if (!id) continue;
+      let occurrence = 0;
+      for (let j = 0; j < i; j++) {
+        if (elements[j].type === kind && String((elements[j].data as { id?: string }).id) === id) occurrence++;
+      }
+      return { kind, id, occurrence };
+    }
+    return null;
   }
 
   // ============================================================
@@ -853,13 +930,19 @@ export class HwpxDocument {
       runs: [{ text }],
     };
 
+    // Resolve the XML position before the new paragraph joins the element list.
+    const anchor = this.resolveElementAnchor(sectionIndex, afterElementIndex);
+
     const newElement: SectionElement = { type: 'paragraph', data: newParagraph };
     section.elements.splice(afterElementIndex + 1, 0, newElement);
+    this.markStructureChanged();
 
     // Add to pending list for XML sync
     this._pendingParagraphInserts.push({
       sectionIndex,
       afterElementIndex,
+      anchor,
+      insertOrder: this._tableInsertCounter++,
       paragraphId,
       text,
     });
@@ -888,6 +971,7 @@ export class HwpxDocument {
 
     // Remove from memory
     section.elements.splice(elementIndex, 1);
+    this.markStructureChanged();
     this.markModified();
     this.invalidateReadingCache();
     return true;
@@ -2880,6 +2964,7 @@ export class HwpxDocument {
 
     // Remove from memory model
     section.elements.splice(elementIndex, 1);
+    this.markStructureChanged();
     this.markModified();
     return true;
   }
@@ -3225,6 +3310,7 @@ export class HwpxDocument {
     const copy = JSON.parse(JSON.stringify(srcElement));
     copy.data.id = Math.random().toString(36).substring(2, 11);
     tgtSection.elements.splice(targetAfter + 1, 0, copy);
+    this.markStructureChanged();
 
     this._pendingParagraphCopies.push({
       sourceSection,
@@ -3255,6 +3341,7 @@ export class HwpxDocument {
     }
 
     tgtSection.elements.splice(adjustedTargetAfter + 1, 0, srcElement);
+    this.markStructureChanged();
 
     this._pendingParagraphMoves.push({
       sourceSection,
@@ -3481,8 +3568,12 @@ export class HwpxDocument {
       width: defaultWidth,
     };
 
+    // Resolve the XML position before the new table joins the element list.
+    const anchor = this.resolveElementAnchor(sectionIndex, afterElementIndex);
+
     const newElement: SectionElement = { type: 'table', data: newTable };
     section.elements.splice(afterElementIndex + 1, 0, newElement);
+    this.markStructureChanged();
 
     // Calculate table index
     let tableIndex = 0;
@@ -3494,10 +3585,10 @@ export class HwpxDocument {
     }
 
     // Add to pending table inserts for XML generation
-    // Store the original afterElementIndex and insertOrder for proper sequencing
     this._pendingTableInserts.push({
       sectionIndex,
       afterElementIndex,
+      anchor,
       rows,
       cols,
       width: defaultWidth,
@@ -4121,6 +4212,7 @@ export class HwpxDocument {
     // Add image element to section
     const newElement: SectionElement = { type: 'image', data: newImage };
     section.elements.splice(afterElementIndex + 1, 0, newElement);
+    this.markStructureChanged();
 
     // Add to pending inserts for XML sync
     this._pendingImageInserts.push({
@@ -4336,6 +4428,7 @@ export class HwpxDocument {
       const index = section.elements.findIndex(el => el.type === 'image' && el.data.id === imageId);
       if (index !== -1) {
         section.elements.splice(index, 1);
+    this.markStructureChanged();
         break;
       }
     }
@@ -4368,6 +4461,7 @@ export class HwpxDocument {
 
     const newElement: SectionElement = { type: 'line', data: newLine };
     section.elements.push(newElement);
+    this.markStructureChanged();
 
     this.markModified();
     return { id: lineId };
@@ -4393,6 +4487,7 @@ export class HwpxDocument {
 
     const newElement: SectionElement = { type: 'rect', data: newRect };
     section.elements.push(newElement);
+    this.markStructureChanged();
 
     this.markModified();
     return { id: rectId };
@@ -4418,6 +4513,7 @@ export class HwpxDocument {
 
     const newElement: SectionElement = { type: 'ellipse', data: newEllipse };
     section.elements.push(newElement);
+    this.markStructureChanged();
 
     this.markModified();
     return { id: ellipseId };
@@ -4444,6 +4540,7 @@ export class HwpxDocument {
 
     const newElement: SectionElement = { type: 'equation', data: newEquation };
     section.elements.splice(afterElementIndex + 1, 0, newElement);
+    this.markStructureChanged();
 
     this.markModified();
     return { id: equationId };
@@ -4745,10 +4842,15 @@ export class HwpxDocument {
   private async syncContentToZip(): Promise<void> {
     if (!this._zip) return;
 
-    // Apply table inserts FIRST (other operations depend on tables existing in XML)
-    if (this._pendingTableInserts && this._pendingTableInserts.length > 0) {
-      await this.applyTableInsertsToXml();
+    // Apply paragraph and table inserts together, in call order. Other
+    // operations locate tables by index, so inserted tables must exist first.
+    const hasInserts =
+      (this._pendingTableInserts && this._pendingTableInserts.length > 0) ||
+      (this._pendingParagraphInserts && this._pendingParagraphInserts.length > 0);
+    if (hasInserts) {
+      await this.applyStructuralInsertsToXml();
       this._pendingTableInserts = [];
+      this._pendingParagraphInserts = [];
     }
 
     // Apply table deletes
@@ -4769,11 +4871,6 @@ export class HwpxDocument {
       this._pendingTableMoves = [];
     }
 
-    // Apply paragraph inserts
-    if (this._pendingParagraphInserts && this._pendingParagraphInserts.length > 0) {
-      await this.applyParagraphInsertsToXml();
-      this._pendingParagraphInserts = [];
-    }
 
     // Apply paragraph copies and moves BEFORE any text update.
     // Both change paragraph indices, and the in-memory model already reflects
@@ -4952,6 +5049,13 @@ export class HwpxDocument {
    * The cached positions are populated during parsing in HwpxParser.parseSection().
    */
   private getCachedXmlPosition(sectionIndex: number, elementIndex: number): { start: number; end: number } | undefined {
+    // Cached offsets point into the section XML as it was when parsed. Once any
+    // element has been inserted, removed, copied or moved, the element index no
+    // longer names the same XML node and every earlier offset may have shifted.
+    // Using the cache then rewrites the wrong paragraph — measured: after
+    // copyParagraph on a reopened document, the edit landed on the original.
+    if (this._structureChanged) return undefined;
+
     const section = this._content?.sections?.[sectionIndex];
     if (!section) return undefined;
 
@@ -5228,170 +5332,155 @@ export class HwpxDocument {
   }
 
   /**
-   * Apply table inserts to XML.
-   * Inserts new tables into the section XML.
+   * Find the end offset of the section-level element an insert anchors to.
+   *
+   * Paragraphs are matched by their own <hp:p id>; tables by <hp:tbl id>, and
+   * the insert goes after the paragraph that wraps the table. Only top-level
+   * elements count, so paragraphs inside table cells are never matched.
+   * Returns -1 if the anchor is not present in the current XML.
    */
-  private async applyTableInsertsToXml(): Promise<void> {
+  private findAnchorEnd(xml: string, anchor: ElementAnchor): number {
+    const topLevel = this.findTopLevelFullElements(xml);
+    let seen = 0;
+    for (const el of topLevel) {
+      if (el.type !== 'p') continue;
+      if (anchor.kind === 'paragraph') {
+        const openTag = el.xml.slice(0, el.xml.indexOf('>') + 1);
+        const id = openTag.match(/\bid="([^"]*)"/)?.[1];
+        if (id !== anchor.id) continue;
+      } else {
+        // The wrapper paragraph that holds this table (as its own, not a nested, table).
+        const tableOpen = new RegExp(`<(?:hp|hs|hc):tbl\\b[^>]*\\bid="${anchor.id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`);
+        const match = el.xml.match(tableOpen);
+        if (!match || match.index === undefined) continue;
+        const before = el.xml.slice(0, match.index);
+        const opens = (before.match(/<(?:hp|hs|hc):tbl\b/g) || []).length;
+        const closes = (before.match(/<\/(?:hp|hs|hc):tbl>/g) || []).length;
+        if (opens !== closes) continue; // it is nested inside another table
+      }
+      if (seen === anchor.occurrence) return el.endIndex;
+      seen++;
+    }
+    return -1;
+  }
+
+  /**
+   * Offset for an insert with no anchor ("before everything"). The first
+   * paragraph carries <hp:secPr> (page and section settings) and must stay
+   * first, so new content goes right after it.
+   */
+  private findSectionHeadEnd(xml: string): number {
+    const topLevel = this.findTopLevelFullElements(xml);
+    const first = topLevel.find(el => el.type === 'p');
+    if (first) return first.endIndex;
+    const secOpen = xml.match(/<(?:hs|hp):sec[^>]*>/);
+    return secOpen && secOpen.index !== undefined ? secOpen.index + secOpen[0].length : -1;
+  }
+
+  /** Build the XML for a table inserted by insertTable, wrapped in its own paragraph. */
+  private buildInsertedTableXml(insert: {
+    rows: number; cols: number; width: number; cellWidth: number; tableId: string;
+  }, nextId: () => number): string {
+    const rowHeight = 1000; // hwpunit
+    const tableHeight = rowHeight * insert.rows;
+
+    let tableXml = `<hp:tbl id="${insert.tableId}" zOrder="0" numberingType="TABLE" textWrap="TOP_AND_BOTTOM" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" pageBreak="CELL" repeatHeader="0" rowCnt="${insert.rows}" colCnt="${insert.cols}" cellSpacing="0" borderFillIDRef="2" noAdjust="0">`;
+    tableXml += `<hp:sz width="${insert.width}" widthRelTo="ABSOLUTE" height="${tableHeight}" heightRelTo="ABSOLUTE" protect="0"/>`;
+    tableXml += `<hp:pos treatAsChar="1" affectLSpacing="0" flowWithText="1" allowOverlap="0" holdAnchorAndSO="0" vertRelTo="PARA" horzRelTo="PARA" vertAlign="TOP" horzAlign="LEFT" vertOffset="0" horzOffset="0"/>`;
+    tableXml += `<hp:outMargin left="141" right="141" top="141" bottom="141"/>`;
+    // Cells below use hasMargin="0", which tells Hancom to pad them with this
+    // table-level inMargin and ignore their own cellMargin. A zero inMargin put
+    // text flush against the cell border (measured 0pt). 510/510/141/141 is the
+    // most common value in Hancom-saved tables (1,868 surveyed).
+    tableXml += `<hp:inMargin left="510" right="510" top="141" bottom="141"/>`;
+
+    for (let r = 0; r < insert.rows; r++) {
+      tableXml += `<hp:tr>`;
+      for (let c = 0; c < insert.cols; c++) {
+        tableXml += `<hp:tc name="" header="0" hasMargin="0" protect="0" editable="0" dirty="0" borderFillIDRef="2">`;
+        tableXml += `<hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="CENTER" linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="0">`;
+        tableXml += `<hp:p id="${nextId()}" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0">`;
+        tableXml += `<hp:run charPrIDRef="0"><hp:t></hp:t></hp:run>`;
+        tableXml += `</hp:p>`;
+        tableXml += `</hp:subList>`;
+        tableXml += `<hp:cellAddr colAddr="${c}" rowAddr="${r}"/>`;
+        tableXml += `<hp:cellSpan colSpan="1" rowSpan="1"/>`;
+        tableXml += `<hp:cellSz width="${insert.cellWidth}" height="${rowHeight}"/>`;
+        tableXml += `<hp:cellMargin left="510" right="510" top="141" bottom="141"/>`;
+        tableXml += `</hp:tc>`;
+      }
+      tableXml += `</hp:tr>`;
+    }
+    tableXml += `</hp:tbl>`;
+
+    return `<hp:p id="${nextId()}" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="0">${tableXml}<hp:t></hp:t></hp:run></hp:p>`;
+  }
+
+  /**
+   * Replay paragraph and table inserts into the section XML in the order the
+   * calls were made.
+   *
+   * Each insert carries an id-based anchor resolved at call time, so it lands
+   * after the same element in the XML that it followed in memory. Replaying
+   * in call order means that anchor always exists by the time it is needed.
+   */
+  private async applyStructuralInsertsToXml(): Promise<void> {
     if (!this._zip) return;
 
-    // Group inserts by section
-    const insertsBySection = new Map<number, Array<{
-      afterElementIndex: number;
-      rows: number;
-      cols: number;
-      width: number;
-      cellWidth: number;
-      insertOrder: number;
-      tableId: string;
-    }>>();
+    type Insert =
+      | { kind: 'paragraph'; order: number; sectionIndex: number; anchor: ElementAnchor | null; paragraphId: string; text: string }
+      | { kind: 'table'; order: number; sectionIndex: number; anchor: ElementAnchor | null; rows: number; cols: number; width: number; cellWidth: number; tableId: string };
 
-    for (const insert of this._pendingTableInserts) {
-      const sectionInserts = insertsBySection.get(insert.sectionIndex) || [];
-      sectionInserts.push({
-        afterElementIndex: insert.afterElementIndex,
-        rows: insert.rows,
-        cols: insert.cols,
-        width: insert.width,
-        cellWidth: insert.cellWidth,
-        insertOrder: insert.insertOrder,
-        tableId: insert.tableId,
-      });
-      insertsBySection.set(insert.sectionIndex, sectionInserts);
+    const all: Insert[] = [
+      ...this._pendingParagraphInserts.map(i => ({
+        kind: 'paragraph' as const, order: i.insertOrder, sectionIndex: i.sectionIndex,
+        anchor: i.anchor, paragraphId: i.paragraphId, text: i.text,
+      })),
+      ...this._pendingTableInserts.map(i => ({
+        kind: 'table' as const, order: i.insertOrder, sectionIndex: i.sectionIndex,
+        anchor: i.anchor, rows: i.rows, cols: i.cols, width: i.width,
+        cellWidth: i.cellWidth, tableId: i.tableId,
+      })),
+    ].sort((a, b) => a.order - b.order);
+
+    const bySection = new Map<number, Insert[]>();
+    for (const insert of all) {
+      const list = bySection.get(insert.sectionIndex) || [];
+      list.push(insert);
+      bySection.set(insert.sectionIndex, list);
     }
 
-    // Process each section
-    for (const [sectionIndex, inserts] of insertsBySection) {
+    for (const [sectionIndex, inserts] of bySection) {
       const sectionPath = `Contents/section${sectionIndex}.xml`;
       const file = this._zip.file(sectionPath);
       if (!file) continue;
-
       let xml = await file.async('string');
 
-      // Get maximum id and instid for generating new ones
-      const idMatches = xml.matchAll(/id="(\d+)"/g);
+      // Numeric ids for generated cell/wrapper paragraphs must not collide.
       let maxId = 0;
-      for (const m of idMatches) {
-        maxId = Math.max(maxId, parseInt(m[1], 10));
+      for (const m of xml.matchAll(/\bid="(\d+)"/g)) {
+        const n = parseInt(m[1], 10);
+        if (n < 2147483648 && n > maxId) maxId = n;
       }
+      const nextId = () => ++maxId;
 
-      // Sort inserts by insertOrder (ascending) - process in the order they were added
-      // This ensures tables are inserted sequentially, building on each other
-      const sortedInserts = [...inserts].sort((a, b) => a.insertOrder - b.insertOrder);
-
-      for (const insert of sortedInserts) {
-        // Use the in-memory table ID for consistency with updateTableCell operations
-        const tableId = insert.tableId;
-
-        // Calculate row height based on standard settings
-        const rowHeight = 1000; // Default row height in hwpunit
-        const tableHeight = rowHeight * insert.rows;
-
-        // Build table XML
-        let tableXml = `<hp:tbl id="${tableId}" zOrder="0" numberingType="TABLE" textWrap="TOP_AND_BOTTOM" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" pageBreak="CELL" repeatHeader="0" rowCnt="${insert.rows}" colCnt="${insert.cols}" cellSpacing="0" borderFillIDRef="2" noAdjust="0">`;
-        tableXml += `<hp:sz width="${insert.width}" widthRelTo="ABSOLUTE" height="${tableHeight}" heightRelTo="ABSOLUTE" protect="0"/>`;
-        tableXml += `<hp:pos treatAsChar="1" affectLSpacing="0" flowWithText="1" allowOverlap="0" holdAnchorAndSO="0" vertRelTo="PARA" horzRelTo="PARA" vertAlign="TOP" horzAlign="LEFT" vertOffset="0" horzOffset="0"/>`;
-        tableXml += `<hp:outMargin left="141" right="141" top="141" bottom="141"/>`;
-        tableXml += `<hp:inMargin left="0" right="0" top="0" bottom="0"/>`;
-
-        // Generate rows
-        for (let r = 0; r < insert.rows; r++) {
-          tableXml += `<hp:tr>`;
-          for (let c = 0; c < insert.cols; c++) {
-            maxId++;
-            const cellParaId = maxId;
-            tableXml += `<hp:tc name="" header="0" hasMargin="0" protect="0" editable="0" dirty="0" borderFillIDRef="2">`;
-            tableXml += `<hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="CENTER" linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="0">`;
-            tableXml += `<hp:p id="${cellParaId}" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0">`;
-            tableXml += `<hp:run charPrIDRef="0"><hp:t></hp:t></hp:run>`;
-            tableXml += `</hp:p>`;
-            tableXml += `</hp:subList>`;
-            tableXml += `<hp:cellAddr colAddr="${c}" rowAddr="${r}"/>`;
-            tableXml += `<hp:cellSpan colSpan="1" rowSpan="1"/>`;
-            tableXml += `<hp:cellSz width="${insert.cellWidth}" height="${rowHeight}"/>`;
-            tableXml += `<hp:cellMargin left="141" right="141" top="141" bottom="141"/>`;
-            tableXml += `</hp:tc>`;
-          }
-          tableXml += `</hp:tr>`;
-        }
-        tableXml += `</hp:tbl>`;
-
-        // Find the position to insert the table
-        // We need to insert after a paragraph element
-        // Find all <hp:p> elements at the root level (not inside tables)
-        const paragraphMatches = [...xml.matchAll(/<hp:p\s[^>]*>.*?<\/hp:p>/gs)];
-
-        // Filter to find only top-level paragraphs (not inside <hp:tbl> or <hp:subList>)
-        // For simplicity, insert after the first paragraph if afterElementIndex is 0
-        // or find the appropriate position
-
-        let insertPosition = -1;
-        let elementCount = -1;
-        let searchPos = 0;
-
-        // Find paragraphs and tables at root level using balanced bracket matching
-        while (searchPos < xml.length) {
-          // Look for next <hp:p or <hp:tbl
-          const nextP = xml.indexOf('<hp:p ', searchPos);
-          const nextTbl = xml.indexOf('<hp:tbl ', searchPos);
-
-          let nextPos = -1;
-          let isTable = false;
-
-          if (nextP !== -1 && (nextTbl === -1 || nextP < nextTbl)) {
-            nextPos = nextP;
-            isTable = false;
-          } else if (nextTbl !== -1) {
-            nextPos = nextTbl;
-            isTable = true;
-          }
-
-          if (nextPos === -1) break;
-
-          // Check if this is inside a subList (nested)
-          const beforeText = xml.substring(Math.max(0, nextPos - HwpxDocument.NESTED_CHECK_LOOKBACK), nextPos);
-          const subListOpen = beforeText.lastIndexOf('<hp:subList');
-          const subListClose = beforeText.lastIndexOf('</hp:subList>');
-          const isNested = subListOpen > subListClose;
-
-          if (!isNested) {
-            elementCount++;
-
-            // Find the end of this element using balanced bracket matching
-            const endPos = isTable
-              ? HwpxDocument.findClosingTagPosition(xml, nextPos + 1, '<hp:tbl', '</hp:tbl>')
-              : HwpxDocument.findClosingTagPosition(xml, nextPos + 1, '<hp:p ', '</hp:p>');
-
-            if (endPos === -1) {
-              searchPos = nextPos + HwpxDocument.SEARCH_SKIP_OFFSET;
-              continue;
-            }
-
-            if (elementCount === insert.afterElementIndex) {
-              insertPosition = endPos;
-              break;
-            }
-
-            searchPos = endPos;
-          } else {
-            searchPos = nextPos + HwpxDocument.SEARCH_SKIP_OFFSET;
-          }
+      for (const insert of inserts) {
+        let position = insert.anchor
+          ? this.findAnchorEnd(xml, insert.anchor)
+          : this.findSectionHeadEnd(xml);
+        if (position === -1) {
+          // The anchor vanished (e.g. deleted later in the same session) —
+          // append rather than drop the user's content.
+          const secEnd = Math.max(xml.lastIndexOf('</hs:sec>'), xml.lastIndexOf('</hp:sec>'));
+          if (secEnd === -1) continue;
+          position = secEnd;
         }
 
-        // If position not found, insert at end of section (before </hs:sec>)
-        if (insertPosition === -1) {
-          const secEnd = xml.lastIndexOf('</hs:sec>');
-          if (secEnd !== -1) {
-            insertPosition = secEnd;
-          }
-        }
+        const newXml = insert.kind === 'paragraph'
+          ? `<hp:p id="${insert.paragraphId}" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="0"><hp:t>${this.escapeXml(insert.text)}</hp:t></hp:run></hp:p>`
+          : this.buildInsertedTableXml(insert, nextId);
 
-        if (insertPosition !== -1) {
-          // Wrap table in a paragraph for proper positioning
-          const wrapperXml = `<hp:p id="${maxId + 1}" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="0">${tableXml}<hp:t></hp:t></hp:run></hp:p>`;
-          maxId++;
-
-          xml = xml.substring(0, insertPosition) + wrapperXml + xml.substring(insertPosition);
-        }
+        xml = xml.slice(0, position) + newXml + xml.slice(position);
       }
 
       this._zip.file(sectionPath, xml);
@@ -5557,133 +5646,6 @@ export class HwpxDocument {
 
     // Return position after the element at afterIndex
     return elements[afterIndex].end;
-  }
-
-  /**
-   * Apply paragraph inserts to XML.
-   * Inserts new paragraphs at the specified positions.
-   */
-  private async applyParagraphInsertsToXml(): Promise<void> {
-    if (!this._zip) return;
-
-    // Group inserts by section
-    const insertsBySection = new Map<number, Array<{
-      afterElementIndex: number;
-      paragraphId: string;
-      text: string;
-    }>>();
-
-    for (const insert of this._pendingParagraphInserts) {
-      const sectionInserts = insertsBySection.get(insert.sectionIndex) || [];
-      sectionInserts.push({
-        afterElementIndex: insert.afterElementIndex,
-        paragraphId: insert.paragraphId,
-        text: insert.text,
-      });
-      insertsBySection.set(insert.sectionIndex, sectionInserts);
-    }
-
-    // Process each section
-    for (const [sectionIndex, inserts] of insertsBySection) {
-      const sectionPath = `Contents/section${sectionIndex}.xml`;
-      const file = this._zip.file(sectionPath);
-      if (!file) continue;
-
-      let xml = await file.async('string');
-
-      // Sort inserts by afterElementIndex in ascending order
-      // This ensures each insert happens at the correct position as XML grows
-      const sortedInserts = [...inserts].sort((a, b) => a.afterElementIndex - b.afterElementIndex);
-
-      for (const insert of sortedInserts) {
-        // Escape text for XML
-        const escapedText = this.escapeXml(insert.text);
-
-        // Build paragraph XML
-        const paragraphXml = `<hp:p id="${insert.paragraphId}" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="0"><hp:t>${escapedText}</hp:t></hp:run></hp:p>`;
-
-        // Find the position to insert
-        let insertPosition = -1;
-        let elementCount = -1;
-        let searchPos = 0;
-
-        // Find paragraphs and tables at root level using balanced bracket matching
-        while (searchPos < xml.length) {
-          // Look for next <hp:p or <hp:tbl
-          const nextP = xml.indexOf('<hp:p ', searchPos);
-          const nextTbl = xml.indexOf('<hp:tbl ', searchPos);
-
-          let nextPos = -1;
-          let isTable = false;
-
-          if (nextP !== -1 && (nextTbl === -1 || nextP < nextTbl)) {
-            nextPos = nextP;
-            isTable = false;
-          } else if (nextTbl !== -1) {
-            nextPos = nextTbl;
-            isTable = true;
-          }
-
-          if (nextPos === -1) break;
-
-          // Check if this is inside a subList (nested)
-          const beforeText = xml.substring(Math.max(0, nextPos - HwpxDocument.NESTED_CHECK_LOOKBACK), nextPos);
-          const subListOpen = beforeText.lastIndexOf('<hp:subList');
-          const subListClose = beforeText.lastIndexOf('</hp:subList>');
-          const isNested = subListOpen > subListClose;
-
-          if (!isNested) {
-            elementCount++;
-
-            // Find the end of this element using balanced bracket matching
-            const endPos = isTable
-              ? HwpxDocument.findClosingTagPosition(xml, nextPos + 1, '<hp:tbl', '</hp:tbl>')
-              : HwpxDocument.findClosingTagPosition(xml, nextPos + 1, '<hp:p ', '</hp:p>');
-
-            if (endPos === -1) {
-              searchPos = nextPos + HwpxDocument.SEARCH_SKIP_OFFSET;
-              continue;
-            }
-
-            if (elementCount === insert.afterElementIndex) {
-              insertPosition = endPos;
-              break;
-            }
-
-            searchPos = endPos;
-          } else {
-            searchPos = nextPos + HwpxDocument.SEARCH_SKIP_OFFSET;
-          }
-        }
-
-        // If afterElementIndex is -1, insert after the first paragraph (which contains secPr)
-        // IMPORTANT: <hp:secPr> must remain in the first paragraph for the document to be valid
-        if (insert.afterElementIndex === -1) {
-          // Find the end of the first <hp:p> element (which contains <hp:secPr>)
-          const firstPStart = xml.indexOf('<hp:p');
-          if (firstPStart !== -1) {
-            const firstPEnd = xml.indexOf('</hp:p>', firstPStart);
-            if (firstPEnd !== -1) {
-              insertPosition = firstPEnd + '</hp:p>'.length;
-            }
-          }
-        }
-
-        // If position not found, insert at end of section (before </hs:sec>)
-        if (insertPosition === -1) {
-          const secEnd = xml.lastIndexOf('</hs:sec>');
-          if (secEnd !== -1) {
-            insertPosition = secEnd;
-          }
-        }
-
-        if (insertPosition !== -1) {
-          xml = xml.substring(0, insertPosition) + paragraphXml + xml.substring(insertPosition);
-        }
-      }
-
-      this._zip.file(sectionPath, xml);
-    }
   }
 
   /**
@@ -13082,12 +13044,38 @@ export class HwpxDocument {
       const tag = prefixMatch[2];
       const closeTag = `</${prefix}:${tag}>`;
 
-      // For paragraphs, find the close tag accounting for nesting
+      // Paragraphs DO nest: a paragraph that holds a table contains the
+      // paragraphs of every cell. Taking the first </hp:p> cut a table-wrapper
+      // paragraph off inside its first cell, so anything placed "after" it
+      // landed inside that cell (measured: text inserted after a table
+      // appeared in the table's first cell).
       if (tag === 'p') {
-        // Paragraphs don't nest, so find the next close tag
-        const closeIdx = sectionXml.indexOf(closeTag, elem.start);
-        if (closeIdx !== -1) {
-          const endIndex = closeIdx + closeTag.length;
+        const openTag = `<${prefix}:p`;
+        let depth = 1;
+        let pos = elem.start + elem.tagLength;
+        let endIndex = -1;
+        while (depth > 0 && pos < sectionXml.length) {
+          const nextClose = sectionXml.indexOf(closeTag, pos);
+          if (nextClose === -1) break;
+          // Count only real <hp:p ...> / <hp:p> opens, not <hp:pic>, <hp:pos>, ...
+          let nextOpen = sectionXml.indexOf(openTag, pos);
+          while (nextOpen !== -1 && nextOpen < nextClose) {
+            const after = sectionXml[nextOpen + openTag.length];
+            if (after === ' ' || after === '>' || after === '/') break;
+            nextOpen = sectionXml.indexOf(openTag, nextOpen + 1);
+          }
+          if (nextOpen !== -1 && nextOpen < nextClose) {
+            const tagEnd = sectionXml.indexOf('>', nextOpen);
+            // A self-closing <hp:p/> does not change depth.
+            if (sectionXml[tagEnd - 1] !== '/') depth++;
+            pos = tagEnd + 1;
+          } else {
+            depth--;
+            pos = nextClose + closeTag.length;
+            if (depth === 0) endIndex = pos;
+          }
+        }
+        if (endIndex !== -1) {
           results.push({
             xml: sectionXml.substring(elem.start, endIndex),
             startIndex: elem.start,
