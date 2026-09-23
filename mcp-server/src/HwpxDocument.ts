@@ -5765,8 +5765,13 @@ export class HwpxDocument {
 
           const cellXml = cells[insert.col].xml;
 
-          // Generate nested table XML
-          const nestedTableXml = this.generateNestedTableXml(insert.nestedRows, insert.nestedCols, insert.data);
+          // Size the nested table to the parent cell. A fixed per-cell width
+          // ignored the parent and pushed columns past its border (measured:
+          // 3 × 8000 = 24000 inside a 21260-wide cell).
+          const innerWidth = this.getCellInnerWidth(cellXml, tableXml);
+          const nestedTableXml = this.generateNestedTableXml(
+            insert.nestedRows, insert.nestedCols, insert.data, innerWidth
+          );
 
           // Insert nested table into cell
           const updatedCellXml = this.insertNestedTableIntoCell(cellXml, nestedTableXml);
@@ -5805,15 +5810,57 @@ export class HwpxDocument {
   /**
    * Generate XML for a nested table.
    */
-  private generateNestedTableXml(rows: number, cols: number, data: string[][]): string {
+  /**
+   * Usable width inside a table cell, in hwpunit.
+   *
+   * A cell with hasMargin="0" takes its padding from the table's inMargin, so
+   * the cell's own cellMargin is only authoritative when hasMargin="1".
+   *
+   * Every lookup is scoped to the cell's (or table's) own markup. A nested
+   * table inside the cell carries its own cellSz/cellMargin/inMargin, and a
+   * first-match regex over the whole cell would read those instead — which
+   * sized a second nested table to the first one's column (7086 vs 21260).
+   */
+  private getCellInnerWidth(cellXml: string, tableXml: string): number | null {
+    // hp:tc children are subList → cellAddr → cellSpan → cellSz → cellMargin,
+    // so the cell's own properties are everything after its last </hp:subList>.
+    const subListEnd = cellXml.lastIndexOf('</hp:subList>');
+    const cellProps = subListEnd === -1 ? cellXml : cellXml.slice(subListEnd);
+    const size = cellProps.match(/<hp:cellSz width="(\d+)"/);
+    if (!size) return null;
+    const width = parseInt(size[1], 10);
+
+    const openTag = cellXml.slice(0, cellXml.indexOf('>') + 1);
+    const usesOwnMargin = /\bhasMargin="1"/.test(openTag);
+    // Table-level inMargin precedes the first row.
+    const firstRow = tableXml.indexOf('<hp:tr');
+    const tableHead = firstRow === -1 ? tableXml : tableXml.slice(0, firstRow);
+    const margin = usesOwnMargin
+      ? cellProps.match(/<hp:cellMargin left="(\d+)" right="(\d+)"/)
+      : tableHead.match(/<hp:inMargin left="(\d+)" right="(\d+)"/);
+    const padding = margin ? parseInt(margin[1], 10) + parseInt(margin[2], 10) : 0;
+
+    return Math.max(width - padding, 0);
+  }
+
+  /**
+   * Generate XML for a nested table.
+   *
+   * @param innerWidth Usable width of the parent cell in hwpunit. The nested
+   *   table is sized to fit it exactly; columns share the width evenly.
+   */
+  private generateNestedTableXml(rows: number, cols: number, data: string[][], innerWidth: number | null = null): string {
     // Generate unique ID
     const id = Math.floor(Math.random() * 2000000000) + 100000000;
     const zOrder = Math.floor(Math.random() * 100);
 
-    // Calculate sizes (in hwpunit, 1 hwpunit = 0.1mm)
-    const cellWidth = 8000; // ~80mm per cell
+    // Calculate sizes (hwpunit, 100 = 1pt). Without a parent width fall back to
+    // the previous fixed column width so standalone callers keep working.
+    const tableWidth = innerWidth !== null && innerWidth > 0 ? innerWidth : 8000 * cols;
+    const baseCellWidth = Math.floor(tableWidth / cols);
+    // Give the rounding remainder to the last column so the columns sum to tableWidth.
+    const cellWidthAt = (c: number) => (c === cols - 1 ? tableWidth - baseCellWidth * (cols - 1) : baseCellWidth);
     const cellHeight = 1400; // ~14mm per cell
-    const tableWidth = cellWidth * cols;
     const tableHeight = cellHeight * rows;
 
     let xml = `<hp:tbl id="${id}" zOrder="${zOrder}" numberingType="TABLE" textWrap="TOP_AND_BOTTOM" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" pageBreak="NONE" repeatHeader="0" rowCnt="${rows}" colCnt="${cols}" cellSpacing="0" borderFillIDRef="2" noAdjust="0">`;
@@ -5854,7 +5901,7 @@ export class HwpxDocument {
         xml += `</hp:subList>`;
         xml += `<hp:cellAddr colAddr="${c}" rowAddr="${r}"/>`;
         xml += `<hp:cellSpan colSpan="1" rowSpan="1"/>`;
-        xml += `<hp:cellSz width="${cellWidth}" height="${cellHeight}"/>`;
+        xml += `<hp:cellSz width="${cellWidthAt(c)}" height="${cellHeight}"/>`;
         xml += `<hp:cellMargin left="141" right="141" top="141" bottom="141"/>`;
         xml += `</hp:tc>`;
       }
@@ -5877,7 +5924,7 @@ export class HwpxDocument {
       const pMatch = cellXml.match(/<hp:p[^>]*>/);
       if (pMatch) {
         const insertPos = cellXml.indexOf(pMatch[0]) + pMatch[0].length;
-        const runXml = `<hp:run charPrIDRef="0"><hp:t> </hp:t>${nestedTableXml}<hp:t/></hp:run>`;
+        const runXml = `<hp:run charPrIDRef="0">${nestedTableXml}<hp:t/></hp:run>`;
         return cellXml.substring(0, insertPos) + runXml + cellXml.substring(insertPos);
       }
       return cellXml;
@@ -5898,8 +5945,10 @@ export class HwpxDocument {
     // Find the end of the opening <hp:p ...> tag
     const pTagEnd = cellXml.indexOf('>', pStart) + 1;
 
-    // Create new run with nested table
-    const runXml = `<hp:run charPrIDRef="0"><hp:t> </hp:t>${nestedTableXml}<hp:t/></hp:run>`;
+    // Create new run with nested table. No leading text: a space before an
+    // inline (treatAsChar) table that fills the cell width forces the table onto
+    // a second line and leaves an empty first line above it (measured in Hancom).
+    const runXml = `<hp:run charPrIDRef="0">${nestedTableXml}<hp:t/></hp:run>`;
 
     // Insert after the opening <hp:p> tag
     return cellXml.substring(0, pTagEnd) + runXml + cellXml.substring(pTagEnd);
