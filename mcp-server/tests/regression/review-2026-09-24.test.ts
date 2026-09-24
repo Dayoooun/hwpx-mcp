@@ -215,3 +215,39 @@ describe('⑤ 글자 모양이 섞인 문단을 통째로 바꾸면 뒤쪽이 �
     expect(runs).toEqual([{ char: '0', text: '전체를 새 문장으로 바꿉니다' }]);
   });
 });
+
+describe('② (나) 저장 검증이 깨진 XML 을 통과시킴 — 그림 칸 쓰기에서 실측', () => {
+  /**
+   * 한/글 원본 209건 첫 표 (0,0) 칸 쓰기 중 18건(보도자료 양식 등)의 저장본이
+   * 파싱되지 않았다. 칸 첫 run 이 로고 그림 <hp:pic> 이고, 그 안의
+   * <hc:transMatrix .../> 를 칸 글 정규식 <(hp|hs|hc):t[^>]*> 가 <hc:t> 로 읽어
+   * "<hc:transMatrix …>시험</hc:t>" 을 만들었다. 0.3.3 의 저장 검증은 이걸 통과시켰다.
+   */
+  const picCell =
+    '<hp:run charPrIDRef="0"><hp:pic id="1" zOrder="0"><hp:renderingInfo>' +
+    '<hc:transMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/>' +
+    '<hc:scaMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/>' +
+    '</hp:renderingInfo><hp:imgRect><hc:pt0 x="0" y="0"/></hp:imgRect></hp:pic><hp:t/></hp:run>';
+
+  async function logoTable(): Promise<HwpxDocument> {
+    const seed = HwpxDocument.createNew('pic', 'logo');
+    seed.insertTable(0, 0, 1, 2);
+    seed.updateTableCell(0, 0, 0, 1, '제목칸');
+    // (0,0) 칸의 run 을 한/글 원본과 같은 "그림 + 빈 글" run 으로 바꾼다.
+    return withSectionXml(seed, x => x.replace(
+      /(<hp:tc\b[\s\S]*?<hp:subList\b[\s\S]*?<hp:p\b[^>]*>)<hp:run\b[\s\S]*?<\/hp:run>/,
+      (_m, open) => open + picCell));
+  }
+
+  it('그림이 든 칸에 글을 써도 저장본이 XML 로 파싱되고 그림 행렬은 그대로다', async () => {
+    const doc = await logoTable();
+    expect(doc.updateTableCell(0, 0, 0, 0, '시험')).toBe(true);
+
+    const xml = await sectionXml(await doc.save());
+    const { xmlWellFormednessError } = await import('../../src/XmlWellFormed');
+    expect(xmlWellFormednessError(xml)).toBeNull();
+    expect(xml).toContain('<hc:transMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/>');
+    expect(xml).not.toMatch(/<hc:transMatrix[^>]*>시험/);
+    expect(xml).toMatch(/<\/hp:pic><hp:t>시험<\/hp:t><\/hp:run>/);
+  });
+});

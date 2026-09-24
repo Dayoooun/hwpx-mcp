@@ -62,7 +62,8 @@
     "@modelcontextprotocol/sdk": "^1.0.0",
     "hwp.js": "^0.0.3",
     "jszip": "^3.10.1",
-    "pako": "^2.1.0"
+    "pako": "^2.1.0",
+    "saxes": "^6.0.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

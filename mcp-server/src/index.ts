@@ -9,6 +9,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { HwpxDocument, ImagePositionOptions } from './HwpxDocument';
 import { HangingIndentCalculator } from './HangingIndentCalculator';
+import { findMalformedXmlParts } from './XmlWellFormed';
 
 const MCP_VERSION: string = require('../package.json').version;
 console.error(`[HWPX MCP] Server starting - ${MCP_VERSION} - ${new Date().toISOString()}`);
@@ -2468,24 +2469,13 @@ Call get_tool_guide with: template, table, image, search, read, create`
                   throw new Error(`Missing required files: ${missingFiles.join(', ')}`);
                 }
 
-                // Verify all section XML files are valid
-                const sectionFiles = Object.keys(zip.files).filter(f => f.match(/^Contents\/section\d+\.xml$/));
-                for (const sectionFile of sectionFiles) {
-                  const file = zip.file(sectionFile);
-                  if (file) {
-                    const xmlContent = await file.async('string');
-                    if (!xmlContent || !xmlContent.includes('<?xml')) {
-                      throw new Error(`Invalid XML in ${sectionFile}`);
-                    }
-                    // Check for truncated XML (incomplete tag at end)
-                    if (xmlContent.match(/<[^>]*$/)) {
-                      throw new Error(`Truncated XML in ${sectionFile}`);
-                    }
-                    // Check for broken opening tags (< followed by < without >)
-                    if (xmlContent.match(/<[^>]*</)) {
-                      throw new Error(`Broken tag structure in ${sectionFile}`);
-                    }
-                  }
+                // Every XML part must actually parse. The old textual checks
+                // (<?xml present, no dangling '<') passed a section with a
+                // mismatched close tag, and the save reported
+                // integrity_verified: true for a file Hancom cannot open.
+                const malformed = await findMalformedXmlParts(zip);
+                if (malformed.length > 0) {
+                  throw new Error(`Malformed XML: ${malformed.slice(0, 3).join('; ')}`);
                 }
               } catch (verifyErr) {
                 // Clean up temp file

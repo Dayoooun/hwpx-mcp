@@ -5377,12 +5377,12 @@ export class HwpxDocument {
 
       // Clean up empty runs that may be left behind
       // <hp:run charPrIDRef="0"><hp:t/></hp:run> or <hp:run charPrIDRef="0"></hp:run>
-      xml = xml.replace(/<hp:run[^>]*>(\s*<hp:t\s*\/>)?\s*<\/hp:run>/g, '');
+      xml = xml.replace(/<hp:run(?:\s[^>]*)?>(\s*<hp:t\s*\/>)?\s*<\/hp:run>/g, '');
 
       // Clean up empty paragraphs that only contained the image
       // <hp:p ...><hp:linesegarray>...</hp:linesegarray></hp:p>
       xml = xml.replace(
-        /<hp:p[^>]*>\s*(<hp:linesegarray[^>]*>[\s\S]*?<\/hp:linesegarray>)?\s*<\/hp:p>/g,
+        /<hp:p(?:\s[^>]*)?>\s*(<hp:linesegarray[^>]*>[\s\S]*?<\/hp:linesegarray>)?\s*<\/hp:p>/g,
         ''
       );
 
@@ -5991,7 +5991,7 @@ export class HwpxDocument {
     const elements: Array<{ start: number; end: number }> = [];
 
     // Find paragraphs (not inside subList)
-    const pRegex = /<hp:p[^>]*>[\s\S]*?<\/hp:p>/g;
+    const pRegex = /<hp:p(?:\s[^>]*)?>[\s\S]*?<\/hp:p>/g;
     let match;
 
     // Find tables
@@ -6008,7 +6008,7 @@ export class HwpxDocument {
 
       // Check if this paragraph is inside a table (inside subList)
       const beforeMatch = xml.substring(0, start);
-      const subListOpen = (beforeMatch.match(/<hp:subList[^>]*>/g) || []).length;
+      const subListOpen = (beforeMatch.match(/<hp:subList(?:\s[^>]*)?>/g) || []).length;
       const subListClose = (beforeMatch.match(/<\/hp:subList>/g) || []).length;
 
       if (subListOpen === subListClose) {
@@ -6261,10 +6261,10 @@ export class HwpxDocument {
    */
   private insertNestedTableIntoCell(cellXml: string, nestedTableXml: string): string {
     // Find the subList in the cell
-    const subListMatch = cellXml.match(/<hp:subList[^>]*>/);
+    const subListMatch = cellXml.match(/<hp:subList(?:\s[^>]*)?>/);
     if (!subListMatch) {
       // No subList, try to add to paragraph directly
-      const pMatch = cellXml.match(/<hp:p[^>]*>/);
+      const pMatch = cellXml.match(/<hp:p(?:\s[^>]*)?>/);
       if (pMatch) {
         const insertPos = cellXml.indexOf(pMatch[0]) + pMatch[0].length;
         const runXml = `<hp:run charPrIDRef="0">${nestedTableXml}<hp:t/></hp:run>`;
@@ -6658,7 +6658,7 @@ export class HwpxDocument {
 
         // If no cell before masterCol, insert at the beginning of row content
         if (insertPoint === -1) {
-          const trMatch = updatedRowXml.match(/<(hp|hs):tr[^>]*>/);
+          const trMatch = updatedRowXml.match(/<(hp|hs):tr(?:\s[^>]*)?>/);
           if (trMatch) {
             insertPoint = trMatch[0].length;
           } else {
@@ -7029,12 +7029,12 @@ export class HwpxDocument {
    */
   private findTableById(xml: string, tableId: string): { xml: string; startIndex: number; endIndex: number } | null {
     // Match table with specific ID
-    const tableStartRegex = new RegExp(`<(?:hp|hs|hc):tbl[^>]*\\bid="${tableId}"[^>]*>`, 'g');
+    const tableStartRegex = new RegExp(`<(?:hp|hs|hc):tbl\\s[^>]*\\bid="${tableId}"[^>]*>`, 'g');
     const match = tableStartRegex.exec(xml);
 
     if (!match) {
       // Try alternate ID format (id='...' instead of id="...")
-      const altRegex = new RegExp(`<(?:hp|hs|hc):tbl[^>]*\\bid='${tableId}'[^>]*>`, 'g');
+      const altRegex = new RegExp(`<(?:hp|hs|hc):tbl\\s[^>]*\\bid='${tableId}'[^>]*>`, 'g');
       const altMatch = altRegex.exec(xml);
       if (!altMatch) return null;
       return this.extractTableFromMatch(xml, altMatch);
@@ -7187,7 +7187,7 @@ export class HwpxDocument {
     const tables: Array<{ xml: string; startIndex: number; endIndex: number }> = [];
 
     // Match both hp:tbl and hs:tbl (different namespace prefixes)
-    const tableStartRegex = /<(?:hp|hs|hc):tbl[^>]*>/g;
+    const tableStartRegex = /<(?:hp|hs|hc):tbl(?:\s[^>]*)?>/g;
     let match;
 
     while ((match = tableStartRegex.exec(xml)) !== null) {
@@ -7471,7 +7471,7 @@ export class HwpxDocument {
     }
 
     // Pattern 1: Cell has existing <hp:t> or <hs:t> or <hc:t> tags with content
-    const tTagPattern = /(<(?:hp|hs|hc):t[^>]*>)([^<]*)(<\/(?:hp|hs|hc):t>)/g;
+    const tTagPattern = /(<(?:hp|hs|hc):t(?:\s[^>]*)?>)([^<]*)(<\/(?:hp|hs|hc):t>)/g;
     let foundText = false;
     let result = xml.replace(tTagPattern, (match, openTag, _oldText, closeTag, offset) => {
       // Only replace the first text occurrence
@@ -7485,7 +7485,7 @@ export class HwpxDocument {
     if (foundText) return this.resetLinesegInXml(result);
 
     // Pattern 2: Cell has empty <hp:t/> or <hp:t></hp:t> tags
-    const emptyTTagPattern = /<((?:hp|hs|hc):t)([^>]*)\s*\/>/;
+    const emptyTTagPattern = /<((?:hp|hs|hc):t)((?:\s[^>]*?)?)\s*\/>/;
     const emptyTMatch = xml.match(emptyTTagPattern);
     if (emptyTMatch) {
       const updated = xml.replace(emptyTTagPattern, `<${emptyTMatch[1]}${emptyTMatch[2]}>${escapedText}</${emptyTMatch[1]}>`);
@@ -7493,7 +7493,7 @@ export class HwpxDocument {
     }
 
     // Pattern 3a: Self-closing <hp:run .../> - expand to full run with text
-    const selfClosingRunPattern = /<((?:hp|hs|hc):run)([^>]*)\s*\/>/;
+    const selfClosingRunPattern = /<((?:hp|hs|hc):run)((?:\s[^>]*?)?)\s*\/>/;
     const selfClosingRunMatch = xml.match(selfClosingRunPattern);
     if (selfClosingRunMatch) {
       const tagName = selfClosingRunMatch[1]; // e.g., "hp:run"
@@ -7512,7 +7512,7 @@ export class HwpxDocument {
     }
 
     // Pattern 3b: Cell has <hp:run> but no <hp:t> - add text inside run
-    const runPattern = /(<(?:hp|hs|hc):run[^>]*>)([\s\S]*?)(<\/(?:hp|hs|hc):run>)/;
+    const runPattern = /(<(?:hp|hs|hc):run(?:\s[^>]*)?>)([\s\S]*?)(<\/(?:hp|hs|hc):run>)/;
     const runMatch = xml.match(runPattern);
     if (runMatch) {
       const prefix = runMatch[1].match(/<(hp|hs|hc):run/)?.[1] || 'hp';
@@ -7522,7 +7522,7 @@ export class HwpxDocument {
     }
 
     // Pattern 4: Cell has <hp:subList><hp:p> structure - find the paragraph and add text
-    const subListPattern = /(<(?:hp|hs|hc):subList[^>]*>[\s\S]*?<(?:hp|hs|hc):p[^>]*>)([\s\S]*?)(<\/(?:hp|hs|hc):p>)/;
+    const subListPattern = /(<(?:hp|hs|hc):subList(?:\s[^>]*)?>[\s\S]*?<(?:hp|hs|hc):p(?:\s[^>]*)?>)([\s\S]*?)(<\/(?:hp|hs|hc):p>)/;
     const subListMatch = xml.match(subListPattern);
     if (subListMatch) {
       const prefix = subListMatch[1].match(/<(hp|hs|hc):subList/)?.[1] || 'hp';
@@ -7536,7 +7536,7 @@ export class HwpxDocument {
     }
 
     // Pattern 5: Cell has only <hp:p> without subList
-    const pPattern = /(<(?:hp|hs|hc):p[^>]*>)([\s\S]*?)(<\/(?:hp|hs|hc):p>)/;
+    const pPattern = /(<(?:hp|hs|hc):p(?:\s[^>]*)?>)([\s\S]*?)(<\/(?:hp|hs|hc):p>)/;
     const pMatch = xml.match(pPattern);
     if (pMatch) {
       const prefix = pMatch[1].match(/<(hp|hs|hc):p/)?.[1] || 'hp';
@@ -7561,7 +7561,7 @@ export class HwpxDocument {
     let xml = cellXml;
 
     // Find the subList element to replace paragraph content
-    const subListStartMatch = xml.match(/<(hp|hs|hc):subList[^>]*>/);
+    const subListStartMatch = xml.match(/<(hp|hs|hc):subList(?:\s[^>]*)?>/);
     if (subListStartMatch) {
       const prefix = subListStartMatch[1];
       const startTag = subListStartMatch[0];
@@ -7600,7 +7600,7 @@ export class HwpxDocument {
         const nestedTables = this.extractNestedTables(subListContent, prefix);
 
         // Extract paraPrIDRef and styleIDRef from existing paragraph
-        const existingPMatch = subListContent.match(/<(?:hp|hs|hc):p[^>]*paraPrIDRef="([^"]*)"[^>]*styleIDRef="([^"]*)"/);
+        const existingPMatch = subListContent.match(/<(?:hp|hs|hc):p\s[^>]*paraPrIDRef="([^"]*)"[^>]*styleIDRef="([^"]*)"/);
         const paraPrIDRef = existingPMatch?.[1] || '0';
         const styleIDRef = existingPMatch?.[2] || '0';
 
@@ -7617,7 +7617,7 @@ export class HwpxDocument {
     }
 
     // Fallback: try to find paragraph directly
-    const pStartMatch = xml.match(/<(hp|hs|hc):p[^>]*>/);
+    const pStartMatch = xml.match(/<(hp|hs|hc):p(?:\s[^>]*)?>/);
     if (pStartMatch) {
       const prefix = pStartMatch[1];
       const attrMatch = pStartMatch[0].match(/<(?:hp|hs|hc):p([^>]*)>/);
@@ -7648,7 +7648,7 @@ export class HwpxDocument {
           if (depth === 0) {
             lastParagraphEnd = searchIndex;
             const remainingXml = xml.substring(searchIndex);
-            const nextPMatch = remainingXml.match(/^\s*<(hp|hs|hc):p[^>]*>/);
+            const nextPMatch = remainingXml.match(/^\s*<(hp|hs|hc):p(?:\s[^>]*)?>/);
             if (!nextPMatch) break;
           }
         } else {
@@ -7683,7 +7683,7 @@ export class HwpxDocument {
 
     // Find the OUTER subList element with balanced tag matching
     // This is crucial because cells can contain nested tables with their own subLists
-    const subListStartMatch = cellXml.match(/<(hp|hs|hc):subList[^>]*>/);
+    const subListStartMatch = cellXml.match(/<(hp|hs|hc):subList(?:\s[^>]*)?>/);
     if (subListStartMatch) {
       const prefix = subListStartMatch[1];
       const startTag = subListStartMatch[0];
@@ -7727,7 +7727,7 @@ export class HwpxDocument {
         const nestedTables = this.extractNestedTables(subListContent, prefix);
 
         // Extract paraPrIDRef and styleIDRef from existing paragraph if available
-        const existingPMatch = subListContent.match(/<(?:hp|hs|hc):p[^>]*paraPrIDRef="([^"]*)"[^>]*styleIDRef="([^"]*)"/);
+        const existingPMatch = subListContent.match(/<(?:hp|hs|hc):p\s[^>]*paraPrIDRef="([^"]*)"[^>]*styleIDRef="([^"]*)"/);
         const paraPrIDRef = existingPMatch?.[1] || '0';
         const styleIDRef = existingPMatch?.[2] || '0';
 
@@ -7748,7 +7748,7 @@ export class HwpxDocument {
 
     // If no subList found, try to find just paragraphs and replace
     // Use balanced matching for paragraphs too, since they can contain nested tables
-    const pStartMatch = cellXml.match(/<(hp|hs|hc):p[^>]*>/);
+    const pStartMatch = cellXml.match(/<(hp|hs|hc):p(?:\s[^>]*)?>/);
     if (pStartMatch) {
       const prefix = pStartMatch[1];
       const firstPStart = cellXml.indexOf(pStartMatch[0]);
@@ -7786,7 +7786,7 @@ export class HwpxDocument {
             lastParagraphEnd = searchIndex;
             // Check if there's another paragraph at top level
             const remainingXml = cellXml.substring(searchIndex);
-            const nextPMatch = remainingXml.match(/^\s*<(hp|hs|hc):p[^>]*>/);
+            const nextPMatch = remainingXml.match(/^\s*<(hp|hs|hc):p(?:\s[^>]*)?>/);
             if (!nextPMatch) {
               // No more top-level paragraphs
               break;
@@ -7933,13 +7933,13 @@ export class HwpxDocument {
           } else {
             // Text not found, fall back to first paragraph
             console.warn(`[HwpxDocument] afterText "${insert.afterText}" not found in cell, using first paragraph`);
-            const paragraphMatch = targetCell.xml.match(/<hp:p[^>]*>/);
+            const paragraphMatch = targetCell.xml.match(/<hp:p(?:\s[^>]*)?>/);
             if (!paragraphMatch) continue;
             insertPosition = targetCell.xml.indexOf(paragraphMatch[0]) + paragraphMatch[0].length;
           }
         } else {
           // Default: find the first <hp:p> in the cell and insert the image inside it
-          const paragraphMatch = targetCell.xml.match(/<hp:p[^>]*>/);
+          const paragraphMatch = targetCell.xml.match(/<hp:p(?:\s[^>]*)?>/);
           if (!paragraphMatch) continue;
           insertPosition = targetCell.xml.indexOf(paragraphMatch[0]) + paragraphMatch[0].length;
         }
@@ -8475,10 +8475,10 @@ export class HwpxDocument {
           newRunXml = run.xml.replace(/<hp:t\s*\/>/, `<hp:t>${escapedNew}</hp:t>`);
         } else if (/<hp:t\b[^>]*>/.test(run.xml)) {
           // Has <hp:t>...</hp:t> tags - replace content of FIRST one only (no g flag)
-          newRunXml = run.xml.replace(/(<hp:t[^>]*>)[^<]*(<\/hp:t>)/, `$1${escapedNew}$2`);
+          newRunXml = run.xml.replace(/(<hp:t(?:\s[^>]*)?>)[^<]*(<\/hp:t>)/, `$1${escapedNew}$2`);
           // Remove any additional <hp:t>...</hp:t> tags to prevent duplication
           let firstReplaced = false;
-          newRunXml = newRunXml.replace(/<hp:t[^>]*>[^<]*<\/hp:t>/g, (match) => {
+          newRunXml = newRunXml.replace(/<hp:t(?:\s[^>]*)?>[^<]*<\/hp:t>/g, (match) => {
             if (!firstReplaced) {
               firstReplaced = true;
               return match; // Keep the first one
@@ -9144,9 +9144,9 @@ export class HwpxDocument {
       if (/<hp:t\s*\/>/.test(paragraphXml)) {
         // Self-closing: <hp:t/> -> <hp:t>newText</hp:t>
         paragraphXml = paragraphXml.replace(/<hp:t\s*\/>/, `<hp:t>${escapedNew}</hp:t>`);
-      } else if (/<hp:t[^>]*>/.test(paragraphXml)) {
+      } else if (/<hp:t(?:\s[^>]*)?>/.test(paragraphXml)) {
         // Has content or empty: <hp:t>...</hp:t> -> <hp:t>newText</hp:t>
-        paragraphXml = paragraphXml.replace(/(<hp:t[^>]*>)[^<]*(<\/hp:t>)/, `$1${escapedNew}$2`);
+        paragraphXml = paragraphXml.replace(/(<hp:t(?:\s[^>]*)?>)[^<]*(<\/hp:t>)/, `$1${escapedNew}$2`);
       } else if (/<hp:run\b[^>]*>/.test(paragraphXml)) {
         // No <hp:t> tag exists - add one after the <hp:run> opening tag
         paragraphXml = paragraphXml.replace(
@@ -9220,7 +9220,7 @@ export class HwpxDocument {
 
       // Found the right paragraph! Replace the text
       // Replace within <hp:t> tags
-      const pattern1 = new RegExp(`(<hp:t[^>]*>)${this.escapeRegex(escapedOld)}`);
+      const pattern1 = new RegExp(`(<hp:t(?:\\s[^>]*)?>)${this.escapeRegex(escapedOld)}`);
       let newParagraphContent = paragraphContent.replace(pattern1, `$1${escapedNew}`);
 
       // Also try standalone text replacement
@@ -9529,15 +9529,15 @@ export class HwpxDocument {
     if (/<hp:t\s*\/>/.test(elementContent)) {
       // Case 1: Self-closing <hp:t/> - replace with full tag containing new text
       newElementContent = elementContent.replace(/<hp:t\s*\/>/, `<hp:t>${escapedNew}</hp:t>`);
-    } else if (oldText === '' && /<hp:t[^>]*><\/hp:t>/.test(elementContent)) {
+    } else if (oldText === '' && /<hp:t(?:\s[^>]*)?><\/hp:t>/.test(elementContent)) {
       // Case 2: Empty <hp:t></hp:t> - fill with new text
-      newElementContent = elementContent.replace(/(<hp:t[^>]*>)<\/hp:t>/, `$1${escapedNew}</hp:t>`);
+      newElementContent = elementContent.replace(/(<hp:t(?:\s[^>]*)?>)<\/hp:t>/, `$1${escapedNew}</hp:t>`);
     } else if (oldText === '' && !/<hp:t\b[^>]*>/.test(elementContent)) {
       // Case 3: No hp:t tag at all - add one after the first hp:run opening tag
       newElementContent = elementContent.replace(/(<hp:run\b[^>]*>)/, `$1<hp:t>${escapedNew}</hp:t>`);
     } else {
       // Case 4: Normal case - replace text within <hp:t> tags (first match only)
-      const pattern1 = new RegExp(`(<hp:t[^>]*>)${this.escapeRegex(escapedOld)}`);
+      const pattern1 = new RegExp(`(<hp:t(?:\\s[^>]*)?>)${this.escapeRegex(escapedOld)}`);
       newElementContent = elementContent.replace(pattern1, `$1${escapedNew}`);
 
       // Also try standalone text replacement if pattern1 didn't match
@@ -9629,7 +9629,7 @@ export class HwpxDocument {
     if (runIndex >= runs.length) {
       // Run index out of bounds, try to replace in any run
       // Replace text within <hp:t> tags (first match only)
-      const pattern1 = new RegExp(`(<hp:t[^>]*>)${this.escapeRegex(escapedOld)}`);
+      const pattern1 = new RegExp(`(<hp:t(?:\\s[^>]*)?>)${this.escapeRegex(escapedOld)}`);
       let newParagraphContent = paragraphContent.replace(pattern1, `$1${escapedNew}`);
 
       // Also try standalone text replacement
@@ -9646,7 +9646,7 @@ export class HwpxDocument {
     let newRunContent = targetRun.content;
 
     // Replace within <hp:t> tags in this run
-    const tPattern = new RegExp(`(<hp:t[^>]*>)${this.escapeRegex(escapedOld)}(</hp:t>)`);
+    const tPattern = new RegExp(`(<hp:t(?:\\s[^>]*)?>)${this.escapeRegex(escapedOld)}(</hp:t>)`);
     newRunContent = newRunContent.replace(tPattern, `$1${escapedNew}$2`);
 
     // If no match, try simpler pattern
@@ -9856,7 +9856,7 @@ export class HwpxDocument {
       }
 
       let rowIndex = 0;
-      return tblMatch.replace(/<hp:tr[^>]*>([\s\S]*?)<\/hp:tr>/g, (rowMatch) => {
+      return tblMatch.replace(/<hp:tr(?:\s[^>]*)?>([\s\S]*?)<\/hp:tr>/g, (rowMatch) => {
         if (rowIndex >= table.rows.length) {
           rowIndex++;
           return rowMatch;
@@ -10922,7 +10922,7 @@ export class HwpxDocument {
       const tableXml = xml.substring(table.startIndex, table.endIndex);
 
       // Find cells in this table
-      const cellMatches = [...tableXml.matchAll(/<(?:hp|hs):tc[^>]*>([\s\S]*?)<\/(?:hp|hs):tc>/g)];
+      const cellMatches = [...tableXml.matchAll(/<(?:hp|hs):tc(?:\s[^>]*)?>([\s\S]*?)<\/(?:hp|hs):tc>/g)];
       for (const cellMatch of cellMatches) {
         const cellContent = cellMatch[1];
         const textContent = this.extractTextFromCellXml(cellContent);
@@ -10959,7 +10959,7 @@ export class HwpxDocument {
    */
   private findAllParagraphsInCell(cellXml: string): Array<{ start: number; end: number; xml: string }> {
     const paragraphs: Array<{ start: number; end: number; xml: string }> = [];
-    const paragraphRegex = /<hp:p[^>]*>[\s\S]*?<\/hp:p>/g;
+    const paragraphRegex = /<hp:p(?:\s[^>]*)?>[\s\S]*?<\/hp:p>/g;
 
     let match;
     while ((match = paragraphRegex.exec(cellXml)) !== null) {
@@ -11226,7 +11226,7 @@ export class HwpxDocument {
     }> = [];
 
     // Track table tag positions
-    const tblOpenRegex = /<(?:hp|hs|hc):tbl[^>]*>/g;
+    const tblOpenRegex = /<(?:hp|hs|hc):tbl(?:\s[^>]*)?>/g;
     const tblCloseRegex = /<\/(?:hp|hs|hc):tbl>/g;
 
     interface TagPosition {
@@ -11304,12 +11304,12 @@ export class HwpxDocument {
     }> = [];
 
     // Check for tc outside of tr
-    const tcOutsideTr = /<(?:hp|hs|hc):tc[^>]*>(?:(?!<(?:hp|hs|hc):tr[^>]*>).)*?<\/(?:hp|hs|hc):tc>/gs;
+    const tcOutsideTr = /<(?:hp|hs|hc):tc(?:\s[^>]*)?>(?:(?!<(?:hp|hs|hc):tr(?:\s[^>]*)?>).)*?<\/(?:hp|hs|hc):tc>/gs;
     // This is simplified - a full check would need proper nesting validation
 
     // Check for tr outside of tbl
-    const trPattern = /<(?:hp|hs|hc):tr[^>]*>/g;
-    const tblPattern = /<(?:hp|hs|hc):tbl[^>]*>/g;
+    const trPattern = /<(?:hp|hs|hc):tr(?:\s[^>]*)?>/g;
+    const tblPattern = /<(?:hp|hs|hc):tbl(?:\s[^>]*)?>/g;
 
     // Simple check: count if tr appears without preceding tbl
     let match;
@@ -13195,7 +13195,7 @@ export class HwpxDocument {
     const targetRowData = rows[targetRow];
 
     // Extract content inside the row (between <hp:tr...> and </hp:tr>)
-    const rowOpenTagMatch = targetRowData.xml.match(/^<(?:hp|hs|hc):tr[^>]*>/);
+    const rowOpenTagMatch = targetRowData.xml.match(/^<(?:hp|hs|hc):tr(?:\s[^>]*)?>/);
     if (!rowOpenTagMatch) return null;
 
     const rowContentStart = rowOpenTagMatch[0].length;
@@ -13212,7 +13212,7 @@ export class HwpxDocument {
     const targetCellData = cells[targetCol];
 
     // Extract content inside the cell (between <hp:tc...> and </hp:tc>)
-    const cellOpenTagMatch = targetCellData.xml.match(/^<(?:hp|hs|hc):tc[^>]*>/);
+    const cellOpenTagMatch = targetCellData.xml.match(/^<(?:hp|hs|hc):tc(?:\s[^>]*)?>/);
     if (!cellOpenTagMatch) return null;
 
     const cellContentStart = cellOpenTagMatch[0].length;

@@ -148,6 +148,29 @@ describe(`MCP stdio 종단간 [${server}]`, () => {
     expect(r.isError).toBe(false);
   });
 
+  it('② (나) 닫는 태그가 어긋난 문서는 verify_integrity 저장이 실패하고 파일을 남기지 않는다', async () => {
+    const { id, file } = await newDoc('verify-src');
+    await mcp.ok('insert_paragraph', { doc_id: id, section_index: 0, after_index: -1, text: '첫 문단' });
+    await mcp.ok('insert_paragraph', { doc_id: id, section_index: 0, after_index: 0, text: '둘째 문단' });
+    await mcp.ok('save_document', { doc_id: id });
+
+    // 회신 ② 저장본과 같은 증상: <hp:p> 닫힘이 하나 모자란 section.
+    const zip = await JSZip.loadAsync(fs.readFileSync(file));
+    const xml = await zip.file('Contents/section0.xml')!.async('string');
+    const cut = xml.lastIndexOf('</hp:p>');
+    zip.file('Contents/section0.xml', xml.slice(0, cut) + xml.slice(cut + '</hp:p>'.length));
+    const broken = path.join(workDir, 'verify-broken.hwpx');
+    fs.writeFileSync(broken, await zip.generateAsync({ type: 'nodebuffer' }));
+
+    const opened = await mcp.ok('open_document', { file_path: broken });
+    const out = path.join(workDir, 'verify-out.hwpx');
+    const saved = await mcp.call('save_document', { doc_id: opened.doc_id, output_path: out, verify_integrity: true });
+    // 0.3.3: 성공 + integrity_verified: true 로 깨진 파일을 썼다.
+    expect(saved.isError).toBe(true);
+    expect(saved.raw).toMatch(/Malformed XML: Contents\/section0\.xml/);
+    expect(fs.existsSync(out)).toBe(false);
+  });
+
   // Last on purpose: every call above has run by now, so this covers stdout
   // from the whole session, not just start-up.
   it('서버가 stdout 에 JSON-RPC 외의 출력을 쓰지 않는다 (MCP stdio 규약)', () => {
