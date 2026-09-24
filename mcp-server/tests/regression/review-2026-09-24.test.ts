@@ -339,7 +339,7 @@ describe('PR #16 CodeRabbit 2차 지적 (418b3d7)', () => {
 describe('표 편집은 호출한 순서대로 저장된다 (CodeRabbit 3차, 0.3.3 에도 있던 결함)', () => {
   /**
    * 저장이 표 편집을 호출 순서가 아니라 종류별 고정 순서(칸 쓰기 → … → 행 삽입 → 행 삭제
-   * → 열 삽입 → 열 삭제)로 적용했다. 메모리와 저장본이 달라졌다 (0.3.3 에서도 5건 중 5건).
+   * → 열 삽입 → 열 삭제)로 적용했다. 메모리와 저장본이 달라졌다 (0.3.3 에서도 6건 중 6건).
    */
   const txt = (c: { paragraphs?: Array<{ runs: Array<{ text: string }> }> }) =>
     (c.paragraphs ?? []).map(p => p.runs.map(r => r.text).join('')).join('');
@@ -396,6 +396,22 @@ describe('표 편집은 호출한 순서대로 저장된다 (CodeRabbit 3차, 0.
     d.insertTableColumn(0, 0, 0);
     d.updateTableCell(0, 0, 0, 1, 'COL');
     expect((await savedEqualsMemory(d))[0]).toEqual(['00', 'COL', '01']);
+  });
+
+  it('행 삽입 → 그 아래 두 행 세로 병합: 병합이 새 번호의 3·4행에 걸린다', async () => {
+    // 0.3.3 과 83465c8 은 병합을 행 삽입보다 먼저 적용해, 새 번호 (3,0)-(4,0) 을
+    // 삽입 전 표에 걸었다. 4행이 없어 병합이 빠지고 아래 행 rowAddr 도 겹쳤다.
+    const d = await table(4, 2);
+    d.insertTableRow(0, 0, 0, ['n', 'n']);
+    d.mergeCells(0, 0, 3, 0, 4, 0);
+    const { buf, doc: back } = await roundTrip(d);
+    expect(assertBalanced(await sectionXml(buf))).toEqual({});
+    const shown = back.findTable(0, 0)!.rows.map(r => r.cells.map(c =>
+      `${c.rowAddr},${c.colAddr}:${txt(c)}${(c.rowSpan ?? 1) > 1 ? `[${c.rowSpan}x${c.colSpan ?? 1}]` : ''}`));
+    expect(shown).toEqual([
+      ['0,0:00', '0,1:01'], ['1,0:n', '1,1:n'], ['2,0:10', '2,1:11'],
+      ['3,0:20[2x1]', '3,1:21'], ['4,1:31'],
+    ]);
   });
 });
 
