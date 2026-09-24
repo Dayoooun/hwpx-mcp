@@ -99,20 +99,32 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Lowest supported (package.json engines) and current LTS.
+        # Node that RUNS THE SERVER: lowest supported (package.json engines >=18)
+        # and current LTS. The test runner itself (vitest 4) needs Node 20+, so
+        # it always runs on 20 and launches the server with the matrix Node.
         node: [18, 22]
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Node for the server under test
+        id: server-node
+        uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
+      - name: Remember server Node path
+        run: echo "HWPX_MCP_NODE=$(which node)" >> "$GITHUB_ENV" && node --version
+      - name: Node for the test runner
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
           cache: npm
           cache-dependency-path: mcp-server/package-lock.json
       - run: npm ci
-      - name: MCP stdio end-to-end (local build)
-        run: npm run test:e2e
-      - name: Save-path security (symlink, backup, staging)
-        run: npm run test:security
+      - name: MCP stdio end-to-end (server on Node ${{ matrix.node }})
+        run: |
+          "$HWPX_MCP_NODE" --version
+          npm run test:e2e
+      - name: Save-path security (server on Node ${{ matrix.node }})
+        run: npm run build && "$HWPX_MCP_NODE" --test test-save-security.mjs
 
   versions:
     needs: e2e

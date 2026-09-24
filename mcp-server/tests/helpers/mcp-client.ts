@@ -7,6 +7,11 @@
  *   - unset / "local"      → node dist/index.js of this checkout (built first)
  *   - "npm:<version>"      → npx -y @kimdayoun/hwpx-mcp@<version>
  * The version matrix in CI runs the same e2e files against several values.
+ *
+ * HWPX_MCP_NODE picks the Node binary that runs the LOCAL server. The test
+ * runner (vitest 4) needs Node 20+, but the server declares engines >=18; CI
+ * runs vitest on 20 and points this at a Node 18 binary so the server is
+ * exercised on the oldest version it claims to support.
  */
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import path from 'node:path';
@@ -39,7 +44,7 @@ export class McpClient {
     const target = McpClient.serverLabel();
     const proc = target.startsWith('npm:')
       ? spawn('npx', ['-y', `@kimdayoun/hwpx-mcp@${target.slice(4)}`], { cwd, stdio: ['pipe', 'pipe', 'pipe'] })
-      : spawn(process.execPath, [path.resolve(__dirname, '../../dist/index.js')], { cwd, stdio: ['pipe', 'pipe', 'pipe'] });
+      : spawn(process.env.HWPX_MCP_NODE || process.execPath, [path.resolve(__dirname, '../../dist/index.js')], { cwd, stdio: ['pipe', 'pipe', 'pipe'] });
     const client = new McpClient(proc as ChildProcessWithoutNullStreams);
     await client.request('initialize', {
       protocolVersion: '2024-11-05',
