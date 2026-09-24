@@ -251,3 +251,73 @@ describe('② (나) 저장 검증이 깨진 XML 을 통과시킴 — 그림 칸 
     expect(xml).toMatch(/<\/hp:pic><hp:t>시험<\/hp:t><\/hp:run>/);
   });
 });
+
+describe('PR #16 CodeRabbit 2차 지적 (418b3d7)', () => {
+  it('#1 열 삽입 뒤 행 삽입: 메모리 새 행이 새 열 칸까지 갖고 그 칸에 쓸 수 있다', async () => {
+    // insertTableColumn 은 새 칸에 colAddr 를 두지 않는다. 격자가 colAddr 없는 칸을
+    // 걸러 새 행이 원래 열 수만 덮었고, 새 열 칸 쓰기가 false 였다 (0.3.3 은 true).
+    const doc = HwpxDocument.createNew('cr1', 'col-then-row');
+    doc.insertTable(0, 0, 2, 2);
+    doc.insertTableColumn(0, 0, 1);
+    doc.insertTableRow(0, 0, 0, ['a', 'b', 'c']);
+
+    const row = doc.findTable(0, 0)!.rows[1].cells;
+    expect(row.map(c => c.paragraphs[0].runs[0].text)).toEqual(['a', 'b', 'c']);
+    expect(doc.updateTableCell(0, 0, 1, 2, 'z')).toBe(true);
+  });
+
+  it('#2 표 id 에 정규식 기호가 있어도 그 표의 칸이 바뀐다', async () => {
+    const seed = HwpxDocument.createNew('cr2', 'regex-id');
+    seed.insertTable(0, 0, 1, 1);
+    seed.insertTable(0, 0, 1, 1);
+    // 두 표의 id 를 "1.5" 와 "105" 로: 이스케이프하지 않으면 "1.5" 패턴이 "105" 에도 맞는다.
+    let n = 0;
+    const doc = await withSectionXml(seed, x => x.replace(/(<hp:tbl\b[^>]*\bid=")[^"]*"/g,
+      (_m, open) => `${open}${n++ === 0 ? '105' : '1.5'}"`));
+    const tables = doc.content.sections[0].elements.filter(e => e.type === 'table');
+    const target = tables.findIndex(t => t.data.id === '1.5');
+    expect(target).toBeGreaterThanOrEqual(0);
+
+    doc.updateTableCell(0, target, 0, 0, '맞는 표');
+    const { doc: back } = await roundTrip(doc);
+    expect(cellText(back, 0, target, 0, 0)).toBe('맞는 표');
+    expect(cellText(back, 0, 1 - target, 0, 0)).toBe('');
+  });
+
+  it('#3 위 행의 병합 칸을 빌려 좁힐 때 중첩 표가 아니라 그 칸의 colSpan·폭을 줄인다', () => {
+    // 좁히기는 "템플릿 행에 열 0 칸이 없어 위 행의 병합 칸(colSpan 2)을 빌리는데,
+    // 템플릿 행이 열 1 에서 따로 시작"할 때만 일어난다. 문서 API 로는 이 모양을
+    // 만들기 어려워 격자 함수에 행 XML 을 직접 준다.
+    //   행0: A(열0, colSpan 2, 폭 2000) — 칸 안에 중첩 표(그 칸 colSpan 7)
+    //   행1: B(열1, 폭 1000)            — 열 0 은 위에서 덮였다고 가정
+    const nested =
+      '<hp:tbl id="n"><hp:tr><hp:tc><hp:subList><hp:p><hp:run><hp:t>안</hp:t></hp:run></hp:p></hp:subList>' +
+      '<hp:cellAddr colAddr="0" rowAddr="0"/><hp:cellSpan colSpan="7" rowSpan="1"/><hp:cellSz width="500" height="1"/></hp:tc></hp:tr></hp:tbl>';
+    const tc = (inner: string, col: number, span: number, width: number) =>
+      `<hp:tc><hp:subList><hp:p><hp:run>${inner}</hp:run></hp:p></hp:subList>` +
+      `<hp:cellAddr colAddr="${col}" rowAddr="0"/><hp:cellSpan colSpan="${span}" rowSpan="1"/>` +
+      `<hp:cellSz width="${width}" height="1"/></hp:tc>`;
+    const rows = [
+      { xml: `<hp:tr>${tc(nested, 0, 2, 2000)}</hp:tr>` },
+      { xml: `<hp:tr>${tc('<hp:t>B</hp:t>', 1, 1, 1000)}</hp:tr>` },
+    ];
+
+    const doc = HwpxDocument.createNew('cr3', 'grid');
+    const cells: string[] = (doc as any).gridCellsForNewRow(rows, 1);
+    expect(cells).toHaveLength(2);
+    const borrowed = cells[0];
+    const tail = borrowed.slice(borrowed.lastIndexOf('</hp:subList>'));
+    // 그 칸 자신은 colSpan 1, 폭 1000 (2000 × 1/2) 으로 좁혀진다.
+    expect(tail).toMatch(/<hp:cellSpan colSpan="1"/);
+    expect(tail).toMatch(/<hp:cellSz width="1000"/);
+    // 중첩 표 칸은 그대로다. 예전 코드는 여기(처음 나오는 cellSpan)를 바꿨다.
+    expect(borrowed).toContain('<hp:cellSpan colSpan="7" rowSpan="1"/><hp:cellSz width="500"');
+  });
+
+  it('#4 이름공간 선언이 빠진 section 은 저장 검증에서 거부된다', async () => {
+    const { xmlWellFormednessError } = await import('../../src/XmlWellFormed');
+    // xmlns:hp 만 있고 hs 는 선언이 없다 — 구문은 맞지만 한/글이 읽는 문서가 아니다.
+    expect(xmlWellFormednessError('<?xml version="1.0"?><hs:sec xmlns:hp="urn:hp"><hp:p/></hs:sec>')).toMatch(/prefix|namespace/i);
+    expect(xmlWellFormednessError('<?xml version="1.0"?><hs:sec xmlns:hs="urn:hs" xmlns:hp="urn:hp"><hp:p/></hs:sec>')).toBeNull();
+  });
+});

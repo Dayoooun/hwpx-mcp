@@ -2975,10 +2975,21 @@ export class HwpxDocument {
     // column position, taking the colAddr/colSpan of the cell that starts
     // there in the template row or the nearest row above. Sizing the row by
     // templateRow.cells.length left out a column covered by a vertical merge.
-    const starts = (r: number) => new Map(
-      (table.rows[r]?.cells ?? []).map(c => [c.colAddr ?? -1, c.colSpan ?? 1] as const));
-    const colCount = Math.max(0, ...table.rows.flatMap(r => r.cells.map(c => (c.colAddr ?? 0) + (c.colSpan ?? 1))));
-    const templateStarts = [...starts(afterRowIndex).keys()].filter(c => c >= 0).sort((a, b) => a - b);
+    // A cell with no colAddr (e.g. added by insertTableColumn, which does not
+    // renumber) is placed by its position in the row, as gridCellsForNewRow
+    // does for the XML. Dropping it made the new row one cell short.
+    const placed = (r: number) => {
+      let next = 0;
+      return (table.rows[r]?.cells ?? []).map(c => {
+        const span = c.colSpan ?? 1;
+        const col = c.colAddr ?? next;
+        next = col + span;
+        return { col, span };
+      });
+    };
+    const starts = (r: number) => new Map(placed(r).map(c => [c.col, c.span] as const));
+    const colCount = Math.max(0, ...table.rows.map((_, r) => Math.max(0, ...placed(r).map(c => c.col + c.span))));
+    const templateStarts = placed(afterRowIndex).map(c => c.col).sort((a, b) => a - b);
     const grid: Array<{ colAddr: number; colSpan: number }> = [];
     for (let col = 0; col < colCount;) {
       let span: number | undefined;
@@ -5964,13 +5975,13 @@ export class HwpxDocument {
       }
     }
 
-    // Second pass: replace all IDs
-    let result = xml;
-    for (const [oldId, newId] of idMap) {
-      result = result.replace(new RegExp(`id="${oldId}"`, 'g'), `id="${newId}"`);
-    }
-
-    return result;
+    // Second pass: replace every id in one scan. Building a RegExp per old id
+    // broke on ids with regex metacharacters, and replacing ids one at a time
+    // could rewrite an id that an earlier replacement had just produced.
+    return xml.replace(/id="([^"]+)"/g, (whole, oldId: string) => {
+      const newId = idMap.get(oldId);
+      return newId === undefined ? whole : `id="${newId}"`;
+    });
   }
 
   /**
@@ -7028,13 +7039,15 @@ export class HwpxDocument {
    * Find a table by its ID in XML.
    */
   private findTableById(xml: string, tableId: string): { xml: string; startIndex: number; endIndex: number } | null {
-    // Match table with specific ID
-    const tableStartRegex = new RegExp(`<(?:hp|hs|hc):tbl\\s[^>]*\\bid="${tableId}"[^>]*>`, 'g');
+    // Match table with specific ID. The id comes from document XML, so it is
+    // escaped: an id holding '.', '(' or '+' matched another table or threw.
+    const id = this.escapeRegex(tableId);
+    const tableStartRegex = new RegExp(`<(?:hp|hs|hc):tbl\\s[^>]*\\bid="${id}"[^>]*>`, 'g');
     const match = tableStartRegex.exec(xml);
 
     if (!match) {
       // Try alternate ID format (id='...' instead of id="...")
-      const altRegex = new RegExp(`<(?:hp|hs|hc):tbl\\s[^>]*\\bid='${tableId}'[^>]*>`, 'g');
+      const altRegex = new RegExp(`<(?:hp|hs|hc):tbl\\s[^>]*\\bid='${id}'[^>]*>`, 'g');
       const altMatch = altRegex.exec(xml);
       if (!altMatch) return null;
       return this.extractTableFromMatch(xml, altMatch);
@@ -13331,6 +13344,24 @@ export class HwpxDocument {
     return a ? cellXml.slice(0, a.at) + String(value) + cellXml.slice(a.at + a.length) : cellXml;
   }
 
+  /** A cell's own <hp:cellSz width> (after its sub-list, so never a nested table's). */
+  private cellOwnWidth(cellXml: string): number | null {
+    const tail = cellXml.lastIndexOf('</hp:subList>');
+    const m = cellXml.slice(tail === -1 ? 0 : tail).match(/<hp:cellSz\b[^>]*\bwidth="(\d+)"/);
+    return m ? parseInt(m[1], 10) : null;
+  }
+
+  /** Rewrite a cell's own <hp:cellSz width>; no-op if the cell has none or width <= 0. */
+  private setCellOwnWidth(cellXml: string, width: number): string {
+    if (width <= 0) return cellXml;
+    const tail = cellXml.lastIndexOf('</hp:subList>');
+    const from = tail === -1 ? 0 : tail;
+    const m = /(<hp:cellSz\b[^>]*\bwidth=")(\d+)"/.exec(cellXml.slice(from));
+    if (!m) return cellXml;
+    const at = from + m.index + m[1].length;
+    return cellXml.slice(0, at) + String(width) + cellXml.slice(at + m[2].length);
+  }
+
   /**
    * Add `delta` to the rowAddr of every cell of THIS table whose rowAddr is
    * >= fromRow. Nested tables inside cells keep their own addresses.
@@ -13432,9 +13463,16 @@ export class HwpxDocument {
       let span = Math.max(1, pick.span);
       const nextTemplateStart = rowCells[afterRow].map(c => c.col).filter(c => c > col).sort((a, b) => a - b)[0];
       if (nextTemplateStart !== undefined && col + span > nextTemplateStart) span = nextTemplateStart - col;
+      // Narrow through the cell's OWN attributes: a nested table's cells come
+      // first in the XML, so replacing the first <hp:cellSpan> changed the
+      // nested cell and left this one overlapping the next template cell.
+      // Its width shrinks to the columns it still covers, so the row keeps
+      // the table width.
       const xml = span === pick.span
         ? pick.xml
-        : pick.xml.replace(/(<hp:cellSpan\b[^>]*\bcolSpan=")\d+(")/, `$1${span}$2`);
+        : this.setCellOwnWidth(
+          this.setCellOwnAttr(pick.xml, 'colSpan', span),
+          Math.round((this.cellOwnWidth(pick.xml) ?? 0) * span / pick.span));
       out.push(xml);
       col += span;
     }

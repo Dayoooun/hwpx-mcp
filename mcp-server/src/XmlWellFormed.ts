@@ -17,7 +17,11 @@ import type JSZip from 'jszip';
 
 /** First well-formedness error in `xml`, or null when it parses. */
 export function xmlWellFormednessError(xml: string): string | null {
-  const parser = new SaxesParser();
+  // xmlns: true also rejects an undeclared prefix (<hs:sec> with only
+  // xmlns:hp declared). Hancom declares every prefix it uses (0 rejections
+  // across the 275-file corpus with this setting), while set_section_xml
+  // accepted a section missing xmlns:hs.
+  const parser = new SaxesParser({ xmlns: true });
   let first: string | null = null;
   parser.on('error', err => {
     if (first === null) first = err.message;
