@@ -1219,6 +1219,11 @@ export interface HwpxTextBox {
 
 export interface HwpxHorizontalRule {
   id: string;
+  /**
+   * Id of the <hp:p> this rule was parsed from. The paragraph is still in the
+   * section XML, so id-based insert anchors must count it.
+   */
+  sourceParagraphId?: string;
   width: number | 'full';
   height: number;
   color?: string;
