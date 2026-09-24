@@ -1,7 +1,7 @@
 # hwpx-mcp server CI — four test layers, each a separate required check.
 #
 # Order is cheapest first; later layers `needs:` earlier ones so a broken build
-# never spends minutes on e2e. Every job runs on every PR touching mcp-server/.
+# never spends minutes on e2e. Every job runs on every PR.
 #
 #   static      typecheck (tsc --noEmit)
 #   unit        in-process API + pure logic            (src/**/*.test.ts, tests/unit)
@@ -10,17 +10,17 @@
 #   e2e         real MCP server over stdio              (tests/e2e) + save security
 #   versions    same e2e against published versions     (report only — see below)
 #
-# Branch protection should require: static, unit, module, regression, e2e.
+# The main ruleset requires: static, unit, module, regression, e2e (18), e2e (22).
 # `versions` is informational: published versions are EXPECTED to fail the
 # scenarios fixed later. It fails only if local regresses against the latest
 # published version (scripts/version-matrix.mjs).
 name: mcp-server CI
 
 on:
+  # No paths filter on pull_request: these checks are required on main, and a
+  # required check that never runs (a PR touching only the VS Code extension)
+  # would leave that PR blocked forever.
   pull_request:
-    paths:
-      - 'mcp-server/**'
-      - '.github/workflows/mcp-server-ci.yml'
   push:
     branches: [main]
     paths:
