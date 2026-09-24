@@ -211,28 +211,19 @@ describe('HwpxDocument - Cell Merge (블록 병합)', () => {
     }
   });
 
-  it('should merge entire 3x3 table into one cell', async () => {
+  it('refuses to merge an entire 3x3 table into one cell (rows 1-2 would have no cell)', async () => {
+    // This used to succeed and save rows 1 and 2 as <hp:tr> with no <hp:tc>.
+    // 한/글 2024 gave no PDF for files with such rows (full-width two-row merge,
+    // one-column vertical merge), and 275 한/글 originals have none.
     const doc = await HwpxDocument.createFromBuffer('test-id', testFilePath, fs.readFileSync(testFilePath));
 
-    // Merge entire table
-    const result = doc.mergeCells(0, 0, 0, 0, 2, 2);
-    expect(result).toBe(true);
+    expect(() => doc.mergeCells(0, 0, 0, 0, 2, 2)).toThrow(/row 1 would have no cell of its own/);
 
     const savedBuffer = await doc.save();
     const savedZip = await JSZip.loadAsync(savedBuffer);
     const savedXml = await savedZip.file('Contents/section0.xml')?.async('string');
-
-    // Verify: First cell should have colSpan="3" and rowSpan="3"
-    expect(savedXml).toContain('colSpan="3"');
-    expect(savedXml).toContain('rowSpan="3"');
-
-    // Row 0: 1 cell, Row 1: 0 cells, Row 2: 0 cells
-    const rows = savedXml?.match(/<hp:tr>[\s\S]*?<\/hp:tr>/g);
-    if (rows) {
-      expect((rows[0].match(/<hp:tc\b/g) || []).length).toBe(1);
-      expect((rows[1].match(/<hp:tc\b/g) || []).length).toBe(0);
-      expect((rows[2].match(/<hp:tc\b/g) || []).length).toBe(0);
-    }
+    const rows = savedXml?.match(/<hp:tr>[\s\S]*?<\/hp:tr>/g) ?? [];
+    expect(rows.map(r => (r.match(/<hp:tc\b/g) || []).length)).toEqual([3, 3, 3]);
   });
 });
 

@@ -449,6 +449,40 @@ describe('표 편집은 호출한 순서대로 저장된다 (CodeRabbit 3차, 0.
     const through = await merged();
     expect(() => through.insertTableRow(0, 0, 0)).toThrow(/split the merged cell/);
   });
+
+  describe('병합이 한 행의 칸을 모두 덮으면 거부한다 (한/글 2024 가 PDF 를 만들지 못함, 0.3.3 도 같음)', () => {
+    // 저장본에 칸 없는 <hp:tr> 이 생겼다. 한/글 2024 는 이 파일에서 PDF 를 만들지 못했고
+    // (전체 폭 두 행 병합, 1열 표 세로 병합), 같은 표를 전체 폭보다 좁게 병합하면 변환됐다.
+    const tcPerRow = (xml: string) => {
+      const tbl = xml.slice(xml.indexOf('<hp:tbl'), xml.indexOf('</hp:tbl>'));
+      return [...tbl.matchAll(/<hp:tr(?:\s[^>]*)?>([\s\S]*?)<\/hp:tr>/g)].map(m => (m[1].match(/<hp:tc[\s>]/g) ?? []).length);
+    };
+
+    it('3×3 표 0·1행 전체 폭 병합은 거부하고 표는 그대로 남는다', async () => {
+      const d = await table(3, 3);
+      expect(() => d.mergeCells(0, 0, 0, 0, 1, 2)).toThrow(/row 1 would have no cell of its own/);
+      const { buf } = await roundTrip(d);
+      expect(tcPerRow(await sectionXml(buf))).toEqual([3, 3, 3]);
+    });
+
+    it('1열 표의 세로 병합은 거부한다', async () => {
+      const d = await table(4, 1);
+      expect(() => d.mergeCells(0, 0, 0, 0, 1, 0)).toThrow(/no cell of its own/);
+    });
+
+    it('열을 지워 1열이 된 표의 세로 병합도 거부한다', async () => {
+      const d = await table(4, 2);
+      d.deleteTableColumn(0, 0, 0);
+      expect(() => d.mergeCells(0, 0, 0, 0, 1, 0)).toThrow(/no cell of its own/);
+    });
+
+    it('아래 행에 칸이 남는 병합은 그대로 되고 저장본의 모든 행에 칸이 있다', async () => {
+      const d = await table(3, 3);
+      expect(d.mergeCells(0, 0, 0, 0, 1, 1)).toBe(true);
+      const { buf } = await roundTrip(d);
+      expect(tcPerRow(await sectionXml(buf))).toEqual([2, 1, 3]);
+    });
+  });
 });
 
 describe('병합 뒤 칸 쓰기는 병합된 표의 그 칸에 들어간다 (호출 순서 적용 뒤 드러남)', () => {

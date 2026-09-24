@@ -3952,6 +3952,32 @@ export class HwpxDocument {
       console.warn(`[HwpxDocument] mergeCells: Single cell selected, no merge needed`);
       return false;
     }
+    // A row whose every own cell falls inside the merge is saved as an <hp:tr>
+    // with no <hp:tc>. 한/글 2024 gave no PDF for such a file (measured: a
+    // full-width two-row merge and a vertical merge in a one-column table; the
+    // same table merged short of full width converted), and a scan of 275 한/글
+    // originals found no row without a cell. 0.3.3 wrote these files too.
+    // Rows built in memory keep covered cells and rows read from a file do not,
+    // so cells are placed by their own address (position only when it has none)
+    // and a cell counts only if no other merged cell covers it.
+    const placedCells = table.rows.flatMap((row, ri) => row.cells.map((cell, ci) =>
+      ({ cell, row: cell.rowAddr ?? ri, col: cell.colAddr ?? ci })));
+    const masters = placedCells.filter(p => (p.cell.rowSpan ?? 1) > 1 || (p.cell.colSpan ?? 1) > 1);
+    const coveredByOther = (p: typeof placedCells[number]) => masters.some(m => m.cell !== p.cell &&
+      p.row >= m.row && p.row < m.row + (m.cell.rowSpan ?? 1) &&
+      p.col >= m.col && p.col < m.col + (m.cell.colSpan ?? 1));
+    for (let r = startRow + 1; r <= endRow; r++) {
+      const keepsCell = placedCells.some(p => p.row === r &&
+        (p.col + (p.cell.colSpan ?? 1) - 1 < startCol || p.col > endCol) &&
+        !coveredByOther(p));
+      if (!keepsCell) {
+        throw new Error(
+          `Cannot merge (${startRow}, ${startCol})-(${endRow}, ${endCol}): row ${r} would have no ` +
+          `cell of its own, and 한/글 does not open a table row without cells. Merge fewer ` +
+          `columns so row ${r} keeps a cell, or delete row ${r} instead.`
+        );
+      }
+    }
 
     this.saveState();
 

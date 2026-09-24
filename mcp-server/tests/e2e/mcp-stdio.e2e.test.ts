@@ -133,6 +133,19 @@ describe(`MCP stdio 종단간 [${server}]`, () => {
     expect(sum).toBe(width);
   });
 
+  it('한 행의 칸을 모두 덮는 병합은 isError 로 거절되고 저장본의 모든 행에 칸이 남는다', async () => {
+    const { id, file } = await newDoc('merge-empty-row');
+    await mcp.ok('insert_table', { doc_id: id, section_index: 0, after_index: 0, rows: 3, cols: 3 });
+    const r = await mcp.call('merge_cells', { doc_id: id, section_index: 0, table_index: 0, start_row: 0, start_col: 0, end_row: 1, end_col: 2 });
+    expect(r.isError).toBe(true);
+    expect(r.raw).toMatch(/row 1 would have no cell of its own/);
+    await mcp.ok('save_document', { doc_id: id });
+    const t = await savedSection(file);
+    const tbl = t.slice(t.indexOf('<hp:tbl'), t.indexOf('</hp:tbl>'));
+    const tcPerRow = [...tbl.matchAll(/<hp:tr(?:\s[^>]*)?>([\s\S]*?)<\/hp:tr>/g)].map(m => (m[1].match(/<hp:tc[\s>]/g) ?? []).length);
+    expect(tcPerRow).toEqual([3, 3, 3]);
+  });
+
   it('⑥ 실패한 호출은 isError: true 로 온다', async () => {
     const missing = await mcp.call('insert_paragraph', { text: '구역 번호 없음' });
     expect(missing.isError).toBe(true);
