@@ -151,7 +151,13 @@ export class HwpxDocument {
     oldText: string;
     newText: string
   }> = [];
-  private _pendingTableCellUpdates: Array<{ sectionIndex: number; tableIndex: number; tableId: string; row: number; col: number; text: string; charShapeId?: number }> = [];
+  /**
+   * `col` is the cell's position in the memory row; `colAddr` is its grid column.
+   * They differ after a merge: memory keeps covered cells, the XML drops them.
+   * The XML writer finds the target by colAddr so a write made after a merge
+   * lands in the right cell (writes now replay in call order).
+   */
+  private _pendingTableCellUpdates: Array<{ sectionIndex: number; tableIndex: number; tableId: string; row: number; col: number; colAddr?: number; text: string; charShapeId?: number }> = [];
   private _pendingNestedTableInserts: Array<{ sectionIndex: number; parentTableIndex: number; row: number; col: number; nestedRows: number; nestedCols: number; data: string[][] }> = [];
   private _pendingImageInserts: Array<{
     sectionIndex: number;
@@ -286,6 +292,15 @@ export class HwpxDocument {
     tableIndex: number;
     colIndex: number;
   }> = [];
+  /**
+   * Call order of every pending edit that names a table cell or row/column by
+   * index. Each such index is relative to the table as it was at call time,
+   * so save must replay these edits in call order (applyTableOpsInCallOrder).
+   * A WeakMap keeps the queue element types unchanged and drops entries with
+   * their ops (undo, section delete).
+   */
+  private _tableOpSeq = new WeakMap<object, number>();
+  private _tableOpCounter = 0;
   private _pendingParagraphCopies: Array<{
     sourceSection: number;
     targetSection: number;
@@ -551,6 +566,12 @@ export class HwpxDocument {
   get isDirty(): boolean { return this._isDirty; }
   get zip(): JSZip | null { return this._zip; }
   get content(): HwpxContent { return this._content; }
+
+  /** Push a table-structure or table-cell edit and remember its call order. */
+  private queueTableOp<T extends object>(queue: T[], op: T): void {
+    this._tableOpSeq.set(op, ++this._tableOpCounter);
+    queue.push(op);
+  }
 
   // ============================================================
   // Undo/Redo
@@ -1505,7 +1526,7 @@ export class HwpxDocument {
     if (existingIdx >= 0) {
       this._pendingTableCellHangingIndents[existingIdx].indentPt = indentPt;
     } else {
-      this._pendingTableCellHangingIndents.push({
+      this.queueTableOp(this._pendingTableCellHangingIndents, {
         sectionIndex,
         tableIndex,
         row,
@@ -1604,7 +1625,7 @@ export class HwpxDocument {
     if (existingIdx >= 0) {
       this._pendingTableCellHangingIndents[existingIdx].indentPt = 0;  // 0 means remove
     } else {
-      this._pendingTableCellHangingIndents.push({
+      this.queueTableOp(this._pendingTableCellHangingIndents, {
         sectionIndex,
         tableIndex,
         row,
@@ -2922,7 +2943,7 @@ export class HwpxDocument {
     // Track cell update for XML sync (works for both empty and non-empty cells)
     // Store table ID for reliable XML matching
     // charShapeId is optional - if provided, it will override the existing charPrIDRef
-    this._pendingTableCellUpdates.push({ sectionIndex, tableIndex, tableId: table.id, row, col, text, charShapeId });
+    this.queueTableOp(this._pendingTableCellUpdates, { sectionIndex, tableIndex, tableId: table.id, row, col, colAddr: cell.colAddr, text, charShapeId });
 
     this.saveState();
     if (cell.paragraphs.length > 0 && cell.paragraphs[0].runs.length > 0) {
@@ -3024,7 +3045,7 @@ export class HwpxDocument {
     }
     table.rows.splice(afterRowIndex + 1, 0, newRow as any);
 
-    this._pendingTableRowInserts.push({
+    this.queueTableOp(this._pendingTableRowInserts, {
       sectionIndex,
       tableIndex,
       afterRowIndex,
@@ -3047,7 +3068,7 @@ export class HwpxDocument {
     this.saveState();
     table.rows.splice(rowIndex, 1);
 
-    this._pendingTableRowDeletes.push({
+    this.queueTableOp(this._pendingTableRowDeletes, {
       sectionIndex,
       tableIndex,
       rowIndex,
@@ -3104,16 +3125,29 @@ export class HwpxDocument {
     if (!table) return false;
 
     this.saveState();
+    // Keep memory addresses in step with the XML path (applyTableColumnInsertsToXml
+    // gives the new cell colAddr afterColIndex+1 and shifts the cells after it).
+    // A new cell with no colAddr in the middle of a row made the row read as
+    // [0, (none), 1]: the grid for a later row insert counted column 1 twice and
+    // the new row came out one cell short (CodeRabbit, 2026-09-24).
     for (const row of table.rows) {
+      for (const cell of row.cells) {
+        if (cell.colAddr !== undefined && cell.colAddr > afterColIndex) cell.colAddr += 1;
+      }
+      const rowAddr = row.cells.find(c => c.rowAddr !== undefined)?.rowAddr;
       row.cells.splice(afterColIndex + 1, 0, {
+        colAddr: afterColIndex + 1,
+        ...(rowAddr !== undefined ? { rowAddr } : {}),
+        colSpan: 1,
+        rowSpan: 1,
         paragraphs: [{
           id: Math.random().toString(36).substring(2, 11),
           runs: [{ text: '' }],
         }],
-      } as any);
+      });
     }
 
-    this._pendingTableColumnInserts.push({
+    this.queueTableOp(this._pendingTableColumnInserts, {
       sectionIndex,
       tableIndex,
       afterColIndex,
@@ -3132,7 +3166,7 @@ export class HwpxDocument {
       row.cells.splice(colIndex, 1);
     }
 
-    this._pendingTableColumnDeletes.push({
+    this.queueTableOp(this._pendingTableColumnDeletes, {
       sectionIndex,
       tableIndex,
       colIndex,
@@ -3351,12 +3385,13 @@ export class HwpxDocument {
 
       // Use existing pending table cell update mechanism
       this._pendingTableCellUpdates = this._pendingTableCellUpdates || [];
-      this._pendingTableCellUpdates.push({
+      this.queueTableOp(this._pendingTableCellUpdates, {
         sectionIndex,
         tableIndex,
         tableId,
         row,
         col,
+        colAddr: cell.colAddr,
         text: cellText,
       });
       this.markModified();
@@ -3811,7 +3846,7 @@ export class HwpxDocument {
       this._pendingNestedTableInserts = [];
     }
 
-    this._pendingNestedTableInserts.push({
+    this.queueTableOp(this._pendingNestedTableInserts, {
       sectionIndex,
       parentTableIndex,
       row,
@@ -3908,7 +3943,7 @@ export class HwpxDocument {
     }
 
     // Add to pending merges for XML application during save
-    this._pendingCellMerges.push({
+    this.queueTableOp(this._pendingCellMerges, {
       sectionIndex,
       tableIndex,
       startRow,
@@ -3990,7 +4025,7 @@ export class HwpxDocument {
     }
 
     // Add to pending splits for XML application during save
-    this._pendingCellSplits.push({
+    this.queueTableOp(this._pendingCellSplits, {
       sectionIndex,
       tableIndex,
       row,
@@ -4478,7 +4513,7 @@ export class HwpxDocument {
     const orgDimensions = this.getImageDimensions(imageData.data, imageData.mimeType);
 
     // Add to pending cell image inserts
-    this._pendingCellImageInserts.push({
+    this.queueTableOp(this._pendingCellImageInserts, {
       sectionIndex,
       tableIndex,
       row,
@@ -5087,35 +5122,13 @@ export class HwpxDocument {
       this._pendingTableMoves = [];
     }
 
-    // Apply table cell updates (preserves original XML structure)
-    if (this._pendingTableCellUpdates && this._pendingTableCellUpdates.length > 0) {
-      await this.applyTableCellUpdatesToXml();
-      this._pendingTableCellUpdates = [];
-    }
-
-    // Apply cell merges
-    if (this._pendingCellMerges && this._pendingCellMerges.length > 0) {
-      await this.applyCellMergesToXml();
-      this._pendingCellMerges = [];
-    }
-
-    // Apply cell splits
-    if (this._pendingCellSplits && this._pendingCellSplits.length > 0) {
-      await this.applyCellSplitsToXml();
-      this._pendingCellSplits = [];
-    }
-
-    // Apply nested table inserts
-    if (this._pendingNestedTableInserts && this._pendingNestedTableInserts.length > 0) {
-      await this.applyNestedTableInsertsToXml();
-      this._pendingNestedTableInserts = [];
-    }
-
-    // Apply cell image inserts
-    if (this._pendingCellImageInserts && this._pendingCellImageInserts.length > 0) {
-      await this.applyCellImageInsertsToXml();
-      this._pendingCellImageInserts = [];
-    }
+    // Table edits that address cells or rows/columns by index, replayed in
+    // CALL order. Each index is relative to the table as it was when that edit
+    // was made; applying them by kind (all cell writes, then all row inserts,
+    // then column inserts ...) wrote cell text into the pre-insert layout and
+    // dropped text written to a new row or column (CodeRabbit, 2026-09-24; the
+    // same 5 scenarios failed on 0.3.3).
+    await this.applyTableOpsInCallOrder();
 
     // Apply direct text updates (from updateParagraphText)
     if (this._pendingDirectTextUpdates && this._pendingDirectTextUpdates.length > 0) {
@@ -5147,11 +5160,6 @@ export class HwpxDocument {
       this._pendingHangingIndents = [];
     }
 
-    // Apply table cell hanging indent changes
-    if (this._pendingTableCellHangingIndents && this._pendingTableCellHangingIndents.length > 0) {
-      await this.applyTableCellHangingIndentsToXml();
-      this._pendingTableCellHangingIndents = [];
-    }
 
     // Apply paragraph style changes (alignment, etc.)
     if (this._pendingParagraphStyles && this._pendingParagraphStyles.length > 0) {
@@ -5165,29 +5173,6 @@ export class HwpxDocument {
       this._pendingCharacterStyles = [];
     }
 
-    // Apply table row inserts
-    if (this._pendingTableRowInserts && this._pendingTableRowInserts.length > 0) {
-      await this.applyTableRowInsertsToXml();
-      this._pendingTableRowInserts = [];
-    }
-
-    // Apply table row deletes
-    if (this._pendingTableRowDeletes && this._pendingTableRowDeletes.length > 0) {
-      await this.applyTableRowDeletesToXml();
-      this._pendingTableRowDeletes = [];
-    }
-
-    // Apply table column inserts
-    if (this._pendingTableColumnInserts && this._pendingTableColumnInserts.length > 0) {
-      await this.applyTableColumnInsertsToXml();
-      this._pendingTableColumnInserts = [];
-    }
-
-    // Apply table column deletes
-    if (this._pendingTableColumnDeletes && this._pendingTableColumnDeletes.length > 0) {
-      await this.applyTableColumnDeletesToXml();
-      this._pendingTableColumnDeletes = [];
-    }
 
     // Apply header/footer updates
     if (this._pendingHeaderUpdates && this._pendingHeaderUpdates.length > 0 ||
@@ -6712,6 +6697,55 @@ export class HwpxDocument {
   }
 
   /**
+   * Replay every pending table edit (cell text, merge/split, nested table,
+   * cell image, cell hanging indent, row/column insert/delete) in call order.
+   *
+   * Each index an edit carries is relative to the table as it was when the
+   * edit was made. Applying by kind (all cell writes, then all row inserts,
+   * then all column inserts ...) wrote text into the pre-insert layout; and
+   * the row appliers sort their own queue by index, which reorders two
+   * inserts or two deletes on the same table. So edits that change a table's
+   * row/column layout run one at a time. Runs of layout-preserving edits
+   * (cell text, indents, images, nested tables) go to their applier together.
+   */
+  private async applyTableOpsInCallOrder(): Promise<void> {
+    type Kind = { layout: boolean; take: () => object[]; put: (ops: object[]) => void; apply: () => Promise<void> };
+    const kinds: Kind[] = [
+      { layout: false, take: () => this._pendingTableCellUpdates, put: o => { this._pendingTableCellUpdates = o as typeof this._pendingTableCellUpdates; }, apply: () => this.applyTableCellUpdatesToXml() },
+      { layout: true, take: () => this._pendingCellMerges, put: o => { this._pendingCellMerges = o as typeof this._pendingCellMerges; }, apply: () => this.applyCellMergesToXml() },
+      { layout: true, take: () => this._pendingCellSplits, put: o => { this._pendingCellSplits = o as typeof this._pendingCellSplits; }, apply: () => this.applyCellSplitsToXml() },
+      { layout: false, take: () => this._pendingNestedTableInserts, put: o => { this._pendingNestedTableInserts = o as typeof this._pendingNestedTableInserts; }, apply: () => this.applyNestedTableInsertsToXml() },
+      { layout: false, take: () => this._pendingCellImageInserts, put: o => { this._pendingCellImageInserts = o as typeof this._pendingCellImageInserts; }, apply: () => this.applyCellImageInsertsToXml() },
+      { layout: false, take: () => this._pendingTableCellHangingIndents, put: o => { this._pendingTableCellHangingIndents = o as typeof this._pendingTableCellHangingIndents; }, apply: () => this.applyTableCellHangingIndentsToXml() },
+      { layout: true, take: () => this._pendingTableRowInserts, put: o => { this._pendingTableRowInserts = o as typeof this._pendingTableRowInserts; }, apply: () => this.applyTableRowInsertsToXml() },
+      { layout: true, take: () => this._pendingTableRowDeletes, put: o => { this._pendingTableRowDeletes = o as typeof this._pendingTableRowDeletes; }, apply: () => this.applyTableRowDeletesToXml() },
+      { layout: true, take: () => this._pendingTableColumnInserts, put: o => { this._pendingTableColumnInserts = o as typeof this._pendingTableColumnInserts; }, apply: () => this.applyTableColumnInsertsToXml() },
+      { layout: true, take: () => this._pendingTableColumnDeletes, put: o => { this._pendingTableColumnDeletes = o as typeof this._pendingTableColumnDeletes; }, apply: () => this.applyTableColumnDeletesToXml() },
+    ];
+
+    // Every push goes through queueTableOp, so every op has a sequence number;
+    // a missing one would sort last and keep its queue position.
+    const all: Array<{ kind: Kind; op: object; seq: number; pos: number }> = [];
+    for (const kind of kinds) {
+      kind.take().forEach((op, pos) => all.push({ kind, op, seq: this._tableOpSeq.get(op) ?? Number.MAX_SAFE_INTEGER, pos }));
+      kind.put([]);
+    }
+    all.sort((a, b) => a.seq - b.seq || a.pos - b.pos);
+
+    for (let i = 0; i < all.length;) {
+      const kind = all[i].kind;
+      const batch: object[] = [all[i++].op];
+      if (!kind.layout) while (i < all.length && all[i].kind === kind) batch.push(all[i++].op);
+      kind.put(batch);
+      try {
+        await kind.apply();
+      } finally {
+        kind.put([]);
+      }
+    }
+  }
+
+  /**
    * Apply table cell updates to XML while preserving original structure.
    * This function modifies only the text content of specific cells,
    * keeping all other XML elements, attributes, and structure intact.
@@ -6725,10 +6759,10 @@ export class HwpxDocument {
     if (!this._zip) return;
 
     // Group updates by section for efficiency
-    const updatesBySection = new Map<number, Array<{ tableId: string; row: number; col: number; text: string; charShapeId?: number }>>();
+    const updatesBySection = new Map<number, Array<{ tableId: string; row: number; col: number; colAddr?: number; text: string; charShapeId?: number }>>();
     for (const update of this._pendingTableCellUpdates) {
       const sectionUpdates = updatesBySection.get(update.sectionIndex) || [];
-      sectionUpdates.push({ tableId: update.tableId, row: update.row, col: update.col, text: update.text, charShapeId: update.charShapeId });
+      sectionUpdates.push({ tableId: update.tableId, row: update.row, col: update.col, colAddr: update.colAddr, text: update.text, charShapeId: update.charShapeId });
       updatesBySection.set(update.sectionIndex, sectionUpdates);
     }
 
@@ -6743,10 +6777,10 @@ export class HwpxDocument {
       let xml = originalXml;
 
       // Group updates by table ID
-      const updatesByTableId = new Map<string, Array<{ row: number; col: number; text: string; charShapeId?: number }>>();
+      const updatesByTableId = new Map<string, Array<{ row: number; col: number; colAddr?: number; text: string; charShapeId?: number }>>();
       for (const update of updates) {
         const tableUpdates = updatesByTableId.get(update.tableId) || [];
-        tableUpdates.push({ row: update.row, col: update.col, text: update.text, charShapeId: update.charShapeId });
+        tableUpdates.push({ row: update.row, col: update.col, colAddr: update.colAddr, text: update.text, charShapeId: update.charShapeId });
         updatesByTableId.set(update.tableId, tableUpdates);
       }
 
@@ -7299,7 +7333,7 @@ export class HwpxDocument {
    * Update specific cells in a table XML string.
    * Groups updates by row to avoid index corruption when multiple cells in the same row are updated.
    */
-  private updateTableCellsInXml(tableXml: string, updates: Array<{ row: number; col: number; text: string; charShapeId?: number }>): string {
+  private updateTableCellsInXml(tableXml: string, updates: Array<{ row: number; col: number; colAddr?: number; text: string; charShapeId?: number }>): string {
     let result = tableXml;
 
     // Capture initial tag counts for validation
@@ -7312,13 +7346,13 @@ export class HwpxDocument {
     const rows = this.findAllElementsWithDepth(tableXml, 'tr');
 
     // Group updates by row to process each row only once
-    const updatesByRow = new Map<number, Array<{ col: number; text: string; charShapeId?: number }>>();
+    const updatesByRow = new Map<number, Array<{ col: number; colAddr?: number; text: string; charShapeId?: number }>>();
     for (const update of updates) {
       if (update.row >= rows.length) continue;
       if (!updatesByRow.has(update.row)) {
         updatesByRow.set(update.row, []);
       }
-      updatesByRow.get(update.row)!.push({ col: update.col, text: update.text, charShapeId: update.charShapeId });
+      updatesByRow.get(update.row)!.push({ col: update.col, colAddr: update.colAddr, text: update.text, charShapeId: update.charShapeId });
     }
 
     // Sort row indices descending to process from end to start (avoid index shifting)
@@ -7372,25 +7406,35 @@ export class HwpxDocument {
    * Update multiple cells in a single row XML string.
    * Processes cells from right to left (descending col order) to avoid index shifting.
    */
-  private updateMultipleCellsInRow(rowXml: string, updates: Array<{ col: number; text: string; charShapeId?: number }>): string {
+  private updateMultipleCellsInRow(rowXml: string, updates: Array<{ col: number; colAddr?: number; text: string; charShapeId?: number }>): string {
     let result = rowXml;
 
     // Find all cells in this row using depth tracking to handle nested tables correctly
     const cells = this.findAllElementsWithDepth(rowXml, 'tc');
 
+    // Resolve each update to its <hp:tc> index. The cell's grid column
+    // (colAddr) is authoritative: after a merge the XML row no longer has the
+    // covered cells that memory still lists, so the memory position `col`
+    // points one cell too far. `col` is used only when the write has no
+    // colAddr or the row carries no addresses.
+    const cellCols = cells.map(c => this.cellOwnAttr(c.xml, 'colAddr')?.value);
+    const indexOf = (u: { col: number; colAddr?: number }) => {
+      if (u.colAddr !== undefined && cellCols.some(a => a !== undefined)) return cellCols.indexOf(u.colAddr);
+      return u.col < cells.length ? u.col : -1;
+    };
+
     // Deduplicate updates for the same cell (keep last value)
     // This prevents stale index issues when the same cell is updated multiple times
     const uniqueUpdates = new Map<number, { col: number; text: string; charShapeId?: number }>();
     for (const update of updates) {
-      uniqueUpdates.set(update.col, update);
+      const at = indexOf(update);
+      if (at >= 0) uniqueUpdates.set(at, { ...update, col: at });
     }
 
     // Sort updates by col descending to process from right to left (avoid index shifting)
     const sortedUpdates = Array.from(uniqueUpdates.values()).sort((a, b) => b.col - a.col);
 
     for (const update of sortedUpdates) {
-      if (update.col >= cells.length) continue;
-
       const cellData = cells[update.col];
 
       // Validate cell before update - capture nested table structure

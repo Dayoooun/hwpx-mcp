@@ -266,6 +266,20 @@ describe('PR #16 CodeRabbit 2차 지적 (418b3d7)', () => {
     expect(doc.updateTableCell(0, 0, 1, 2, 'z')).toBe(true);
   });
 
+  it('#1b 가운데 열을 삽입한 뒤 행 삽입: 새 행이 3칸이고 새 열 칸에 쓸 수 있다', async () => {
+    // insertTableColumn 이 새 칸에 주소를 주지 않고 뒤 칸도 밀지 않아, 가운데(0열 뒤)에
+    // 넣으면 행이 [0, 주소 없음, 1] 이 되고 격자가 열 1 을 두 번 셌다(CodeRabbit 3차).
+    const doc = HwpxDocument.createNew('cr1b', 'mid-col-then-row');
+    doc.insertTable(0, 0, 2, 2);
+    doc.insertTableColumn(0, 0, 0);
+    expect(doc.findTable(0, 0)!.rows[0].cells.map(c => c.colAddr)).toEqual([0, 1, 2]);
+
+    doc.insertTableRow(0, 0, 0, ['a', 'b', 'c']);
+    const row = doc.findTable(0, 0)!.rows[1].cells;
+    expect(row.map(c => c.paragraphs[0].runs[0].text)).toEqual(['a', 'b', 'c']);
+    expect(doc.updateTableCell(0, 0, 1, 2, 'z')).toBe(true);
+  });
+
   it('#2 표 id 에 정규식 기호가 있어도 그 표의 칸이 바뀐다', async () => {
     const seed = HwpxDocument.createNew('cr2', 'regex-id');
     seed.insertTable(0, 0, 1, 1);
@@ -319,5 +333,90 @@ describe('PR #16 CodeRabbit 2차 지적 (418b3d7)', () => {
     // xmlns:hp 만 있고 hs 는 선언이 없다 — 구문은 맞지만 한/글이 읽는 문서가 아니다.
     expect(xmlWellFormednessError('<?xml version="1.0"?><hs:sec xmlns:hp="urn:hp"><hp:p/></hs:sec>')).toMatch(/prefix|namespace/i);
     expect(xmlWellFormednessError('<?xml version="1.0"?><hs:sec xmlns:hs="urn:hs" xmlns:hp="urn:hp"><hp:p/></hs:sec>')).toBeNull();
+  });
+});
+
+describe('표 편집은 호출한 순서대로 저장된다 (CodeRabbit 3차, 0.3.3 에도 있던 결함)', () => {
+  /**
+   * 저장이 표 편집을 호출 순서가 아니라 종류별 고정 순서(칸 쓰기 → … → 행 삽입 → 행 삭제
+   * → 열 삽입 → 열 삭제)로 적용했다. 메모리와 저장본이 달라졌다 (0.3.3 에서도 5건 중 5건).
+   */
+  const txt = (c: { paragraphs?: Array<{ runs: Array<{ text: string }> }> }) =>
+    (c.paragraphs ?? []).map(p => p.runs.map(r => r.text).join('')).join('');
+  const grid = (d: HwpxDocument) => d.findTable(0, 0)!.rows.map(r => r.cells.map(txt));
+
+  async function table(rows: number, cols: number) {
+    const d = HwpxDocument.createNew('ord', 'order');
+    d.insertTable(0, 0, rows, cols);
+    for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) d.updateTableCell(0, 0, r, c, `${r}${c}`);
+    return (await roundTrip(d)).doc;
+  }
+  async function savedEqualsMemory(d: HwpxDocument) {
+    const mem = grid(d);
+    const { buf, doc: back } = await roundTrip(d);
+    expect(assertBalanced(await sectionXml(buf))).toEqual({});
+    expect(grid(back)).toEqual(mem);
+    return mem;
+  }
+
+  it('열 삽입 → 행 삽입(cell_texts) → 새 열 칸 쓰기: 새 행이 [a,b,c] 이고 z 가 남는다', async () => {
+    const d = await table(2, 2);
+    d.insertTableColumn(0, 0, 1);
+    d.insertTableRow(0, 0, 0, ['a', 'b', 'c']);
+    d.updateTableCell(0, 0, 1, 2, 'z');
+    const mem = await savedEqualsMemory(d);
+    expect(mem[1]).toEqual(['a', 'b', 'z']);
+  });
+
+  it('행 삽입 → 새 행에 쓰기: 쓴 글이 새 행에 있다', async () => {
+    const d = await table(3, 2);
+    d.insertTableRow(0, 0, 0);
+    d.updateTableCell(0, 0, 1, 0, 'NEW');
+    const mem = await savedEqualsMemory(d);
+    expect(mem[1][0]).toBe('NEW');
+    expect(mem[2]).toEqual(['10', '11']);
+  });
+
+  it('행 삭제를 두 번: 두 번째 번호는 첫 삭제 뒤의 번호다', async () => {
+    const d = await table(3, 2);
+    d.deleteTableRow(0, 0, 0);
+    d.deleteTableRow(0, 0, 1);
+    expect(await savedEqualsMemory(d)).toEqual([['10', '11']]);
+  });
+
+  it('행 삽입을 두 번: 두 번째 번호는 첫 삽입 뒤의 번호다', async () => {
+    const d = await table(3, 2);
+    d.insertTableRow(0, 0, 0, ['p', 'q']);
+    d.insertTableRow(0, 0, 2, ['s', 't']);
+    expect(await savedEqualsMemory(d)).toEqual([['00', '01'], ['p', 'q'], ['10', '11'], ['s', 't'], ['20', '21']]);
+  });
+
+  it('가운데 열 삽입 → 새 열 칸 쓰기: 새 열에 들어간다', async () => {
+    const d = await table(3, 2);
+    d.insertTableColumn(0, 0, 0);
+    d.updateTableCell(0, 0, 0, 1, 'COL');
+    expect((await savedEqualsMemory(d))[0]).toEqual(['00', 'COL', '01']);
+  });
+});
+
+describe('병합 뒤 칸 쓰기는 병합된 표의 그 칸에 들어간다 (호출 순서 적용 뒤 드러남)', () => {
+  it('(0,0)-(0,1) 병합 뒤 (0,2) 에 쓰면 저장본의 열 2 칸에 들어간다', async () => {
+    // 메모리 행은 덮인 칸을 남겨 [0,1,2] 이고 XML 행은 [0(2칸),2] 다. 칸 쓰기를 병합 뒤에
+    // 적용하게 되면서, 메모리 위치(2)로 XML 칸을 고르면 없는 칸이 됐다. 열 주소로 고른다.
+    const doc = HwpxDocument.createNew('mg', 'merge-then-write');
+    doc.insertTable(0, 0, 2, 3);
+    doc.mergeCells(0, 0, 0, 0, 0, 1);
+    doc.updateTableCell(0, 0, 0, 0, 'A');
+    doc.updateTableCell(0, 0, 0, 2, 'C');
+    doc.updateTableCell(0, 0, 1, 1, 'E');
+
+    const { buf, doc: back } = await roundTrip(doc);
+    const xml = await sectionXml(buf);
+    expect(assertBalanced(xml)).toEqual({});
+    const t = back.findTable(0, 0)!;
+    const txt = (c: { paragraphs: Array<{ runs: Array<{ text: string }> }> }) => c.paragraphs.map(p => p.runs.map(r => r.text).join('')).join('');
+    expect(t.rows[0].cells.map(txt)).toEqual(['A', 'C']);
+    expect(t.rows[0].cells.map(c => c.colAddr)).toEqual([0, 2]);
+    expect(t.rows[1].cells.map(txt)).toEqual(['', 'E', '']);
   });
 });
