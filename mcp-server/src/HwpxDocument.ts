@@ -282,15 +282,23 @@ export class HwpxDocument {
   }> = [];
   private _pendingParagraphCopies: Array<{
     sourceSection: number;
-    sourceParagraph: number;
     targetSection: number;
-    targetAfter: number;
+    /** The paragraph being copied, resolved when copy_paragraph was called. */
+    source: ElementAnchor;
+    /** Element the copy goes after (null = start of section). */
+    anchor: ElementAnchor | null;
+    /** Id given to the copy in memory; the XML copy must carry the same id. */
+    paragraphId: string;
+    insertOrder: number;
   }> = [];
   private _pendingParagraphMoves: Array<{
     sourceSection: number;
-    sourceParagraph: number;
     targetSection: number;
-    targetAfter: number;
+    /** The paragraph being moved, resolved when move_paragraph was called. */
+    source: ElementAnchor;
+    /** Element the paragraph goes after, resolved after it left its old slot. */
+    anchor: ElementAnchor | null;
+    insertOrder: number;
   }> = [];
   private _pendingHeaderUpdates: Array<{
     sectionIndex: number;
@@ -642,8 +650,13 @@ export class HwpxDocument {
    * as it is right now (before the new element is spliced in).
    *
    * Returns null for "before everything" (N < 0). Elements without an XML
-   * counterpart (images, shapes) are skipped backwards to the nearest
-   * paragraph or table, which is what the XML placement needs.
+   * paragraph/table of their own (images, shapes) are skipped backwards to the
+   * nearest paragraph or table, which is what the XML placement needs.
+   *
+   * The parser turns a paragraph that is only a line of ─/━/═ into an 'hr'
+   * element with a fresh id. That paragraph is still in the XML, so it still
+   * takes an occurrence slot there: skipping it here put later anchors one
+   * paragraph early (measured on Hancom files with divider lines).
    */
   private resolveElementAnchor(sectionIndex: number, afterElementIndex: number): ElementAnchor | null {
     const elements = this._content.sections[sectionIndex]?.elements ?? [];
@@ -655,7 +668,9 @@ export class HwpxDocument {
       if (!id) continue;
       let occurrence = 0;
       for (let j = 0; j < i; j++) {
-        if (elements[j].type === kind && String((elements[j].data as { id?: string }).id) === id) occurrence++;
+        const other = elements[j];
+        if (other.type === kind && String((other.data as { id?: string }).id) === id) occurrence++;
+        else if (kind === 'paragraph' && other.type === 'hr' && (other.data as { sourceParagraphId?: string }).sourceParagraphId === id) occurrence++;
       }
       return { kind, id, occurrence };
     }
@@ -3306,17 +3321,25 @@ export class HwpxDocument {
     const srcElement = srcSection.elements[sourceParagraph];
     if (!srcElement || srcElement.type !== 'paragraph') return false;
 
+    const source = this.resolveElementAnchor(sourceSection, sourceParagraph);
+    if (!source) return false;
+    const anchor = this.resolveElementAnchor(targetSection, targetAfter);
+
     this.saveState();
     const copy = JSON.parse(JSON.stringify(srcElement));
-    copy.data.id = Math.random().toString(36).substring(2, 11);
+    const paragraphId = Math.random().toString(36).substring(2, 11);
+    copy.data.id = paragraphId;
+    delete copy.data._xmlPosition;
     tgtSection.elements.splice(targetAfter + 1, 0, copy);
     this.markStructureChanged();
 
     this._pendingParagraphCopies.push({
       sourceSection,
-      sourceParagraph,
       targetSection,
-      targetAfter,
+      source,
+      anchor,
+      paragraphId,
+      insertOrder: this._tableInsertCounter++,
     });
 
     this.markModified();
@@ -3331,6 +3354,9 @@ export class HwpxDocument {
     const srcElement = srcSection.elements[sourceParagraph];
     if (!srcElement || srcElement.type !== 'paragraph') return false;
 
+    const source = this.resolveElementAnchor(sourceSection, sourceParagraph);
+    if (!source) return false;
+
     this.saveState();
     srcSection.elements.splice(sourceParagraph, 1);
 
@@ -3340,14 +3366,19 @@ export class HwpxDocument {
       adjustedTargetAfter -= 1;
     }
 
+    // Resolve the destination now that the paragraph has left its old slot,
+    // matching the XML at replay time (source node removed, then re-inserted).
+    const anchor = this.resolveElementAnchor(targetSection, adjustedTargetAfter);
+
     tgtSection.elements.splice(adjustedTargetAfter + 1, 0, srcElement);
     this.markStructureChanged();
 
     this._pendingParagraphMoves.push({
       sourceSection,
-      sourceParagraph,
       targetSection,
-      targetAfter,
+      source,
+      anchor,
+      insertOrder: this._tableInsertCounter++,
     });
 
     this.markModified();
@@ -4842,15 +4873,21 @@ export class HwpxDocument {
   private async syncContentToZip(): Promise<void> {
     if (!this._zip) return;
 
-    // Apply paragraph and table inserts together, in call order. Other
-    // operations locate tables by index, so inserted tables must exist first.
-    const hasInserts =
-      (this._pendingTableInserts && this._pendingTableInserts.length > 0) ||
-      (this._pendingParagraphInserts && this._pendingParagraphInserts.length > 0);
-    if (hasInserts) {
+    // Replay paragraph/table inserts and paragraph copies/moves together, in
+    // call order, before any text update. Text updates resolve their target in
+    // the current XML, and other operations locate tables by index, so the
+    // structure must already match the memory model.
+    const hasStructuralEdits =
+      this._pendingTableInserts.length > 0 ||
+      this._pendingParagraphInserts.length > 0 ||
+      this._pendingParagraphCopies.length > 0 ||
+      this._pendingParagraphMoves.length > 0;
+    if (hasStructuralEdits) {
       await this.applyStructuralInsertsToXml();
       this._pendingTableInserts = [];
       this._pendingParagraphInserts = [];
+      this._pendingParagraphCopies = [];
+      this._pendingParagraphMoves = [];
     }
 
     // Apply table deletes
@@ -4869,21 +4906,6 @@ export class HwpxDocument {
     if (this._pendingTableMoves && this._pendingTableMoves.length > 0) {
       await this.applyTableMovesToXml();
       this._pendingTableMoves = [];
-    }
-
-
-    // Apply paragraph copies and moves BEFORE any text update.
-    // Both change paragraph indices, and the in-memory model already reflects
-    // the post-copy layout. Running text updates first would resolve an index
-    // against the pre-copy XML and overwrite the source paragraph instead.
-    if (this._pendingParagraphCopies && this._pendingParagraphCopies.length > 0) {
-      await this.applyParagraphCopiesToXml();
-      this._pendingParagraphCopies = [];
-    }
-
-    if (this._pendingParagraphMoves && this._pendingParagraphMoves.length > 0) {
-      await this.applyParagraphMovesToXml();
-      this._pendingParagraphMoves = [];
     }
 
     // Apply table cell updates (preserves original XML structure)
@@ -5334,34 +5356,159 @@ export class HwpxDocument {
   /**
    * Find the end offset of the section-level element an insert anchors to.
    *
-   * Paragraphs are matched by their own <hp:p id>; tables by <hp:tbl id>, and
-   * the insert goes after the paragraph that wraps the table. Only top-level
-   * elements count, so paragraphs inside table cells are never matched.
+   * Paragraphs are matched by their own <hp:p id>. Tables are matched by
+   * <hp:tbl id>, either wrapped in a paragraph (the insert goes after that
+   * paragraph) or placed directly in the section (move_table writes them that
+   * way).
+   *
+   * The returned offset is always the end of a TOP-LEVEL element, because that
+   * is the only place a new section-level element may go. But paragraph
+   * occurrences are counted over exactly the paragraphs the parser puts in the
+   * memory model (see parsedParagraphStarts), so they agree with the occurrence
+   * resolveElementAnchor recorded. The parser also lifts paragraphs out of
+   * headers, text boxes and shapes; Hancom reuses id="0" / id="2147483648"
+   * there too. Counting only top-level paragraphs put 47 of 131 sampled Hancom
+   * files' copies and moves on the wrong paragraph.
+   *
    * Returns -1 if the anchor is not present in the current XML.
    */
   private findAnchorEnd(xml: string, anchor: ElementAnchor): number {
     const topLevel = this.findTopLevelFullElements(xml);
+    const idOf = (fragment: string) =>
+      fragment.slice(0, fragment.indexOf('>') + 1).match(/\bid="([^"]*)"/)?.[1];
+
+    if (anchor.kind === 'paragraph') {
+      let seen = 0;
+      for (const start of this.parsedParagraphStarts(xml)) {
+        const openEnd = xml.indexOf('>', start) + 1;
+        if (idOf(xml.slice(start, openEnd)) !== anchor.id) continue;
+        if (seen === anchor.occurrence) {
+          // The anchor may sit inside a header/shape; new content goes after
+          // the top-level element that contains it.
+          const owner = topLevel.find(el => el.startIndex <= start && start < el.endIndex);
+          return owner ? owner.endIndex : -1;
+        }
+        seen++;
+      }
+      return -1;
+    }
+
     let seen = 0;
     for (const el of topLevel) {
-      if (el.type !== 'p') continue;
-      if (anchor.kind === 'paragraph') {
-        const openTag = el.xml.slice(0, el.xml.indexOf('>') + 1);
-        const id = openTag.match(/\bid="([^"]*)"/)?.[1];
-        if (id !== anchor.id) continue;
-      } else {
-        // The wrapper paragraph that holds this table (as its own, not a nested, table).
-        const tableOpen = new RegExp(`<(?:hp|hs|hc):tbl\\b[^>]*\\bid="${anchor.id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`);
-        const match = el.xml.match(tableOpen);
-        if (!match || match.index === undefined) continue;
-        const before = el.xml.slice(0, match.index);
-        const opens = (before.match(/<(?:hp|hs|hc):tbl\b/g) || []).length;
-        const closes = (before.match(/<\/(?:hp|hs|hc):tbl>/g) || []).length;
-        if (opens !== closes) continue; // it is nested inside another table
+      if (el.type === 'tbl') {
+        if (idOf(el.xml) !== anchor.id) continue;
+      } else if (!this.wrapsTopLevelTable(el.xml, anchor.id)) {
+        continue;
       }
       if (seen === anchor.occurrence) return el.endIndex;
       seen++;
     }
     return -1;
+  }
+
+  /**
+   * Start offsets (in `xml`) of the paragraphs HwpxParser turns into memory
+   * paragraphs, in document order. Mirrors HwpxParser.parseSection:
+   *
+   *  - MEMO fields, footnotes and endnotes are ignored;
+   *  - paragraphs inside any table are skipped;
+   *  - a paragraph that holds a table is kept only if it still has <hp:t>
+   *    once its tables are removed.
+   *
+   * Offsets are mapped back to the original XML, so callers can slice it.
+   */
+  private parsedParagraphStarts(xml: string): number[] {
+    // Ranges the parser strips before it looks for paragraphs.
+    const hidden: Array<[number, number]> = [];
+    const hide = (re: RegExp) => {
+      for (const m of xml.matchAll(re)) hidden.push([m.index!, m.index! + m[0].length]);
+    };
+    hide(/<hp:fieldBegin[^>]*type="MEMO"[^>]*>[\s\S]*?<\/hp:fieldBegin>/gi);
+    hide(/<hp:footNote\b[^>]*>[\s\S]*?<\/hp:footNote>/gi);
+    hide(/<hp:endNote\b[^>]*>[\s\S]*?<\/hp:endNote>/gi);
+    const isHidden = (pos: number) => hidden.some(([a, b]) => pos >= a && pos < b);
+
+    const tables = this.findAllTablesDeep(xml).filter(t => !isHidden(t.startIndex));
+    const inTable = (pos: number) => tables.some(t => pos > t.startIndex && pos < t.endIndex);
+
+    const starts: number[] = [];
+    for (const m of xml.matchAll(/<hp:p\b(?=[\s>])[^>]*>/g)) {
+      const start = m.index!;
+      if (isHidden(start) || inTable(start)) continue;
+      const end = this.findBalancedParagraphEnd(xml, start);
+      if (end === -1) continue;
+      // Remove only the outermost tables in this paragraph. A nested table
+      // is already inside one of them; cutting it again with its original
+      // offsets would slice the wrong text out of the shortened string.
+      const own = tables.filter(t =>
+        t.startIndex >= start && t.endIndex <= end &&
+        !tables.some(o => o !== t && o.startIndex >= start && o.startIndex < t.startIndex && o.endIndex > t.endIndex));
+      if (own.length > 0) {
+        let rest = xml.slice(start, end);
+        for (const t of [...own].sort((a, b) => b.startIndex - a.startIndex)) {
+          rest = rest.slice(0, t.startIndex - start) + rest.slice(t.endIndex - start);
+        }
+        if (!/<hp:t\b[^>]*>/.test(rest)) continue;
+      }
+      starts.push(start);
+    }
+    return starts;
+  }
+
+  /** Every <hp:tbl> range at any depth (outer tables before their nested ones). */
+  private findAllTablesDeep(xml: string): Array<{ startIndex: number; endIndex: number }> {
+    const out: Array<{ startIndex: number; endIndex: number }> = [];
+    for (const m of xml.matchAll(/<hp:tbl\b/g)) {
+      let depth = 1;
+      let pos = m.index! + 7;
+      while (depth > 0 && pos < xml.length) {
+        const nextOpen = xml.indexOf('<hp:tbl', pos);
+        const nextClose = xml.indexOf('</hp:tbl>', pos);
+        if (nextClose === -1) break;
+        if (nextOpen !== -1 && nextOpen < nextClose) {
+          depth++;
+          pos = nextOpen + 7;
+        } else {
+          depth--;
+          pos = nextClose + 9;
+        }
+      }
+      if (depth === 0) out.push({ startIndex: m.index!, endIndex: pos });
+    }
+    return out;
+  }
+
+  /** End offset of the paragraph opening at `start`, counting nested <hp:p>. */
+  private findBalancedParagraphEnd(xml: string, start: number): number {
+    const openRe = /<hp:p\b(?=[\s>/])[^>]*>/g;
+    let depth = 0;
+    let pos = start;
+    while (pos < xml.length) {
+      openRe.lastIndex = pos;
+      const open = openRe.exec(xml);
+      const close = xml.indexOf('</hp:p>', pos);
+      if (close === -1) return -1;
+      if (open && open.index < close) {
+        if (!open[0].endsWith('/>')) depth++;
+        pos = open.index + open[0].length;
+      } else {
+        depth--;
+        pos = close + 7;
+        if (depth === 0) return pos;
+      }
+    }
+    return -1;
+  }
+
+  /** True if this paragraph directly (not via a nested table) holds <hp:tbl id>. */
+  private wrapsTopLevelTable(paragraphXml: string, tableId: string): boolean {
+    const escaped = tableId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const match = paragraphXml.match(new RegExp(`<(?:hp|hs|hc):tbl\\b[^>]*\\bid="${escaped}"`));
+    if (!match || match.index === undefined) return false;
+    const before = paragraphXml.slice(0, match.index);
+    const opens = (before.match(/<(?:hp|hs|hc):tbl\b/g) || []).length;
+    const closes = (before.match(/<\/(?:hp|hs|hc):tbl>/g) || []).length;
+    return opens === closes;
   }
 
   /**
@@ -5417,21 +5564,25 @@ export class HwpxDocument {
   }
 
   /**
-   * Replay paragraph and table inserts into the section XML in the order the
-   * calls were made.
+   * Replay structural edits — paragraph/table inserts and paragraph
+   * copies/moves — into the section XML in the order the calls were made.
    *
-   * Each insert carries an id-based anchor resolved at call time, so it lands
-   * after the same element in the XML that it followed in memory. Replaying
-   * in call order means that anchor always exists by the time it is needed.
+   * Every edit carries id-based anchors resolved at call time, so it lands
+   * after the same element in the XML that it followed in memory. Replaying in
+   * call order means each anchor already exists (or has already moved) by the
+   * time a later edit needs it. Copies/moves may cross sections, so all
+   * touched sections are held in memory and written once at the end.
    */
   private async applyStructuralInsertsToXml(): Promise<void> {
     if (!this._zip) return;
 
-    type Insert =
+    type Edit =
       | { kind: 'paragraph'; order: number; sectionIndex: number; anchor: ElementAnchor | null; paragraphId: string; text: string }
-      | { kind: 'table'; order: number; sectionIndex: number; anchor: ElementAnchor | null; rows: number; cols: number; width: number; cellWidth: number; tableId: string };
+      | { kind: 'table'; order: number; sectionIndex: number; anchor: ElementAnchor | null; rows: number; cols: number; width: number; cellWidth: number; tableId: string }
+      | { kind: 'copy'; order: number; sectionIndex: number; sourceSection: number; source: ElementAnchor; anchor: ElementAnchor | null; paragraphId: string }
+      | { kind: 'move'; order: number; sectionIndex: number; sourceSection: number; source: ElementAnchor; anchor: ElementAnchor | null };
 
-    const all: Insert[] = [
+    const edits: Edit[] = [
       ...this._pendingParagraphInserts.map(i => ({
         kind: 'paragraph' as const, order: i.insertOrder, sectionIndex: i.sectionIndex,
         anchor: i.anchor, paragraphId: i.paragraphId, text: i.text,
@@ -5441,49 +5592,95 @@ export class HwpxDocument {
         anchor: i.anchor, rows: i.rows, cols: i.cols, width: i.width,
         cellWidth: i.cellWidth, tableId: i.tableId,
       })),
+      ...this._pendingParagraphCopies.map(c => ({
+        kind: 'copy' as const, order: c.insertOrder, sectionIndex: c.targetSection,
+        sourceSection: c.sourceSection, source: c.source, anchor: c.anchor, paragraphId: c.paragraphId,
+      })),
+      ...this._pendingParagraphMoves.map(m => ({
+        kind: 'move' as const, order: m.insertOrder, sectionIndex: m.targetSection,
+        sourceSection: m.sourceSection, source: m.source, anchor: m.anchor,
+      })),
     ].sort((a, b) => a.order - b.order);
+    if (edits.length === 0) return;
 
-    const bySection = new Map<number, Insert[]>();
-    for (const insert of all) {
-      const list = bySection.get(insert.sectionIndex) || [];
-      list.push(insert);
-      bySection.set(insert.sectionIndex, list);
-    }
+    const sections = new Map<number, string>();
+    const load = async (index: number): Promise<string | undefined> => {
+      if (sections.has(index)) return sections.get(index);
+      const file = this._zip!.file(`Contents/section${index}.xml`);
+      if (!file) return undefined;
+      const xml = await file.async('string');
+      sections.set(index, xml);
+      return xml;
+    };
 
-    for (const [sectionIndex, inserts] of bySection) {
-      const sectionPath = `Contents/section${sectionIndex}.xml`;
-      const file = this._zip.file(sectionPath);
-      if (!file) continue;
-      let xml = await file.async('string');
-
-      // Numeric ids for generated cell/wrapper paragraphs must not collide.
-      let maxId = 0;
-      for (const m of xml.matchAll(/\bid="(\d+)"/g)) {
-        const n = parseInt(m[1], 10);
-        if (n < 2147483648 && n > maxId) maxId = n;
+    // Numeric ids for generated cell/wrapper paragraphs must not collide.
+    const maxIdBySection = new Map<number, number>();
+    const nextIdFor = (index: number, xml: string) => {
+      if (!maxIdBySection.has(index)) {
+        let maxId = 0;
+        for (const m of xml.matchAll(/\bid="(\d+)"/g)) {
+          const n = parseInt(m[1], 10);
+          if (n < 2147483648 && n > maxId) maxId = n;
+        }
+        maxIdBySection.set(index, maxId);
       }
-      const nextId = () => ++maxId;
+      return () => {
+        const next = maxIdBySection.get(index)! + 1;
+        maxIdBySection.set(index, next);
+        return next;
+      };
+    };
 
-      for (const insert of inserts) {
-        let position = insert.anchor
-          ? this.findAnchorEnd(xml, insert.anchor)
-          : this.findSectionHeadEnd(xml);
-        if (position === -1) {
-          // The anchor vanished (e.g. deleted later in the same session) —
-          // append rather than drop the user's content.
-          const secEnd = Math.max(xml.lastIndexOf('</hs:sec>'), xml.lastIndexOf('</hp:sec>'));
-          if (secEnd === -1) continue;
-          position = secEnd;
+    const placeAfter = (xml: string, anchor: ElementAnchor | null): number => {
+      const position = anchor ? this.findAnchorEnd(xml, anchor) : this.findSectionHeadEnd(xml);
+      if (position !== -1) return position;
+      // The anchor vanished (e.g. deleted later in the same session) —
+      // append rather than drop the user's content.
+      return Math.max(xml.lastIndexOf('</hs:sec>'), xml.lastIndexOf('</hp:sec>'));
+    };
+
+    for (const edit of edits) {
+      if (edit.kind === 'copy' || edit.kind === 'move') {
+        const srcXml = await load(edit.sourceSection);
+        if (srcXml === undefined) continue;
+        const srcEnd = this.findAnchorEnd(srcXml, edit.source);
+        if (srcEnd === -1) continue;
+        const srcEl = this.findTopLevelFullElements(srcXml).find(el => el.endIndex === srcEnd && el.type === 'p');
+        if (!srcEl) continue;
+
+        let fragment = srcEl.xml;
+        if (edit.kind === 'copy') {
+          // Same id as the memory copy, so later edits anchored on it find it.
+          fragment = fragment.replace(/^<(hp|hs):p\b([^>]*?)\bid="[^"]*"/, `<$1:p$2id="${edit.paragraphId}"`);
+          // The clone inherits the source's fixed <hp:lineseg> geometry; reset
+          // it so replacement text of a different length does not overlap.
+          fragment = this.resetLinesegInXml(fragment);
+        } else {
+          sections.set(edit.sourceSection, srcXml.slice(0, srcEl.startIndex) + srcXml.slice(srcEl.endIndex));
         }
 
-        const newXml = insert.kind === 'paragraph'
-          ? `<hp:p id="${insert.paragraphId}" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="0"><hp:t>${this.escapeXml(insert.text)}</hp:t></hp:run></hp:p>`
-          : this.buildInsertedTableXml(insert, nextId);
-
-        xml = xml.slice(0, position) + newXml + xml.slice(position);
+        const tgtXml = await load(edit.sectionIndex);
+        if (tgtXml === undefined) continue;
+        const position = placeAfter(tgtXml, edit.anchor);
+        if (position === -1) continue;
+        sections.set(edit.sectionIndex, tgtXml.slice(0, position) + fragment + tgtXml.slice(position));
+        continue;
       }
 
-      this._zip.file(sectionPath, xml);
+      const xml = await load(edit.sectionIndex);
+      if (xml === undefined) continue;
+      const position = placeAfter(xml, edit.anchor);
+      if (position === -1) continue;
+
+      const newXml = edit.kind === 'paragraph'
+        ? `<hp:p id="${edit.paragraphId}" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="0"><hp:t>${this.escapeXml(edit.text)}</hp:t></hp:run></hp:p>`
+        : this.buildInsertedTableXml(edit, nextIdFor(edit.sectionIndex, xml));
+
+      sections.set(edit.sectionIndex, xml.slice(0, position) + newXml + xml.slice(position));
+    }
+
+    for (const [index, xml] of sections) {
+      this._zip.file(`Contents/section${index}.xml`, xml);
     }
   }
 
@@ -8481,18 +8678,23 @@ export class HwpxDocument {
     // TIER 2: Index-based lookup with text validation
     // TIER 3: Fuzzy text matching fallback
 
-    // TIER 1: ID-based lookup - DISABLED
-    // Problem: XML counting includes nested paragraphs (inside tables),
-    // but _content.sections.elements only has top-level elements.
-    // This mismatch causes wrong paragraph selection.
-    // Solution: Skip ID-based lookup and use index-based (TIER 2) instead.
+    // TIER 1: id + occurrence, counted with the parser's paragraph rule.
     //
-    // if (paragraphId) {
-    //   const idBasedTarget = this.findParagraphById(xml, paragraphId, paragraphOccurrence ?? 0);
-    //   if (idBasedTarget) {
-    //     return idBasedTarget;
-    //   }
-    // }
+    // This was disabled because counting every <hp:p> in the XML included cell
+    // paragraphs the memory model does not have. findAnchorEnd counts only
+    // top-level paragraphs the parser keeps, so the occurrence recorded from
+    // the memory model names the same node. Index lookup (TIER 2) is wrong
+    // after a copy: its ±2 text search finds the original first because the
+    // copy carries the same text, and the edit lands on the original.
+    if (paragraphId) {
+      const end = this.findAnchorEnd(xml, { kind: 'paragraph', id: paragraphId, occurrence: paragraphOccurrence ?? 0 });
+      if (end !== -1) {
+        const el = this.findTopLevelFullElements(xml).find(e => e.type === 'p' && e.endIndex === end);
+        if (el) {
+          return { start: el.startIndex, end: el.endIndex, xml: el.xml };
+        }
+      }
+    }
 
     // Calculate paragraph index using _content.sections.elements (same source as elementIndex)
     // This ensures consistency between elementIndex and paragraph counting
@@ -13137,111 +13339,6 @@ export class HwpxDocument {
     }
 
     return results;
-  }
-
-  private async applyParagraphCopiesToXml(): Promise<void> {
-    if (!this._zip) return;
-
-    for (const copy of this._pendingParagraphCopies) {
-      const srcPath = `Contents/section${copy.sourceSection}.xml`;
-      const srcXml = await this._zip.file(srcPath)?.async('string');
-      if (!srcXml) continue;
-
-      const srcElements = this.findTopLevelFullElements(srcXml);
-      if (copy.sourceParagraph >= srcElements.length) continue;
-
-      const srcElem = srcElements[copy.sourceParagraph];
-      if (srcElem.type !== 'p') continue;
-
-      // Clone and regenerate ID
-      let clonedXml = srcElem.xml;
-      const newId = Math.random().toString(36).substring(2, 11);
-      clonedXml = clonedXml.replace(/<(hp|hs):p\s+([^>]*?)id="[^"]*"/, `<$1:p $2id="${newId}"`);
-
-      // The clone inherits the source paragraph's fixed <hp:lineseg> geometry.
-      // Once its text is replaced with a different length, those coordinates
-      // place glyphs on top of each other. Reset them so Hancom Word relays out.
-      clonedXml = this.resetLinesegInXml(clonedXml);
-
-      // Read target section
-      const tgtPath = `Contents/section${copy.targetSection}.xml`;
-      let tgtXml = await this._zip.file(tgtPath)?.async('string');
-      if (!tgtXml) continue;
-
-      const tgtElements = this.findTopLevelFullElements(tgtXml);
-
-      // Insert after targetAfter element
-      let insertPos: number;
-      if (copy.targetAfter >= 0 && copy.targetAfter < tgtElements.length) {
-        insertPos = tgtElements[copy.targetAfter].endIndex;
-      } else if (copy.targetAfter < 0) {
-        // Insert at beginning - find first element
-        if (tgtElements.length > 0) {
-          insertPos = tgtElements[0].startIndex;
-        } else {
-          const secMatch = tgtXml.match(/<(?:hs|hp):sec[^>]*>/);
-          insertPos = secMatch ? secMatch.index! + secMatch[0].length : 0;
-        }
-      } else {
-        // After last element
-        insertPos = tgtElements.length > 0 ? tgtElements[tgtElements.length - 1].endIndex : tgtXml.lastIndexOf('</');
-      }
-
-      tgtXml = tgtXml.substring(0, insertPos) + '\n' + clonedXml + tgtXml.substring(insertPos);
-      this._zip.file(tgtPath, tgtXml);
-    }
-  }
-
-  private async applyParagraphMovesToXml(): Promise<void> {
-    if (!this._zip) return;
-
-    for (const move of this._pendingParagraphMoves) {
-      const srcPath = `Contents/section${move.sourceSection}.xml`;
-      let srcXml = await this._zip.file(srcPath)?.async('string');
-      if (!srcXml) continue;
-
-      const srcElements = this.findTopLevelFullElements(srcXml);
-      if (move.sourceParagraph >= srcElements.length) continue;
-
-      const srcElem = srcElements[move.sourceParagraph];
-      if (srcElem.type !== 'p') continue;
-
-      const extractedXml = srcElem.xml;
-
-      // Remove from source
-      srcXml = srcXml.substring(0, srcElem.startIndex) + srcXml.substring(srcElem.endIndex);
-      this._zip.file(srcPath, srcXml);
-
-      // Read target section (re-read if same section since we modified it)
-      const tgtPath = `Contents/section${move.targetSection}.xml`;
-      let tgtXml = await this._zip.file(tgtPath)?.async('string');
-      if (!tgtXml) continue;
-
-      const tgtElements = this.findTopLevelFullElements(tgtXml);
-
-      // Adjust target index for same-section moves
-      let adjustedTarget = move.targetAfter;
-      if (move.sourceSection === move.targetSection && move.sourceParagraph < move.targetAfter) {
-        adjustedTarget -= 1;
-      }
-
-      let insertPos: number;
-      if (adjustedTarget >= 0 && adjustedTarget < tgtElements.length) {
-        insertPos = tgtElements[adjustedTarget].endIndex;
-      } else if (adjustedTarget < 0) {
-        if (tgtElements.length > 0) {
-          insertPos = tgtElements[0].startIndex;
-        } else {
-          const secMatch = tgtXml.match(/<(?:hs|hp):sec[^>]*>/);
-          insertPos = secMatch ? secMatch.index! + secMatch[0].length : 0;
-        }
-      } else {
-        insertPos = tgtElements.length > 0 ? tgtElements[tgtElements.length - 1].endIndex : tgtXml.lastIndexOf('</');
-      }
-
-      tgtXml = tgtXml.substring(0, insertPos) + '\n' + extractedXml + tgtXml.substring(insertPos);
-      this._zip.file(tgtPath, tgtXml);
-    }
   }
 
   // ============================================================

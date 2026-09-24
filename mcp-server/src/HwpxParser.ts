@@ -3521,6 +3521,9 @@ export class HwpxParser {
             type: 'hr',
             data: {
               id: generateId(),
+              // The paragraph stays in the XML; keep its id so id-based
+              // anchors can count it (HwpxDocument.resolveElementAnchor).
+              sourceParagraphId: el.data.id,
               width: 'full',
               height: 1,
               color: '#000000',

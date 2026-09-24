@@ -207,3 +207,80 @@ describe('행 삽입 시 cell_texts 는 칸마다 하나씩 들어간다', () =>
     expect((rows[1].match(/<hp:p\b/g) || []).length).toBe(1);
   });
 });
+
+describe('id 앵커의 경계 조건 (CodeRabbit 지적 재현)', () => {
+  /** 저장본을 섹션 최상위 순서대로: 표는 'T', 문단은 글자. 빈 문단은 뺀다. */
+  function flatOrder(xml: string): string[] {
+    const flat = xml.replace(/<hp:tbl\b[\s\S]*?<\/hp:tbl>/g, '<TBL/>');
+    return [...flat.matchAll(/<TBL\/>|<hp:t>([^<]+)<\/hp:t>/g)].map(m => m[1] ?? 'T');
+  }
+
+  async function rewriteSection(doc: HwpxDocument, edit: (xml: string) => string): Promise<HwpxDocument> {
+    const zip = await JSZip.loadAsync(await doc.save());
+    const xml = await zip.file('Contents/section0.xml')!.async('string');
+    zip.file('Contents/section0.xml', edit(xml));
+    return HwpxDocument.createFromBuffer('r', 'r.hwpx', await zip.generateAsync({ type: 'nodebuffer' }));
+  }
+
+  it('같은 id 를 쓰는 글자 없는 표 래퍼는 문단 순번에서 빠진다', async () => {
+    const seed = HwpxDocument.createNew('e1', 'edge');
+    seed.insertTable(0, 0, 1, 1);
+    seed.insertParagraph(0, 1, 'A');
+    // 한/글 원본처럼: 표 래퍼와 "A" 문단이 첫 문단과 같은 id="0", 래퍼에는 <hp:t> 없음.
+    const doc = await rewriteSection(seed, xml => xml
+      .replace(/<hp:p id="[^"]*"([^>]*>\s*<hp:run[^>]*>\s*<hp:tbl[\s\S]*?<\/hp:tbl>)<hp:t><\/hp:t>/, '<hp:p id="0"$1')
+      .replace(/<hp:p id="[^"]*"(?=[^>]*><hp:run[^>]*><hp:t>A<)/, '<hp:p id="0"'));
+
+    const a = doc.content.sections[0].elements.findIndex(
+      e => e.type === 'paragraph' && e.data.runs.some((r: { text: string }) => r.text === 'A'));
+    doc.insertParagraph(0, a, 'A 뒤');
+
+    // 실측: 수정 전 [T, A 뒤, A] — 래퍼가 occurrence 1 로 잡혀 "A" 앞에 들어갔다.
+    expect(flatOrder(await sectionXml(await doc.save()))).toEqual(['T', 'A', 'A 뒤']);
+  });
+
+  it('섹션 최상위에 바로 놓인 <hp:tbl> 뒤에도 넣을 수 있다', async () => {
+    const seed = HwpxDocument.createNew('e2', 'edge');
+    seed.insertParagraph(0, -1, 'P');
+    seed.insertTable(0, 0, 1, 1);
+    seed.insertParagraph(0, 1, '끝');
+    // move_table 결과처럼 래퍼 문단 없이 표를 섹션에 바로 둔다.
+    const doc = await rewriteSection(seed, xml => xml.replace(
+      /<hp:p [^>]*><hp:run[^>]*>(<hp:tbl[\s\S]*?<\/hp:tbl>)<hp:t><\/hp:t><\/hp:run><\/hp:p>/, '$1'));
+
+    const t = doc.content.sections[0].elements.findIndex(e => e.type === 'table');
+    doc.insertParagraph(0, t, '표 뒤');
+
+    // 실측: 수정 전 [P, T, 끝, 표 뒤] — 앵커를 못 찾아 섹션 끝에 붙었다.
+    expect(flatOrder(await sectionXml(await doc.save()))).toEqual(['P', 'T', '표 뒤', '끝']);
+  });
+
+  it('복제한 문단 바로 뒤에 넣을 수 있다', async () => {
+    const seed = HwpxDocument.createNew('e3', 'edge');
+    seed.insertParagraph(0, -1, 'A');
+    seed.insertParagraph(0, 0, 'B');
+    const doc = await reopen(await seed.save());
+
+    const a = doc.getParagraphs(0).findIndex(p => p.text === 'A');
+    doc.copyParagraph(0, a, 0, a);
+    doc.insertParagraph(0, a + 1, 'X');
+
+    // 실측: 수정 전 [A, A, B, X] — 복제본 id 가 메모리와 XML 에서 달라 앵커를 못 찾았다.
+    expect(flatOrder(await sectionXml(await doc.save()))).toEqual(['A', 'A', 'X', 'B']);
+  });
+
+  it('옮긴 문단 바로 뒤에 넣을 수 있다', async () => {
+    const seed = HwpxDocument.createNew('e4', 'edge');
+    seed.insertParagraph(0, -1, 'A');
+    seed.insertParagraph(0, 0, 'B');
+    seed.insertParagraph(0, 1, 'C');
+    const doc = await reopen(await seed.save());
+
+    const texts = () => doc.getParagraphs(0).map(p => p.text);
+    doc.moveParagraph(0, texts().indexOf('A'), 0, texts().indexOf('C'));
+    expect(texts().filter(t => t)).toEqual(['B', 'C', 'A']);
+    doc.insertParagraph(0, texts().indexOf('A'), 'A 뒤');
+
+    expect(flatOrder(await sectionXml(await doc.save()))).toEqual(['B', 'C', 'A', 'A 뒤']);
+  });
+});
