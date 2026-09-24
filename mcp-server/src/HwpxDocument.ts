@@ -2970,11 +2970,33 @@ export class HwpxDocument {
     }
 
     this.saveState();
-    const templateRow = table.rows[afterRowIndex];
-    const colCount = templateRow.cells.length;
+
+    // Same column grid as the XML path (gridCellsForNewRow): one cell per
+    // column position, taking the colAddr/colSpan of the cell that starts
+    // there in the template row or the nearest row above. Sizing the row by
+    // templateRow.cells.length left out a column covered by a vertical merge.
+    const starts = (r: number) => new Map(
+      (table.rows[r]?.cells ?? []).map(c => [c.colAddr ?? -1, c.colSpan ?? 1] as const));
+    const colCount = Math.max(0, ...table.rows.flatMap(r => r.cells.map(c => (c.colAddr ?? 0) + (c.colSpan ?? 1))));
+    const templateStarts = [...starts(afterRowIndex).keys()].filter(c => c >= 0).sort((a, b) => a - b);
+    const grid: Array<{ colAddr: number; colSpan: number }> = [];
+    for (let col = 0; col < colCount;) {
+      let span: number | undefined;
+      for (let r = afterRowIndex; r >= 0 && span === undefined; r--) span = starts(r).get(col);
+      for (let r = afterRowIndex + 1; r < table.rows.length && span === undefined; r++) span = starts(r).get(col);
+      if (span === undefined) { col++; continue; }
+      const next = templateStarts.find(c => c > col);
+      if (next !== undefined && col + span > next) span = next - col;
+      grid.push({ colAddr: col, colSpan: Math.max(1, span) });
+      col += Math.max(1, span);
+    }
 
     const newRow = {
-      cells: Array.from({ length: colCount }, (_, i) => ({
+      cells: grid.map((g, i) => ({
+        rowAddr: afterRowIndex + 1,
+        colAddr: g.colAddr,
+        rowSpan: 1,
+        colSpan: g.colSpan,
         paragraphs: [{
           id: Math.random().toString(36).substring(2, 11),
           runs: [{ text: cellTexts?.[i] || '' }],
@@ -2982,20 +3004,14 @@ export class HwpxDocument {
       })),
     };
 
-    table.rows.splice(afterRowIndex + 1, 0, newRow as any);
-    // Keep memory row addresses in step with the XML renumbering below, so a
-    // later merge/split/insert on this table reads the right rows.
-    table.rows.forEach((row, r) => {
+    // Keep memory row addresses in step with the XML renumbering, so a later
+    // merge/split/insert on this table reads the right rows.
+    for (const row of table.rows) {
       for (const cell of row.cells) {
-        if (cell.rowAddr !== undefined && cell.rowAddr > afterRowIndex && row !== (newRow as any)) cell.rowAddr += 1;
+        if (cell.rowAddr !== undefined && cell.rowAddr > afterRowIndex) cell.rowAddr += 1;
       }
-    });
-    for (const [c, cell] of (newRow as any).cells.entries()) {
-      cell.rowAddr = afterRowIndex + 1;
-      cell.colAddr = templateRow.cells[c]?.colAddr ?? c;
-      cell.rowSpan = 1;
-      cell.colSpan = templateRow.cells[c]?.colSpan ?? 1;
     }
+    table.rows.splice(afterRowIndex + 1, 0, newRow as any);
 
     this._pendingTableRowInserts.push({
       sectionIndex,
@@ -13276,6 +13292,46 @@ export class HwpxDocument {
   }
 
   /**
+   * Locate one of a cell's OWN address/span attributes (`colAddr`, `rowAddr`,
+   * `colSpan`, `rowSpan`) in `cellXml`, returning the value and the absolute
+   * index of its digits so callers can rewrite it in place.
+   *
+   * Hancom writes them on `<hp:cellAddr>`/`<hp:cellSpan>` after the cell's
+   * sub-list (209/209 corpus files). Hand-made files may put them on the
+   * `<hp:tc>` start tag instead, which the parser also accepts. A nested
+   * table's cells live inside the sub-list, so only the tail is searched for
+   * the child form and only the start tag for the attribute form.
+   */
+  private cellOwnAttr(
+    cellXml: string,
+    name: 'colAddr' | 'rowAddr' | 'colSpan' | 'rowSpan',
+  ): { value: number; at: number; length: number } | null {
+    const child = name.endsWith('Addr') ? 'cellAddr' : 'cellSpan';
+    const tail = cellXml.lastIndexOf('</hp:subList>');
+    const from = tail === -1 ? 0 : tail;
+    const own = new RegExp(`(<hp:${child}\\b[^>]*\\b${name}=")(\\d+)"`).exec(cellXml.slice(from));
+    if (own) {
+      return { value: parseInt(own[2], 10), at: from + own.index + own[1].length, length: own[2].length };
+    }
+    const startTag = cellXml.slice(0, cellXml.indexOf('>') + 1);
+    const attr = new RegExp(`(\\s${name}=")(\\d+)"`).exec(startTag);
+    if (attr) {
+      return { value: parseInt(attr[2], 10), at: attr.index + attr[1].length, length: attr[2].length };
+    }
+    return null;
+  }
+
+  /** Rewrite one of a cell's own attributes (see cellOwnAttr); no-op if absent. */
+  private setCellOwnAttr(
+    cellXml: string,
+    name: 'colAddr' | 'rowAddr' | 'colSpan' | 'rowSpan',
+    value: number,
+  ): string {
+    const a = this.cellOwnAttr(cellXml, name);
+    return a ? cellXml.slice(0, a.at) + String(value) + cellXml.slice(a.at + a.length) : cellXml;
+  }
+
+  /**
    * Add `delta` to the rowAddr of every cell of THIS table whose rowAddr is
    * >= fromRow. Nested tables inside cells keep their own addresses.
    */
@@ -13288,17 +13344,9 @@ export class HwpxDocument {
       let rowXml = row.xml;
       for (let c = cells.length - 1; c >= 0; c--) {
         const cell = cells[c];
-        // The cell's own <hp:cellAddr> follows its sub-list; a nested table's
-        // cells are inside the sub-list, so look only after it.
-        const tail = cell.xml.lastIndexOf('</hp:subList>');
-        const from = tail === -1 ? 0 : tail;
-        const own = cell.xml.slice(from);
-        const m = own.match(/(<hp:cellAddr\b[^>]*\browAddr=")(\d+)(")/);
-        if (!m || m.index === undefined) continue;
-        const addr = parseInt(m[2], 10);
-        if (addr < fromRow) continue;
-        const at = from + m.index + m[1].length;
-        const newCell = cell.xml.slice(0, at) + String(addr + delta) + cell.xml.slice(at + m[2].length);
+        const addr = this.cellOwnAttr(cell.xml, 'rowAddr');
+        if (!addr || addr.value < fromRow) continue;
+        const newCell = this.setCellOwnAttr(cell.xml, 'rowAddr', addr.value + delta);
         rowXml = rowXml.slice(0, cell.startIndex) + newCell + rowXml.slice(cell.endIndex);
       }
       if (rowXml !== row.xml) out = out.slice(0, row.startIndex) + rowXml + out.slice(row.endIndex);
@@ -13340,6 +13388,59 @@ export class HwpxDocument {
     return cellXml.slice(0, subListOpen.index + subListOpen[0].length) + paragraph + cellXml.slice(subListCloseIdx);
   }
 
+  /**
+   * Source cells for a new row inserted after `afterRow`, one per column
+   * position, in column order, covering every column 0..colCnt-1 exactly once.
+   *
+   * For each column: the cell that STARTS there in the template row (keeping
+   * its colSpan so horizontal merges carry over), otherwise the nearest row
+   * above whose own cell starts there. A column no row starts is skipped by the
+   * colSpan of the cell covering it. Returned XML still carries the source
+   * addresses; the caller rewrites rowAddr/rowSpan.
+   */
+  private gridCellsForNewRow(
+    rows: Array<{ xml: string }>,
+    afterRow: number,
+  ): string[] {
+    const ownProps = (cellXml: string) => ({
+      col: this.cellOwnAttr(cellXml, 'colAddr')?.value ?? -1,
+      span: this.cellOwnAttr(cellXml, 'colSpan')?.value ?? 1,
+    });
+    // Cells with no address anywhere are placed by position in their row.
+    const rowCells = rows.map(r => {
+      let next = 0;
+      return this.findAllElementsWithDepth(r.xml, 'tc').map(c => {
+        const p = ownProps(c.xml);
+        const col = p.col >= 0 ? p.col : next;
+        next = col + p.span;
+        return { xml: c.xml, col, span: p.span };
+      });
+    });
+
+    const colCount = Math.max(0, ...rowCells.flat().map(c => c.col + c.span));
+    const out: string[] = [];
+    for (let col = 0; col < colCount;) {
+      let pick: { xml: string; col: number; span: number } | undefined;
+      for (let r = afterRow; r >= 0 && !pick; r--) pick = rowCells[r].find(c => c.col === col);
+      // Nothing above starts here (should not happen in a well-formed table):
+      // fall back to any row below so the grid still has no hole.
+      for (let r = afterRow + 1; r < rowCells.length && !pick; r++) pick = rowCells[r].find(c => c.col === col);
+      if (!pick) { col++; continue; }
+      // A cell borrowed from a row above may span columns the template row
+      // splits; keep the template row's split by clamping to the next column
+      // that the template row starts.
+      let span = Math.max(1, pick.span);
+      const nextTemplateStart = rowCells[afterRow].map(c => c.col).filter(c => c > col).sort((a, b) => a - b)[0];
+      if (nextTemplateStart !== undefined && col + span > nextTemplateStart) span = nextTemplateStart - col;
+      const xml = span === pick.span
+        ? pick.xml
+        : pick.xml.replace(/(<hp:cellSpan\b[^>]*\bcolSpan=")\d+(")/, `$1${span}$2`);
+      out.push(xml);
+      col += span;
+    }
+    return out;
+  }
+
   private async applyTableRowInsertsToXml(): Promise<void> {
     if (!this._zip) return;
 
@@ -13369,26 +13470,27 @@ export class HwpxDocument {
 
         const templateRow = rows[insert.afterRowIndex];
 
-        // Clone the template row cell by cell. Each new cell keeps the
-        // template cell's formatting but only its FIRST paragraph, emptied:
-        // cloning every paragraph copied multi-line cells (e.g. "○ a\n○ b\n- c")
-        // as three empty lines, so Hancom sized the row for three lines and the
-        // one line of new text sat at the top.
+        // Build the new row from the table's COLUMN GRID, not from the template
+        // row's cells. A row just below a vertical merge has no <hp:tc> for the
+        // merged column (the master above covers it), so cloning its cells gave
+        // the new row a hole there: colCnt=3 but only columns 1-2 present
+        // (CodeRabbit, 2026-09-24). For each column position we take the cell
+        // that starts there in the template row, or — if the template row has
+        // none — the nearest row above that does, cloned as a single-row cell.
+        //
+        // Each new cell keeps its source's formatting but only its FIRST
+        // paragraph, emptied: cloning every paragraph copied multi-line cells
+        // (e.g. "○ a\n○ b\n- c") as three empty lines, so Hancom sized the row
+        // for three lines and the one line of new text sat at the top.
         const newRowAddr = insert.afterRowIndex + 1;
-        const templateCells = this.findAllElementsWithDepth(templateRow.xml, 'tc');
-        let newRowXml = templateRow.xml;
-        for (let c = templateCells.length - 1; c >= 0; c--) {
-          const cell = templateCells[c];
-          const text = insert.cellTexts?.[c] ?? '';
-          const newCellXml = this.cloneCellWithText(cell.xml, text);
-          newRowXml = newRowXml.slice(0, cell.startIndex) + newCellXml + newRowXml.slice(cell.endIndex);
-        }
-
-        // New cells sit on row afterRowIndex+1 and span one row each; a cloned
-        // template may carry a rowSpan the new row must not inherit.
-        newRowXml = newRowXml
-          .replace(/rowAddr="(\d+)"/g, `rowAddr="${newRowAddr}"`)
-          .replace(/(<hp:cellSpan\b[^>]*\browSpan=")\d+(")/g, '$11$2');
+        const newRowCells = this.gridCellsForNewRow(rows, insert.afterRowIndex);
+        const trOpen = templateRow.xml.slice(0, templateRow.xml.indexOf('>') + 1);
+        let newRowXml = trOpen + newRowCells.map((cellXml, i) => {
+          const text = insert.cellTexts?.[i] ?? '';
+          // New cells sit on row afterRowIndex+1 and span one row each.
+          const cell = this.setCellOwnAttr(this.cloneCellWithText(cellXml, text), 'rowAddr', newRowAddr);
+          return this.setCellOwnAttr(cell, 'rowSpan', 1);
+        }).join('') + '</hp:tr>';
 
         // Shift every existing cell below the insertion point down one row.
         // Without this the next row kept rowAddr=afterRowIndex+1 — the same as

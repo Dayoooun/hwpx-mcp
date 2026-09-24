@@ -147,4 +147,10 @@ describe(`MCP stdio 종단간 [${server}]`, () => {
     const r = await mcp.call('insert_paragraph', { doc_id: id, section_index: 0, after_index: -1, text: '정상' });
     expect(r.isError).toBe(false);
   });
+
+  // Last on purpose: every call above has run by now, so this covers stdout
+  // from the whole session, not just start-up.
+  it('서버가 stdout 에 JSON-RPC 외의 출력을 쓰지 않는다 (MCP stdio 규약)', () => {
+    expect(() => mcp.assertCleanStdout()).not.toThrow();
+  });
 });

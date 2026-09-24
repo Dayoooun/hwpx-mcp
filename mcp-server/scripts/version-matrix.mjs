@@ -28,17 +28,31 @@ if (targets.includes('local')) {
 }
 
 const results = new Map(); // test title -> { target: 'pass' | 'fail' }
+const broken = [];          // targets whose run produced no usable report
+const runDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hwpx-matrix-'));
 for (const target of targets) {
-  const report = path.join(os.tmpdir(), `hwpx-matrix-${target.replace(/[^a-z0-9.]/gi, '_')}.json`);
+  // A fresh path per run, so a report left over from an earlier run can never
+  // be read as this run's result.
+  const report = path.join(runDir, `${target.replace(/[^a-z0-9.]/gi, '_')}.json`);
   const r = spawnSync('npx', ['vitest', 'run', 'tests/e2e', '--reporter=json', `--outputFile=${report}`], {
     env: { ...process.env, HWPX_MCP_SERVER: target },
     stdio: ['ignore', 'ignore', 'inherit'],
   });
-  if (!fs.existsSync(report)) {
-    console.error(`[${target}] no report (exit ${r.status})`);
+  // No report, a report with zero tests, or a suite that failed before its
+  // tests ran (server never started: beforeAll threw, every test is skipped)
+  // means we have NO result for this target — not "every scenario failed".
+  // Silently treating that as a row of X let a broken run print a table and
+  // exit 0 (measured: a nonexistent version produced 9 skipped tests).
+  let json;
+  try { json = JSON.parse(fs.readFileSync(report, 'utf8')); } catch { json = undefined; }
+  const ran = json?.testResults?.reduce(
+    (n, f) => n + (f.assertionResults ?? []).filter(a => a.status === 'passed' || a.status === 'failed').length, 0) ?? 0;
+  const suiteError = json?.testResults?.find(f => f.status === 'failed' && f.message)?.message;
+  if (!json || ran === 0) {
+    console.error(`[${target}] no test ran (exit ${r.status})${suiteError ? `: ${suiteError.split('\n')[0]}` : ''}`);
+    broken.push(target);
     continue;
   }
-  const json = JSON.parse(fs.readFileSync(report, 'utf8'));
   for (const file of json.testResults) {
     for (const t of file.assertionResults) {
       const title = t.title;
@@ -46,6 +60,11 @@ for (const target of targets) {
       results.get(title)[target] = t.status === 'passed' ? 'pass' : 'fail';
     }
   }
+}
+fs.rmSync(runDir, { recursive: true, force: true });
+if (broken.length) {
+  console.error(`\n결과를 얻지 못한 대상: ${broken.join(', ')}`);
+  process.exit(1);
 }
 
 const col = Math.max(...[...results.keys()].map(k => k.length), 10);

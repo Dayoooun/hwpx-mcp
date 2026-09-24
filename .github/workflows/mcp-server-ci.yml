@@ -27,6 +27,12 @@ on:
       - 'mcp-server/**'
       - '.github/workflows/mcp-server-ci.yml'
 
+# Least privilege: jobs only read the repository. The token is not written to
+# .git/config either (persist-credentials: false), so npm ci and test
+# processes cannot pick it up.
+permissions:
+  contents: read
+
 concurrency:
   group: mcp-server-ci-${{ github.ref }}
   cancel-in-progress: true
@@ -40,6 +46,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -59,6 +67,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -72,6 +82,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -85,6 +97,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -105,6 +119,8 @@ jobs:
         node: [18, 22]
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Node for the server under test
         id: server-node
         uses: actions/setup-node@v4
@@ -131,6 +147,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 20

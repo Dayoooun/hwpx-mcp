@@ -29,6 +29,12 @@ export class McpClient {
   private nextId = 1;
   private waiters = new Map<number, (msg: any) => void>();
   stderr = '';
+  /**
+   * stdout lines that were not valid JSON-RPC. MCP stdio reserves stdout for
+   * protocol messages only; a stray log line there corrupts real hosts even
+   * when our tolerant reader skips it. Checked by assertCleanStdout().
+   */
+  readonly protocolViolations: string[] = [];
 
   private constructor(proc: ChildProcessWithoutNullStreams) {
     this.proc = proc;
@@ -63,7 +69,14 @@ export class McpClient {
       this.buf = this.buf.slice(nl + 1);
       if (!line) continue;
       let msg: any;
-      try { msg = JSON.parse(line); } catch { continue; }
+      try { msg = JSON.parse(line); } catch {
+        this.protocolViolations.push(line.slice(0, 200));
+        continue;
+      }
+      if (!msg || msg.jsonrpc !== '2.0') {
+        this.protocolViolations.push(line.slice(0, 200));
+        continue;
+      }
       if (msg.id !== undefined && this.waiters.has(msg.id)) {
         this.waiters.get(msg.id)!(msg);
         this.waiters.delete(msg.id);
@@ -92,13 +105,26 @@ export class McpClient {
     return r.result.tools.map((t: { name: string }) => t.name);
   }
 
+  /**
+   * Call a tool. A JSON-RPC level error (protocol failure, unknown method) is
+   * thrown — it is not a tool result and must never be mistaken for one. The
+   * returned isError is exactly result.isError, so a test asserting it checks
+   * what the server put in the tool result, nothing else.
+   */
   async call(name: string, args: Record<string, unknown>): Promise<ToolResult> {
     const r = await this.request('tools/call', { name, arguments: args });
-    if (r.error) return { isError: true, body: r.error, raw: JSON.stringify(r.error) };
+    if (r.error) throw new Error(`JSON-RPC error from ${name}: ${JSON.stringify(r.error)}`);
     const raw = (r.result?.content ?? []).map((c: { text?: string }) => c.text ?? '').join('');
     let body: any = raw;
     try { body = JSON.parse(raw); } catch { /* plain text */ }
     return { isError: r.result?.isError === true, body, raw };
+  }
+
+  /** Fail if the server wrote anything but JSON-RPC to stdout. */
+  assertCleanStdout(): void {
+    if (this.protocolViolations.length) {
+      throw new Error(`Server wrote non-protocol output to stdout:\n  ${this.protocolViolations.join('\n  ')}`);
+    }
   }
 
   /** call() that fails the test with the server's message when the tool reports an error. */

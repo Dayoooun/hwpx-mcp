@@ -53,9 +53,58 @@ describe('① insert_table_row 뒤 한/글이 멈춤 — rowAddr 중복', () => 
     const { doc } = await roundTrip(seed);
 
     expect(doc.insertTableRow(0, 0, 1, ['x', 'y', 'z'])).toBe(true);
-    const xml = await sectionXml(await doc.save());
+    const { buf, doc: back } = await roundTrip(doc);
+    const xml = await sectionXml(buf);
     expect(rowAddrsOfFirstTable(xml)).toEqual(['0', '1', '2', '3', '4']);
     expect(assertBalanced(xml)).toEqual({});
+
+    // 새 행이 열 0..2 를 빈틈없이 덮어야 한다. 템플릿 행(1)은 열 0 이 위 병합에
+    // 덮여 <hp:tc> 가 없는데, 그 행을 칸 단위로 복제하면 새 행도 열 0 을 잃었다
+    // (CodeRabbit 지적, colCnt=3 인데 새 행 실효 열 수 2).
+    const t = xml.slice(xml.indexOf('<hp:tbl'), xml.indexOf('</hp:tbl>'));
+    const newRow = t.split('</hp:tr>').filter(r => r.includes('<hp:tr'))[2];
+    const covered = [...newRow.matchAll(/<hp:cellAddr colAddr="(\d+)"[^/]*\/>\s*<hp:cellSpan colSpan="(\d+)"/g)]
+      .flatMap(m => Array.from({ length: +m[2] }, (_, k) => +m[1] + k)).sort();
+    expect(covered).toEqual([0, 1, 2]);
+    expect([0, 1, 2].map(c => cellText(back, 0, 0, 2, c))).toEqual(['x', 'y', 'z']);
+  });
+
+  it('병합 아래 새 행은 메모리에서도 열 0..2 를 덮는다 (저장 전 조회와 저장본이 같다)', async () => {
+    const seed = HwpxDocument.createNew('r5', 'row');
+    seed.insertTable(0, 0, 4, 3);
+    seed.mergeCells(0, 0, 0, 0, 1, 0);
+    const { doc } = await roundTrip(seed);
+
+    doc.insertTableRow(0, 0, 1, ['x', 'y', 'z']);
+    const memoryRow = doc.findTable(0, 0)!.rows[2].cells;
+    expect(memoryRow.map(c => [c.colAddr, c.colSpan])).toEqual([[0, 1], [1, 1], [2, 1]]);
+    expect(memoryRow.map(c => c.paragraphs[0].runs[0].text)).toEqual(['x', 'y', 'z']);
+  });
+
+  it('주소가 <hp:tc colAddr rowAddr> 속성에만 있는 표도 새 행이 칸을 갖고 아래 행이 밀린다', async () => {
+    // 한/글은 늘 <hp:cellAddr> 자식을 쓰지만(원본 209/209) 손으로 만든 파일은
+    // 주소를 <hp:tc> 속성에 둔다. 격자 복제가 자식만 읽어 새 <hp:tr> 이 비었다.
+    const cell = (c: number, r: number, t: string) =>
+      `<hp:tc colAddr="${c}" rowAddr="${r}"><hp:subList><hp:p id="p${c}${r}"><hp:run><hp:t>${t}</hp:t></hp:run></hp:p></hp:subList></hp:tc>`;
+    const table =
+      `<hp:tbl id="t1" rowCnt="2" colCnt="2"><hp:tr>${cell(0, 0, 'A')}${cell(1, 0, 'B')}</hp:tr>` +
+      `<hp:tr>${cell(0, 1, 'C')}${cell(1, 1, 'D')}</hp:tr></hp:tbl>`;
+    const doc = await withSectionXml(HwpxDocument.createNew('r6', 'row'),
+      xml => xml.replace(/<\/hs:sec>/, `${table}</hs:sec>`));
+
+    doc.insertTableRow(0, 0, 0, ['n1', 'n2']);
+    const { buf: out, doc: back } = await roundTrip(doc);
+    const t = (await sectionXml(out)).match(/<hp:tbl id="t1"[\s\S]*?<\/hp:tbl>/)![0];
+    const rows = t.split('</hp:tr>').filter(r => r.includes('<hp:tr'));
+    expect(rows.map(r => [...r.matchAll(/<hp:tc [^>]*rowAddr="(\d+)"/g)].map(m => m[1]))).toEqual([
+      ['0', '0'], ['1', '1'], ['2', '2'],
+    ]);
+    expect(assertBalanced(t)).toEqual({});
+    const reopened = back.getTableMap().find(m => m.rows === 3)!;
+    expect(reopened).toBeDefined();
+    const ti = reopened.table_index_in_section;
+    expect([0, 1].map(c => cellText(back, 0, ti, 1, c))).toEqual(['n1', 'n2']);
+    expect([0, 1].map(c => cellText(back, 0, ti, 2, c))).toEqual(['C', 'D']);
   });
 });
 
