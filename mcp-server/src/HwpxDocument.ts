@@ -140,7 +140,13 @@ export class HwpxDocument {
     sectionIndex: number;
     elementIndex: number;
     paragraphId: string;  // Stable ID for reliable paragraph identification
-    paragraphOccurrence: number;  // Which occurrence of this ID (0-indexed)
+    paragraphOccurrence: number;  // Which occurrence of this ID (0-indexed), as of the call
+    /**
+     * The memory paragraph being edited. Its index and occurrence are looked
+     * up again at save time: a later insert, delete, copy or move shifts both,
+     * and the frozen values above would then name a different XML paragraph.
+     */
+    paragraph?: HwpxParagraph;
     runIndex: number;
     oldText: string;
     newText: string
@@ -830,6 +836,7 @@ export class HwpxDocument {
         elementIndex,
         paragraphId: paragraph.id || '',  // Use stable paragraph ID for reliable identification
         paragraphOccurrence,
+        paragraph,
         runIndex,
         oldText,
         newText: text
@@ -845,6 +852,7 @@ export class HwpxDocument {
               elementIndex,
               paragraphId: paragraph.id || '',
               paragraphOccurrence,
+              paragraph,
               runIndex: i,
               oldText: otherOldText,
               newText: ''  // Clear other runs
@@ -934,6 +942,7 @@ export class HwpxDocument {
           elementIndex,
           paragraphId: paragraph.id || '',
           paragraphOccurrence,
+          paragraph,
           runIndex: i,
           oldText: oldText || '',
           newText: run.text
@@ -1023,6 +1032,7 @@ export class HwpxDocument {
           elementIndex,
           paragraphId: paragraph.id || '',  // Use stable paragraph ID
           paragraphOccurrence,
+          paragraph,
           runIndex: lastRunIndex,
           oldText,
           newText
@@ -1042,6 +1052,7 @@ export class HwpxDocument {
           elementIndex,
           paragraphId: paragraph.id || '',  // Use stable paragraph ID
           paragraphOccurrence,
+          paragraph,
           runIndex: 0,
           oldText: '',
           newText: text
@@ -7882,9 +7893,30 @@ export class HwpxDocument {
   private async applyDirectTextUpdatesToXml(): Promise<void> {
     if (!this._zip) return;
 
+    // Re-anchor every update on the memory paragraph it edits. The element
+    // index and id-occurrence recorded at call time are stale once a later
+    // insert/delete/copy/move reshapes the section: the frozen occurrence then
+    // names another same-id paragraph (measured: [A,B,C] all id="0", edit B,
+    // move C to the front → A was rewritten). At this point the memory model
+    // matches the XML, whose structural edits were already replayed.
+    for (const update of this._pendingDirectTextUpdates) {
+      if (!update.paragraph) continue;
+      const elements = this._content.sections[update.sectionIndex]?.elements ?? [];
+      const now = elements.findIndex(e => e.type === 'paragraph' && e.data === update.paragraph);
+      if (now === -1) {
+        // The paragraph was deleted after the edit; there is nothing to write.
+        update.elementIndex = -1;
+        continue;
+      }
+      update.elementIndex = now;
+      update.paragraphId = update.paragraph.id || '';
+      update.paragraphOccurrence = this.getParagraphOccurrence(update.sectionIndex, now, update.paragraphId);
+    }
+
     // Group updates by sectionIndex, then by elementIndex
     const updatesBySectionAndElement = new Map<number, Map<number, typeof this._pendingDirectTextUpdates>>();
     for (const update of this._pendingDirectTextUpdates) {
+      if (update.elementIndex < 0) continue;
       let sectionMap = updatesBySectionAndElement.get(update.sectionIndex);
       if (!sectionMap) {
         sectionMap = new Map();

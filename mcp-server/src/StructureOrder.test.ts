@@ -344,3 +344,56 @@ describe('머리말 안 문단은 그 문단만 고친다', () => {
     expect(out).toContain('<hp:t>머리말-수정</hp:t>');
   });
 });
+
+describe('수정을 기록한 뒤 구조가 바뀌어도 그 문단을 고친다', () => {
+  /** 한/글처럼 모든 문단 id 가 "0" 인 [A, B, C] 를 다시 연다. */
+  async function sameIdDoc(): Promise<HwpxDocument> {
+    const seed = HwpxDocument.createNew('s', 'same-id');
+    seed.insertParagraph(0, -1, 'A');
+    seed.insertParagraph(0, 0, 'B');
+    seed.insertParagraph(0, 1, 'C');
+    const zip = await JSZip.loadAsync(await seed.save());
+    const xml = await zip.file('Contents/section0.xml')!.async('string');
+    zip.file('Contents/section0.xml', xml.replace(/<hp:p id="[^"]*"/g, '<hp:p id="0"'));
+    return HwpxDocument.createFromBuffer('r', 'r.hwpx', await zip.generateAsync({ type: 'nodebuffer' }));
+  }
+  const texts = (d: HwpxDocument) => d.getParagraphs(0).map(p => p.text).filter(t => t);
+  const saved = async (d: HwpxDocument) => {
+    const r = await HwpxDocument.createFromBuffer('o', 'o.hwpx', await d.save());
+    return texts(r);
+  };
+
+  it('수정 → 다른 문단을 앞으로 이동', async () => {
+    const doc = await sameIdDoc();
+    doc.updateParagraphText(0, doc.getParagraphs(0).findIndex(p => p.text === 'B'), 0, 'B-수정');
+    doc.moveParagraph(0, doc.getParagraphs(0).findIndex(p => p.text === 'C'), 0, -1);
+    expect(texts(doc)).toEqual(['C', 'A', 'B-수정']);
+    // 실측(CodeRabbit 시나리오): 수정 전 기록된 순번 1 이 이동 뒤 A 를 가리켜 A 를 고쳤다.
+    expect(await saved(doc)).toEqual(['C', 'A', 'B-수정']);
+  });
+
+  it('수정 → 앞 문단 삭제', async () => {
+    const doc = await sameIdDoc();
+    doc.updateParagraphText(0, doc.getParagraphs(0).findIndex(p => p.text === 'C'), 0, 'C-수정');
+    doc.deleteParagraph(0, doc.getParagraphs(0).findIndex(p => p.text === 'A'));
+    expect(await saved(doc)).toEqual(['B', 'C-수정']);
+  });
+
+  it('수정 → 앞에 새 문단 삽입', async () => {
+    const doc = await sameIdDoc();
+    doc.updateParagraphText(0, doc.getParagraphs(0).findIndex(p => p.text === 'B'), 0, 'B-수정');
+    doc.insertParagraph(0, -1, '맨 앞');
+    expect(await saved(doc)).toEqual(['맨 앞', 'A', 'B-수정', 'C']);
+  });
+
+  it('같은 글자 문단: 원본 수정 → 복제본을 앞으로 이동해도 원본이 바뀐다', async () => {
+    const doc = await sameIdDoc();
+    const b = doc.getParagraphs(0).findIndex(p => p.text === 'B');
+    doc.copyParagraph(0, b, 0, b);                       // [A, B, B(복제), C]
+    doc.updateParagraphText(0, b, 0, 'B-원본수정');       // 원본만
+    doc.moveParagraph(0, b + 1, 0, -1);                  // 복제본을 맨 앞: [B, A, B-원본수정, C]
+    expect(texts(doc)).toEqual(['B', 'A', 'B-원본수정', 'C']);
+    // 글자 검증만으로는 못 가린다 — 복제본도 "B" 라서 순번이 어긋나면 복제본을 고친다.
+    expect(await saved(doc)).toEqual(['B', 'A', 'B-원본수정', 'C']);
+  });
+});
