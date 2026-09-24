@@ -283,4 +283,64 @@ describe('id 앵커의 경계 조건 (CodeRabbit 지적 재현)', () => {
 
     expect(flatOrder(await sectionXml(await doc.save()))).toEqual(['B', 'C', 'A', 'A 뒤']);
   });
+
+  /** 구분선 문단(파서가 'hr' 로 바꾼다)을 품은 문서. 모든 문단 id 를 한/글처럼 "0" 으로. */
+  async function docWithDivider(): Promise<HwpxDocument> {
+    const seed = HwpxDocument.createNew('hr', 'divider');
+    seed.insertParagraph(0, -1, 'A');
+    seed.insertParagraph(0, 0, '──────────────────');
+    seed.insertParagraph(0, 1, 'B');
+    return rewriteSection(seed, xml => xml.replace(/<hp:p id="[^"]*"/g, '<hp:p id="0"'));
+  }
+
+  it('구분선(hr) 바로 뒤에 넣으면 구분선 뒤에 저장된다', async () => {
+    const doc = await docWithDivider();
+    const hr = doc.content.sections[0].elements.findIndex(e => e.type === 'hr');
+    expect(hr).toBeGreaterThan(0);
+    doc.insertParagraph(0, hr, 'X');
+
+    const saved = flatOrder(await sectionXml(await doc.save()));
+    // 실측: 수정 전 [A, X, ───, B] — hr 을 건너뛰고 A 를 앵커로 잡았다.
+    expect(saved.filter(t => t !== '──────────────────')).toEqual(['A', 'X', 'B']);
+    expect(saved.indexOf('X')).toBe(saved.indexOf('──────────────────') + 1);
+  });
+
+  it('구분선 뒤 같은 id 문단을 구조 변경 후 고쳐도 그 문단이 바뀐다', async () => {
+    const doc = await docWithDivider();
+    doc.insertParagraph(0, -1, '맨 앞'); // 구조 변경 → 캐시 대신 id 조회(TIER 1)를 탄다
+    const b = doc.content.sections[0].elements.findIndex(
+      e => e.type === 'paragraph' && e.data.runs.some((r: { text: string }) => r.text === 'B'));
+    doc.updateParagraphText(0, b, 0, 'B-수정');
+
+    const saved = flatOrder(await sectionXml(await doc.save()));
+    // 실측: 수정 전 update 순번이 hr 을 세지 않아 한 문단 앞(구분선)을 고쳤다.
+    expect(saved).toEqual(['맨 앞', 'A', '──────────────────', 'B-수정']);
+  });
+});
+
+describe('머리말 안 문단은 그 문단만 고친다', () => {
+  it('구조 변경 후 머리말 문단을 고쳐도 본문 문단이 통째로 바뀌지 않는다', async () => {
+    const seed = HwpxDocument.createNew('hd', 'header');
+    seed.insertParagraph(0, -1, '본문');
+    // 첫 본문 문단 run 안에 머리말(ctrl > header > subList > p)을 넣는다. 파서는 이 문단도 메모리로 올린다.
+    const zip = await JSZip.loadAsync(await seed.save());
+    let xml = await zip.file('Contents/section0.xml')!.async('string');
+    xml = xml.replace(/(<hp:p id="[^"]*"[^>]*><hp:run[^>]*>)(<hp:t>본문<\/hp:t>)/,
+      '$1<hp:ctrl><hp:header id="1" applyPageType="BOTH"><hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="TOP" linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="0"><hp:p id="777" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="0"><hp:t>머리말</hp:t></hp:run></hp:p></hp:subList></hp:header></hp:ctrl>$2');
+    zip.file('Contents/section0.xml', xml);
+    const doc = await HwpxDocument.createFromBuffer('r', 'r.hwpx', await zip.generateAsync({ type: 'nodebuffer' }));
+
+    // 머리말 문단 자체(id 777). 바깥 본문 문단도 파서가 run 에 "머리말" 을 담아 올리므로
+    // 글자로 찾으면 바깥 문단이 걸린다 — id 로 고른다.
+    const header = doc.content.sections[0].elements.findIndex(
+      e => e.type === 'paragraph' && e.data.id === '777');
+    expect(header).toBeGreaterThanOrEqual(0);
+    doc.insertParagraph(0, -1, '맨 앞'); // 구조 변경 → id 조회(TIER 1)
+    doc.updateParagraphText(0, header + 1, 0, '머리말-수정');
+
+    const out = await sectionXml(await doc.save());
+    // 수정 전: 바깥 본문 문단 범위를 잡아 "머리말-수정본문" 처럼 본문까지 덮었다.
+    expect(out).toContain('<hp:t>본문</hp:t>');
+    expect(out).toContain('<hp:t>머리말-수정</hp:t>');
+  });
 });

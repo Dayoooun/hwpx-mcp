@@ -661,20 +661,31 @@ export class HwpxDocument {
   private resolveElementAnchor(sectionIndex: number, afterElementIndex: number): ElementAnchor | null {
     const elements = this._content.sections[sectionIndex]?.elements ?? [];
     for (let i = Math.min(afterElementIndex, elements.length - 1); i >= 0; i--) {
-      const el = elements[i];
-      if (el.type !== 'paragraph' && el.type !== 'table') continue;
-      const kind = el.type;
-      const id = String((el.data as { id?: string }).id ?? '');
-      if (!id) continue;
+      const key = this.anchorKeyOf(elements[i]);
+      if (!key) continue;
       let occurrence = 0;
       for (let j = 0; j < i; j++) {
-        const other = elements[j];
-        if (other.type === kind && String((other.data as { id?: string }).id) === id) occurrence++;
-        else if (kind === 'paragraph' && other.type === 'hr' && (other.data as { sourceParagraphId?: string }).sourceParagraphId === id) occurrence++;
+        const other = this.anchorKeyOf(elements[j]);
+        if (other && other.kind === key.kind && other.id === key.id) occurrence++;
       }
-      return { kind, id, occurrence };
+      return { ...key, occurrence };
     }
     return null;
+  }
+
+  /**
+   * The XML node a memory element stands for, or null if it has none of its
+   * own. An 'hr' parsed from a divider paragraph stands for that paragraph.
+   */
+  private anchorKeyOf(el: SectionElement | undefined): { kind: 'paragraph' | 'table'; id: string } | null {
+    if (!el) return null;
+    if (el.type === 'hr') {
+      const src = (el.data as { sourceParagraphId?: string }).sourceParagraphId;
+      return src ? { kind: 'paragraph', id: String(src) } : null;
+    }
+    if (el.type !== 'paragraph' && el.type !== 'table') return null;
+    const id = String((el.data as { id?: string }).id ?? '');
+    return id ? { kind: el.type, id } : null;
   }
 
   // ============================================================
@@ -5378,19 +5389,12 @@ export class HwpxDocument {
       fragment.slice(0, fragment.indexOf('>') + 1).match(/\bid="([^"]*)"/)?.[1];
 
     if (anchor.kind === 'paragraph') {
-      let seen = 0;
-      for (const start of this.parsedParagraphStarts(xml)) {
-        const openEnd = xml.indexOf('>', start) + 1;
-        if (idOf(xml.slice(start, openEnd)) !== anchor.id) continue;
-        if (seen === anchor.occurrence) {
-          // The anchor may sit inside a header/shape; new content goes after
-          // the top-level element that contains it.
-          const owner = topLevel.find(el => el.startIndex <= start && start < el.endIndex);
-          return owner ? owner.endIndex : -1;
-        }
-        seen++;
-      }
-      return -1;
+      const hit = this.findParsedParagraph(xml, anchor);
+      if (!hit) return -1;
+      // The anchor may sit inside a header/shape; new content goes after the
+      // top-level element that contains it.
+      const owner = topLevel.find(el => el.startIndex <= hit.start && hit.start < el.endIndex);
+      return owner ? owner.endIndex : -1;
     }
 
     let seen = 0;
@@ -5404,6 +5408,26 @@ export class HwpxDocument {
       seen++;
     }
     return -1;
+  }
+
+  /**
+   * The exact XML range of the memory paragraph a paragraph anchor names,
+   * found by id + occurrence among parsedParagraphStarts. For a paragraph in a
+   * header or text box this is that paragraph alone, not its container.
+   */
+  private findParsedParagraph(xml: string, anchor: ElementAnchor): { start: number; end: number } | null {
+    let seen = 0;
+    for (const start of this.parsedParagraphStarts(xml)) {
+      const openEnd = xml.indexOf('>', start) + 1;
+      const id = xml.slice(start, openEnd).match(/\bid="([^"]*)"/)?.[1];
+      if (id !== anchor.id) continue;
+      if (seen === anchor.occurrence) {
+        const end = this.findBalancedParagraphEnd(xml, start);
+        return end === -1 ? null : { start, end };
+      }
+      seen++;
+    }
+    return null;
   }
 
   /**
@@ -5643,9 +5667,12 @@ export class HwpxDocument {
       if (edit.kind === 'copy' || edit.kind === 'move') {
         const srcXml = await load(edit.sourceSection);
         if (srcXml === undefined) continue;
-        const srcEnd = this.findAnchorEnd(srcXml, edit.source);
-        if (srcEnd === -1) continue;
-        const srcEl = this.findTopLevelFullElements(srcXml).find(el => el.endIndex === srcEnd && el.type === 'p');
+        // Only a section-level paragraph can be copied or moved as a unit; a
+        // paragraph inside a header or text box would drag its container along.
+        const found = this.findParsedParagraph(srcXml, edit.source);
+        if (!found) continue;
+        const srcEl = this.findTopLevelFullElements(srcXml)
+          .find(el => el.type === 'p' && el.startIndex === found.start && el.endIndex === found.end);
         if (!srcEl) continue;
 
         let fragment = srcEl.xml;
@@ -8297,26 +8324,14 @@ export class HwpxDocument {
   }
 
   /**
-   * Calculate the occurrence index for a paragraph with given ID.
-   * Returns how many paragraphs with the same ID appear before this one.
+   * Occurrence index of the paragraph at `elementIndex` among paragraphs with
+   * the same id — counted with the same rule as insert anchors
+   * (resolveElementAnchor), so a text update finds the paragraph that
+   * findParsedParagraph resolves. Divider paragraphs parsed as 'hr' count.
    */
   private getParagraphOccurrence(sectionIndex: number, elementIndex: number, paragraphId: string): number {
-    // Use _content.sections (same as findParagraphByPath) instead of _sections
-    if (!this._content || !this._content.sections || !this._content.sections[sectionIndex]) return 0;
-    const section = this._content.sections[sectionIndex];
-    if (!section || !section.elements) return 0;
-
-    let occurrenceCount = 0;
-    for (let i = 0; i < elementIndex; i++) {
-      const element = section.elements[i];
-      if (element && element.type === 'paragraph') {  // Use 'paragraph' not 'p'
-        const para = element.data as HwpxParagraph;
-        if (para.id === paragraphId) {
-          occurrenceCount++;
-        }
-      }
-    }
-    return occurrenceCount;
+    const anchor = this.resolveElementAnchor(sectionIndex, elementIndex);
+    return anchor && anchor.kind === 'paragraph' && anchor.id === paragraphId ? anchor.occurrence : 0;
   }
 
   /**
@@ -8687,12 +8702,11 @@ export class HwpxDocument {
     // after a copy: its ±2 text search finds the original first because the
     // copy carries the same text, and the edit lands on the original.
     if (paragraphId) {
-      const end = this.findAnchorEnd(xml, { kind: 'paragraph', id: paragraphId, occurrence: paragraphOccurrence ?? 0 });
-      if (end !== -1) {
-        const el = this.findTopLevelFullElements(xml).find(e => e.type === 'p' && e.endIndex === end);
-        if (el) {
-          return { start: el.startIndex, end: el.endIndex, xml: el.xml };
-        }
+      // The paragraph's OWN range. For a paragraph inside a header or text
+      // box, the enclosing top-level paragraph would rewrite the whole body.
+      const hit = this.findParsedParagraph(xml, { kind: 'paragraph', id: paragraphId, occurrence: paragraphOccurrence ?? 0 });
+      if (hit) {
+        return { start: hit.start, end: hit.end, xml: xml.slice(hit.start, hit.end) };
       }
     }
 
