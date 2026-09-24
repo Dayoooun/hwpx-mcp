@@ -314,6 +314,12 @@ export class HwpxDocument {
     sectionIndex: number;
     text: string;
   }> = [];
+  /**
+   * New sections to materialise as Contents/sectionN.xml on save, in call
+   * order. `templateFrom` is the section whose <hp:secPr> (page size, margins)
+   * the new section copies — Hancom's own "insert section" does the same.
+   */
+  private _pendingSectionOps: Array<{ op: 'insert' | 'delete'; at: number; templateFrom: number }> = [];
 
   // Cache for character properties (id → font size in pt)
   private _charPrCache: Map<number, number> | null = null;
@@ -629,6 +635,7 @@ export class HwpxDocument {
     this._pendingParagraphMoves = [];
     this._pendingHeaderUpdates = [];
     this._pendingFooterUpdates = [];
+    this._pendingSectionOps = [];
     if (this._pendingTableMoves) this._pendingTableMoves = [];
   }
 
@@ -805,14 +812,28 @@ export class HwpxDocument {
   }
 
   updateParagraphText(sectionIndex: number, elementIndex: number, runIndex: number, text: string): void {
-    const paragraph = this.findParagraphByPath(sectionIndex, elementIndex);
-    if (!paragraph) return;
-
-    // Auto-delegate to preserve styles method for multi-run paragraphs
-    if (paragraph.runs.length > 1) {
-      this.updateParagraphTextPreserveStyles(sectionIndex, elementIndex, text);
-      return;
+    const section = this._content.sections[sectionIndex];
+    if (!section) throw new Error(`Section ${sectionIndex} does not exist.`);
+    const element = section.elements[elementIndex];
+    if (!element) {
+      throw new Error(`Element ${elementIndex} does not exist in section ${sectionIndex} (${section.elements.length} elements).`);
     }
+    if (element.type !== 'paragraph') {
+      // Reported 2026-09-24: aimed at a table, this answered "Paragraph updated"
+      // and changed nothing. Say what is there instead.
+      throw new Error(
+        `Element ${elementIndex} in section ${sectionIndex} is a ${element.type}, not a paragraph. ` +
+        (element.type === 'table' ? 'Use update_table_cell to change table text.' : 'It has no paragraph text to replace.')
+      );
+    }
+    const paragraph = element.data;
+
+    // Replacing run 0 means "replace the whole paragraph": the new text goes
+    // into the first run and every other run is emptied, so the result takes
+    // the first run's character shape. Spreading the text across the old runs
+    // (preserve-styles) instead gave the tail of the sentence whatever shape
+    // those runs had — reported 2026-09-24: plain + bold paragraph, replaced
+    // wholesale, came out bold from the third line on.
 
     // Handle case where paragraph has no runs (e.g., run without hp:t tag)
     // We need to create a run in memory and track the update for XML modification
@@ -1727,9 +1748,19 @@ export class HwpxDocument {
   /**
    * Get table map with headers - maps table indices to their header paragraphs
    * Returns array of table info including the header text from the preceding paragraph
+   *
+   * Two indices are returned because they differ once a document has more than
+   * one section:
+   *  - `table_index_in_section` — what every table tool (update_table_cell,
+   *    get_table_cell, insert_table_row, …) expects together with
+   *    `section_index`. Use this one.
+   *  - `table_index` — position across the whole document, kept for callers
+   *    that list tables. Passing it to a table tool in section 1+ addresses a
+   *    DIFFERENT table (reported 2026-09-24: map said 5, the tool needed 4).
    */
   getTableMap(): Array<{
     table_index: number;
+    table_index_in_section: number;
     section_index: number;
     header: string;
     rows: number;
@@ -1739,6 +1770,7 @@ export class HwpxDocument {
   }> {
     const result: Array<{
       table_index: number;
+      table_index_in_section: number;
       section_index: number;
       header: string;
       rows: number;
@@ -1751,6 +1783,7 @@ export class HwpxDocument {
 
     this._content.sections.forEach((section, sectionIndex) => {
       let lastParagraphText = '';
+      let sectionTableIndex = 0;
 
       section.elements.forEach((element, _elementIndex) => {
         if (element.type === 'paragraph') {
@@ -1776,6 +1809,7 @@ export class HwpxDocument {
 
           result.push({
             table_index: globalTableIndex,
+            table_index_in_section: sectionTableIndex,
             section_index: sectionIndex,
             header: lastParagraphText,
             rows,
@@ -1785,6 +1819,7 @@ export class HwpxDocument {
           });
 
           globalTableIndex++;
+          sectionTableIndex++;
           // Don't reset lastParagraphText here - next table might reuse same header if consecutive
         }
       });
@@ -2916,6 +2951,24 @@ export class HwpxDocument {
     const table = this.findTable(sectionIndex, tableIndex);
     if (!table || !table.rows[afterRowIndex]) return false;
 
+    // A new row between afterRowIndex and afterRowIndex+1 must not cut through
+    // a vertical merge. Cloning a row that holds a rowSpan>1 master, or one that
+    // sits inside such a span, copied the span into the gap and made the merged
+    // area overlap the new row (reported 2026-09-24: rowSpan=2 header, after_row 0).
+    for (const row of table.rows) {
+      for (const cell of row.cells) {
+        const top = cell.rowAddr ?? table.rows.indexOf(row);
+        const span = cell.rowSpan ?? 1;
+        if (span > 1 && top <= afterRowIndex && afterRowIndex < top + span - 1) {
+          throw new Error(
+            `Cannot insert a row after row ${afterRowIndex}: it would split the merged cell at ` +
+            `(${top}, ${cell.colAddr ?? 0}) that spans rows ${top}-${top + span - 1}. ` +
+            `Insert after row ${top + span - 1} instead, or unmerge first.`
+          );
+        }
+      }
+    }
+
     this.saveState();
     const templateRow = table.rows[afterRowIndex];
     const colCount = templateRow.cells.length;
@@ -2930,6 +2983,19 @@ export class HwpxDocument {
     };
 
     table.rows.splice(afterRowIndex + 1, 0, newRow as any);
+    // Keep memory row addresses in step with the XML renumbering below, so a
+    // later merge/split/insert on this table reads the right rows.
+    table.rows.forEach((row, r) => {
+      for (const cell of row.cells) {
+        if (cell.rowAddr !== undefined && cell.rowAddr > afterRowIndex && row !== (newRow as any)) cell.rowAddr += 1;
+      }
+    });
+    for (const [c, cell] of (newRow as any).cells.entries()) {
+      cell.rowAddr = afterRowIndex + 1;
+      cell.colAddr = templateRow.cells[c]?.colAddr ?? c;
+      cell.rowSpan = 1;
+      cell.colSpan = templateRow.cells[c]?.colSpan ?? 1;
+    }
 
     this._pendingTableRowInserts.push({
       sectionIndex,
@@ -4720,14 +4786,19 @@ export class HwpxDocument {
   }
 
   insertSection(afterSectionIndex: number): number {
+    if (afterSectionIndex < -1 || afterSectionIndex >= this._content.sections.length) {
+      throw new Error(`Cannot insert a section after ${afterSectionIndex}: document has ${this._content.sections.length} section(s).`);
+    }
     this.saveState();
 
+    // The first paragraph of every section carries <hp:secPr>, so it must have
+    // an XML id the anchors can find. '0' matches the section template below.
     const newSection: HwpxSection = {
       id: Math.random().toString(36).substring(2, 11),
       elements: [{
         type: 'paragraph',
         data: {
-          id: Math.random().toString(36).substring(2, 11),
+          id: '0',
           runs: [{ text: '' }],
         },
       }],
@@ -4743,9 +4814,43 @@ export class HwpxDocument {
 
     const insertIndex = afterSectionIndex + 1;
     this._content.sections.splice(insertIndex, 0, newSection);
+    this.markStructureChanged();
+
+    // insertSection used to change only the memory model: save wrote no
+    // sectionN.xml, so a two-section document silently came back with one
+    // section and everything added to the new section was lost (measured on
+    // 0.3.3 with insert_section + insert_table, 2026-09-24).
+    this._pendingSectionOps.push({ op: 'insert', at: insertIndex, templateFrom: Math.max(0, afterSectionIndex) });
+
+    // Section files are created at the start of save, before every other
+    // pending edit is replayed. Edits recorded earlier still name sections by
+    // their old number; shift those at or after the insertion point so they
+    // land in the same section after the renumbering (measured: an edit to the
+    // old section 0, then insert_section(-1), wrote into the new section 0).
+    this.shiftPendingSectionIndices(insertIndex, +1);
 
     this.markModified();
     return insertIndex;
+  }
+
+  /**
+   * Add `delta` to every section number held by a pending edit that is >= from.
+   * Covers all pending arrays generically: any numeric field whose name is
+   * sectionIndex or ends in "Section"/"SectionIndex" (source/target pairs).
+   */
+  private shiftPendingSectionIndices(from: number, delta: number): void {
+    const isSectionKey = (k: string) => k === 'sectionIndex' || /Section(Index)?$/.test(k);
+    for (const key of Object.keys(this) as Array<keyof this>) {
+      if (!String(key).startsWith('_pending') || key === '_pendingSectionOps') continue;
+      const list = this[key] as unknown;
+      if (!Array.isArray(list)) continue;
+      for (const item of list) {
+        if (!item || typeof item !== 'object') continue;
+        for (const [k, v] of Object.entries(item)) {
+          if (isSectionKey(k) && typeof v === 'number' && v >= from) (item as Record<string, number>)[k] = v + delta;
+        }
+      }
+    }
   }
 
   deleteSection(sectionIndex: number): boolean {
@@ -4754,6 +4859,23 @@ export class HwpxDocument {
 
     this.saveState();
     this._content.sections.splice(sectionIndex, 1);
+    this.markStructureChanged();
+
+    // Same persistence gap as insertSection had: the memory model lost the
+    // section but save kept its file, so the deleted section came back on
+    // reopen. Pending edits aimed at the deleted section are dropped; later
+    // sections move down one number.
+    for (const key of Object.keys(this) as Array<keyof this>) {
+      if (!String(key).startsWith('_pending') || key === '_pendingSectionOps') continue;
+      const list = this[key] as unknown;
+      if (!Array.isArray(list)) continue;
+      const kept = list.filter(item => !(item && typeof item === 'object' &&
+        Object.entries(item).some(([k, v]) => (k === 'sectionIndex' || /Section(Index)?$/.test(k)) && v === sectionIndex)));
+      (this as Record<string, unknown>)[key as string] = kept;
+    }
+    this.shiftPendingSectionIndices(sectionIndex + 1, -1);
+    this._pendingSectionOps.push({ op: 'delete', at: sectionIndex, templateFrom: 0 });
+
     this.markModified();
     return true;
   }
@@ -4894,6 +5016,14 @@ export class HwpxDocument {
   // latest version and don't overwrite changes made by prior steps.
   private async syncContentToZip(): Promise<void> {
     if (!this._zip) return;
+
+    // New sections first: every later step addresses Contents/sectionN.xml by
+    // the memory section index, so the files must already exist and be numbered
+    // the same way.
+    if (this._pendingSectionOps.length > 0) {
+      await this.applySectionOpsToZip();
+      this._pendingSectionOps = [];
+    }
 
     // Replay paragraph/table inserts and paragraph copies/moves together, in
     // call order, before any text update. Text updates resolve their target in
@@ -7938,26 +8068,39 @@ export class HwpxDocument {
 
       let xml = await file.async('string');
 
-      // STEP 1: Pre-compute target paragraph mappings BEFORE any modifications
-      // OPTIMIZATION: Use cached XML positions when available (populated during parsing)
+      // STEP 1: Pre-compute target paragraph ranges BEFORE any modifications.
+      //
+      // Each memory paragraph is mapped to its XML paragraph with the parser's
+      // own rule (parsedParagraphStarts), computed once per section. The offsets
+      // the parser cached at load time are not used: they pair memory paragraphs
+      // with a DIFFERENT list (top-level paragraphs of the raw XML), which drifts
+      // wherever the parser lifts paragraphs out of headers, text boxes or
+      // endnotes. Measured on 325 Hancom-saved sections: 16,271 of 70,677 cached
+      // offsets pointed at another paragraph, and an edit then reported success
+      // while its text went to — or vanished into — the wrong paragraph.
       const paragraphTargets = new Map<number, { start: number; end: number; xml: string }>();
+      const starts = this.parsedParagraphStarts(xml);
+      const elements = this._content.sections[sectionIdx]?.elements ?? [];
+      const slotOf = new Map<number, number>();
+      let slot = 0;
+      elements.forEach((el, i) => {
+        if (this.anchorKeyOf(el)?.kind === 'paragraph') slotOf.set(i, slot++);
+      });
+      const aligned = slot === starts.length;
+
       for (const [elementIndex, updates] of elementMap) {
-        // Try cached position first (from parsing phase)
-        const cachedPosition = this.getCachedXmlPosition(sectionIdx, elementIndex);
-        if (cachedPosition && cachedPosition.start < xml.length && cachedPosition.end <= xml.length) {
-          // Validate cached position by checking if it points to a paragraph element
-          const cachedXml = xml.slice(cachedPosition.start, cachedPosition.end);
-          if (cachedXml.startsWith('<hp:p') && cachedXml.endsWith('</hp:p>')) {
-            paragraphTargets.set(elementIndex, {
-              start: cachedPosition.start,
-              end: cachedPosition.end,
-              xml: cachedXml
-            });
+        const k = slotOf.get(elementIndex);
+        if (aligned && k !== undefined) {
+          const start = starts[k];
+          const end = this.findBalancedParagraphEnd(xml, start);
+          if (end !== -1) {
+            paragraphTargets.set(elementIndex, { start, end, xml: xml.slice(start, end) });
             continue;
           }
         }
 
-        // Fallback to full search if no cached position or validation failed
+        // Memory and XML disagree on the paragraph count (should not happen for
+        // parser-produced documents); fall back to id + occurrence search.
         const paragraphId = updates[0]?.paragraphId || '';
         const paragraphOccurrence = updates[0]?.paragraphOccurrence ?? 0;
         const target = this.findTargetParagraphForUpdate(xml, sectionIdx, elementIndex, updates, paragraphId, paragraphOccurrence);
@@ -8820,52 +8963,24 @@ export class HwpxDocument {
       updateMap.set(update.runIndex, update.newText);
     }
 
-    // Find all hp:run elements with their positions
-    // Use non-greedy matching and track depth for nested elements
-    const runs: Array<{ start: number; end: number; xml: string }> = [];
-    const runOpenRegex = /<hp:run\b[^>]*>/g;
-    let match;
-
-    while ((match = runOpenRegex.exec(paragraphXml)) !== null) {
-      const runStart = match.index;
-      let depth = 1;
-      let pos = runStart + match[0].length;
-
-      // Find matching </hp:run> using depth tracking
-      while (depth > 0 && pos < paragraphXml.length) {
-        const nextOpen = paragraphXml.indexOf('<hp:run', pos);
-        const nextClose = paragraphXml.indexOf('</hp:run>', pos);
-
-        if (nextClose === -1) break;
-
-        if (nextOpen !== -1 && nextOpen < nextClose) {
-          depth++;
-          pos = nextOpen + 7;
-        } else {
-          depth--;
-          if (depth === 0) {
-            const runEnd = nextClose + '</hp:run>'.length;
-            runs.push({
-              start: runStart,
-              end: runEnd,
-              xml: paragraphXml.slice(runStart, runEnd)
-            });
-          }
-          pos = nextClose + 9;
-        }
-      }
-    }
+    // The paragraph's OWN runs only — its direct children. A paragraph that
+    // holds a table, text box, footnote or endnote also contains the runs of
+    // every paragraph inside those containers. Counting those as its own made
+    // "run N" land in a table cell or endnote: the reported success wrote the
+    // new text into a nested paragraph (or into nothing) and cut the rest.
+    // Measured: 39 of 60 Hancom files lost the text this way (2026-09-24).
+    const runs = this.findDirectChildRuns(paragraphXml);
 
     // Filter to only runs that have <hp:t> content (matching memory model behavior)
     // Memory model only counts runs with text, not runs with only <hp:ctrl> etc.
-    const textRuns = runs.filter(run => /<hp:t\b/.test(run.xml) || /<hp:t\s*\/>/.test(run.xml));
+    const textRuns = runs.filter(run => /<hp:t\b/.test(this.ownRunText(run.xml)));
 
     // The parser creates a model run per non-empty hp:t, not per hp:run.
     // Merge those updates back into their shared XML run without losing a suffix.
     const xmlRunUpdates = new Map<number, string>();
     let modelRunIndex = 0;
     for (let i = 0; i < textRuns.length; i++) {
-      const textNodes = [...textRuns[i].xml.matchAll(/<hp:t\b[^>]*>([^<]+)<\/hp:t>/g)];
+      const textNodes = [...this.ownRunText(textRuns[i].xml).matchAll(/<hp:t\b[^>]*>([^<]+)<\/hp:t>/g)];
       const count = Math.max(1, textNodes.length);
       let changed = false;
       let escapedText = '';
@@ -8888,24 +9003,111 @@ export class HwpxDocument {
 
       const run = textRuns[i];
       const escapedNew = xmlRunUpdates.get(i)!;
-      let newRunXml = run.xml;
-
       // Write each XML run's combined text once, preserving text-tag attributes.
+      // Only the run's own <hp:t> are rewritten; text inside a table, equation
+      // or text box that sits in the same run is left untouched.
       let textWritten = false;
-      newRunXml = newRunXml.replace(
+      const newRunXml = this.mapOwnRunText(run.xml, tXml => tXml.replace(
         /<hp:t\b([^>]*?)\/>|<hp:t\b([^>]*)>[^<]*<\/hp:t>/g,
         (_match, selfClosingAttrs: string | undefined, attrs: string | undefined) => {
           const text = textWritten ? '' : escapedNew;
           textWritten = true;
           return `<hp:t${selfClosingAttrs ?? attrs ?? ''}>${text}</hp:t>`;
         }
-      );
+      ));
 
       // Replace in paragraph XML
       paragraphXml = paragraphXml.slice(0, run.start) + newRunXml + paragraphXml.slice(run.end);
     }
 
     return xml.slice(0, target.start) + paragraphXml + xml.slice(target.end);
+  }
+
+  /** Container elements whose content belongs to OTHER paragraphs or objects. */
+  private static readonly NESTED_CONTENT =
+    /<hp:(tbl|subList|equation|pic|rect|ellipse|polygon|curve|arc|line|container|drawText|textart|ole|footNote|endNote|header|footer)\b/;
+
+  /** Direct <hp:run> children of a paragraph (runs of nested paragraphs excluded). */
+  private findDirectChildRuns(paragraphXml: string): Array<{ start: number; end: number; xml: string }> {
+    const runs: Array<{ start: number; end: number; xml: string }> = [];
+    const openEnd = paragraphXml.indexOf('>') + 1;
+    let pos = openEnd;
+    let depth = 0;          // nesting depth of <hp:p> inside this paragraph
+    const tagRe = /<(\/?)hp:(p|run)\b[^>]*?(\/?)>/g;
+    tagRe.lastIndex = pos;
+    let runStart = -1;
+    let m: RegExpExecArray | null;
+    while ((m = tagRe.exec(paragraphXml)) !== null) {
+      const [whole, closing, name, selfClosing] = m;
+      if (name === 'p') {
+        if (selfClosing) continue;
+        if (closing) {
+          if (depth === 0) break; // end of this paragraph
+          depth--;
+        } else {
+          depth++;
+        }
+        continue;
+      }
+      if (depth !== 0) continue; // a run of a nested paragraph
+      if (selfClosing) {
+        runs.push({ start: m.index, end: m.index + whole.length, xml: whole });
+      } else if (!closing) {
+        runStart = m.index;
+      } else if (runStart !== -1) {
+        const end = m.index + whole.length;
+        runs.push({ start: runStart, end, xml: paragraphXml.slice(runStart, end) });
+        runStart = -1;
+      }
+    }
+    return runs;
+  }
+
+  /**
+   * A run's own markup with every nested container (table, equation, text box,
+   * note…) blanked out, so its <hp:t> are the run's own text only.
+   */
+  private ownRunText(runXml: string): string {
+    return this.mapOwnRunText(runXml, s => s, true);
+  }
+
+  /**
+   * Apply `fn` to the parts of a run that are its own text, leaving nested
+   * containers byte-for-byte intact. With `blank`, nested containers are
+   * replaced by an empty marker instead (for reading).
+   */
+  private mapOwnRunText(runXml: string, fn: (ownPart: string) => string, blank = false): string {
+    let out = '';
+    let pos = 0;
+    while (pos < runXml.length) {
+      const rest = runXml.slice(pos);
+      const m = rest.match(HwpxDocument.NESTED_CONTENT);
+      if (!m || m.index === undefined) { out += fn(rest); break; }
+      const openAt = pos + m.index;
+      const name = m[1];
+      out += fn(runXml.slice(pos, openAt));
+      const end = this.findElementEnd(runXml, openAt, name);
+      out += blank ? '<NESTED/>' : runXml.slice(openAt, end);
+      pos = end;
+    }
+    return out;
+  }
+
+  /** End offset of the <hp:name> element opening at `start` (handles nesting and self-closing). */
+  private findElementEnd(xml: string, start: number, name: string): number {
+    const tagEnd = xml.indexOf('>', start);
+    if (tagEnd === -1) return xml.length;
+    if (xml[tagEnd - 1] === '/') return tagEnd + 1;
+    const re = new RegExp(`<(/?)hp:${name}\\b[^>]*?(/?)>`, 'g');
+    re.lastIndex = tagEnd + 1;
+    let depth = 1;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(xml)) !== null) {
+      if (m[2]) continue;
+      depth += m[1] ? -1 : 1;
+      if (depth === 0) return m.index + m[0].length;
+    }
+    return xml.length;
   }
 
   /**
@@ -10494,6 +10696,86 @@ export class HwpxDocument {
     contentHpf = contentHpf.substring(0, insertPos) + newItem + contentHpf.substring(insertPos);
 
     this._zip.file('Contents/content.hpf', contentHpf);
+  }
+
+  /**
+   * Apply section inserts/deletes to Contents/sectionN.xml, in call order.
+   *
+   * File numbers must keep matching memory section indices, so an insert
+   * renames later files up one (section1 → section2 …) and a delete removes
+   * its file and renames later files down one. content.hpf gets a manifest
+   * item and a spine itemref per section, and header.xml's secCnt follows.
+   */
+  private async applySectionOpsToZip(): Promise<void> {
+    if (!this._zip) return;
+    const secPath = (i: number) => `Contents/section${i}.xml`;
+    const countFiles = () => Object.keys(this._zip!.files).filter(n => /^Contents\/section\d+\.xml$/.test(n)).length;
+    const move = async (from: number, to: number) => {
+      const f = this._zip!.file(secPath(from));
+      if (!f) return;
+      this._zip!.file(secPath(to), await f.async('string'));
+      this._zip!.remove(secPath(from));
+    };
+
+    for (const op of this._pendingSectionOps) {
+      const fileCount = countFiles();
+      if (op.op === 'delete') {
+        if (op.at >= fileCount || fileCount <= 1) continue;
+        this._zip.remove(secPath(op.at));
+        for (let i = op.at + 1; i < fileCount; i++) await move(i, i - 1);
+        continue;
+      }
+      // Insert: shift later files up, highest first.
+      for (let i = fileCount - 1; i >= op.at; i--) await move(i, i + 1);
+
+      // Build the new section from the template section's <hs:sec> wrapper and
+      // its first paragraph's <hp:secPr> (page size, margins, numbering).
+      const templateIndex = op.templateFrom >= op.at ? op.templateFrom + 1 : op.templateFrom;
+      const template = await this._zip.file(secPath(templateIndex))?.async('string');
+      this._zip.file(secPath(op.at), this.buildEmptySectionXml(template));
+    }
+
+    // Manifest + spine: one item per section file, in order.
+    const hpfFile = this._zip.file('Contents/content.hpf');
+    const total = countFiles();
+    if (hpfFile) {
+      let hpf = await hpfFile.async('string');
+      hpf = hpf.replace(/<opf:item\b[^>]*\bid="section\d+"[^>]*\/>\s*/g, '');
+      hpf = hpf.replace(/<opf:itemref\b[^>]*\bidref="section\d+"[^>]*\/>\s*/g, '');
+      const items = Array.from({ length: total }, (_, i) =>
+        `<opf:item id="section${i}" href="Contents/section${i}.xml" media-type="application/xml"/>`).join('');
+      const refs = Array.from({ length: total }, (_, i) =>
+        `<opf:itemref idref="section${i}" linear="yes"/>`).join('');
+      hpf = hpf.replace('</opf:manifest>', items + '</opf:manifest>');
+      hpf = hpf.replace('</opf:spine>', refs + '</opf:spine>');
+      this._zip.file('Contents/content.hpf', hpf);
+    }
+
+    const headerFile = this._zip.file('Contents/header.xml');
+    if (headerFile) {
+      const header = await headerFile.async('string');
+      this._zip.file('Contents/header.xml', header.replace(/\bsecCnt="\d+"/, `secCnt="${total}"`));
+    }
+  }
+
+  /** A section XML holding one empty paragraph with the template's <hp:secPr>. */
+  private buildEmptySectionXml(template: string | undefined): string {
+    const declaration = '<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>';
+    const secOpen = template?.match(/<hs:sec\b[^>]*>/)?.[0]
+      ?? '<hs:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph" xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section">';
+    let secPr = '';
+    if (template) {
+      const at = template.indexOf('<hp:secPr');
+      if (at !== -1) secPr = template.slice(at, this.findElementEnd(template, at, 'secPr'));
+    }
+    // A fresh column definition follows secPr in Hancom's own first paragraph.
+    const colPr = template?.match(/<hp:ctrl>\s*<hp:colPr\b[^>]*\/>\s*<\/hp:ctrl>/)?.[0] ?? '';
+    return `${declaration}${secOpen}` +
+      `<hp:p id="0" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0">` +
+      `<hp:run charPrIDRef="0">${secPr}${colPr}</hp:run>` +
+      `<hp:run charPrIDRef="0"><hp:t></hp:t></hp:run>` +
+      `<hp:linesegarray><hp:lineseg textpos="0" vertpos="0" vertsize="1000" textheight="1000" baseline="850" spacing="600" horzpos="0" horzsize="0" flags="393216"/></hp:linesegarray>` +
+      `</hp:p></hs:sec>`;
   }
 
   /**
@@ -12942,6 +13224,89 @@ export class HwpxDocument {
   // ============================================================
 
   /**
+   * Scale this table's column widths so they sum to its <hp:sz width>.
+   *
+   * Column widths are read from cells whose colSpan is 1 (the first one seen
+   * per colAddr). Every cell then gets the sum of the scaled widths of the
+   * columns it spans, so merged cells stay aligned. Rounding leftovers go to
+   * the last column so the total is exact. Nested tables are not touched.
+   */
+  private fitColumnsToTableWidth(tableXml: string): string {
+    const tableWidth = parseInt(tableXml.match(/^<hp:tbl\b[\s\S]*?<hp:sz width="(\d+)"/)?.[1] ?? '', 10);
+    const colCnt = parseInt(tableXml.match(/^<hp:tbl\b[^>]*\bcolCnt="(\d+)"/)?.[1] ?? '', 10);
+    if (!tableWidth || !colCnt) return tableXml;
+
+    type Own = { row: number; cell: { xml: string; startIndex: number; endIndex: number }; col: number; span: number; width: number; at: number };
+    const rows = this.findAllElementsWithDepth(tableXml, 'tr');
+    const own: Own[] = [];
+    rows.forEach((row, r) => {
+      for (const cell of this.findAllElementsWithDepth(row.xml, 'tc')) {
+        const tail = cell.xml.lastIndexOf('</hp:subList>');
+        const from = tail === -1 ? 0 : tail;
+        const props = cell.xml.slice(from);
+        const col = parseInt(props.match(/<hp:cellAddr\b[^>]*\bcolAddr="(\d+)"/)?.[1] ?? '-1', 10);
+        const span = parseInt(props.match(/<hp:cellSpan\b[^>]*\bcolSpan="(\d+)"/)?.[1] ?? '1', 10);
+        const sz = props.match(/(<hp:cellSz\b[^>]*\bwidth=")(\d+)(")/);
+        if (col < 0 || !sz || sz.index === undefined) continue;
+        own.push({ row: r, cell, col, span, width: parseInt(sz[2], 10), at: from + sz.index + sz[1].length });
+      }
+    });
+
+    const widths: number[] = new Array(colCnt).fill(0);
+    for (const o of own) if (o.span === 1 && o.col < colCnt && widths[o.col] === 0) widths[o.col] = o.width;
+    if (widths.some(w => w === 0)) return tableXml;          // cannot derive every column safely
+    const sum = widths.reduce((a, b) => a + b, 0);
+    if (sum === tableWidth) return tableXml;
+
+    const scaled = widths.map(w => Math.floor((w * tableWidth) / sum));
+    scaled[colCnt - 1] += tableWidth - scaled.reduce((a, b) => a + b, 0);
+
+    let out = tableXml;
+    for (let r = rows.length - 1; r >= 0; r--) {
+      let rowXml = rows[r].xml;
+      const cellsInRow = own.filter(o => o.row === r).sort((a, b) => b.cell.startIndex - a.cell.startIndex);
+      for (const o of cellsInRow) {
+        const w = scaled.slice(o.col, o.col + o.span).reduce((a, b) => a + b, 0);
+        const newCell = o.cell.xml.slice(0, o.at) + String(w) + o.cell.xml.slice(o.at + String(o.width).length);
+        rowXml = rowXml.slice(0, o.cell.startIndex) + newCell + rowXml.slice(o.cell.endIndex);
+      }
+      out = out.slice(0, rows[r].startIndex) + rowXml + out.slice(rows[r].endIndex);
+    }
+    return out;
+  }
+
+  /**
+   * Add `delta` to the rowAddr of every cell of THIS table whose rowAddr is
+   * >= fromRow. Nested tables inside cells keep their own addresses.
+   */
+  private shiftTableRowAddrs(tableXml: string, fromRow: number, delta: number): string {
+    let out = tableXml;
+    const rows = this.findAllElementsWithDepth(out, 'tr');
+    for (let r = rows.length - 1; r >= 0; r--) {
+      const row = rows[r];
+      const cells = this.findAllElementsWithDepth(row.xml, 'tc');
+      let rowXml = row.xml;
+      for (let c = cells.length - 1; c >= 0; c--) {
+        const cell = cells[c];
+        // The cell's own <hp:cellAddr> follows its sub-list; a nested table's
+        // cells are inside the sub-list, so look only after it.
+        const tail = cell.xml.lastIndexOf('</hp:subList>');
+        const from = tail === -1 ? 0 : tail;
+        const own = cell.xml.slice(from);
+        const m = own.match(/(<hp:cellAddr\b[^>]*\browAddr=")(\d+)(")/);
+        if (!m || m.index === undefined) continue;
+        const addr = parseInt(m[2], 10);
+        if (addr < fromRow) continue;
+        const at = from + m.index + m[1].length;
+        const newCell = cell.xml.slice(0, at) + String(addr + delta) + cell.xml.slice(at + m[2].length);
+        rowXml = rowXml.slice(0, cell.startIndex) + newCell + rowXml.slice(cell.endIndex);
+      }
+      if (rowXml !== row.xml) out = out.slice(0, row.startIndex) + rowXml + out.slice(row.endIndex);
+    }
+    return out;
+  }
+
+  /**
    * Clone a table cell for a newly inserted row: same cell attributes, same
    * first-paragraph formatting, but a single paragraph holding `text`.
    *
@@ -13019,12 +13384,26 @@ export class HwpxDocument {
           newRowXml = newRowXml.slice(0, cell.startIndex) + newCellXml + newRowXml.slice(cell.endIndex);
         }
 
-        // Update rowAddr in each cell
-        newRowXml = newRowXml.replace(/rowAddr="(\d+)"/g, `rowAddr="${newRowAddr}"`);
+        // New cells sit on row afterRowIndex+1 and span one row each; a cloned
+        // template may carry a rowSpan the new row must not inherit.
+        newRowXml = newRowXml
+          .replace(/rowAddr="(\d+)"/g, `rowAddr="${newRowAddr}"`)
+          .replace(/(<hp:cellSpan\b[^>]*\browSpan=")\d+(")/g, '$11$2');
 
-        // Insert after the template row
-        const insertPos = templateRow.startIndex + templateRow.xml.length;
-        const newTableXml = tableXml.substring(0, insertPos) + '\n' + newRowXml + tableXml.substring(insertPos);
+        // Shift every existing cell below the insertion point down one row.
+        // Without this the next row kept rowAddr=afterRowIndex+1 — the same as
+        // the new row — and Hancom 2020 hung opening the file (reported
+        // 2026-09-24; renumbering rowAddr by <hp:tr> order made it open).
+        // Only the table's OWN cells are touched: a nested table in a cell has
+        // its own row addresses. The delete path does the mirror of this.
+        const shiftedTableXml = this.shiftTableRowAddrs(tableXml, newRowAddr, +1);
+
+        // Insert after the template row (positions unchanged by the shift above:
+        // it rewrites digits in place only after re-finding rows).
+        const rowsAfterShift = this.findAllElementsWithDepth(shiftedTableXml, 'tr');
+        const anchorRow = rowsAfterShift[insert.afterRowIndex];
+        const insertPos = anchorRow.startIndex + anchorRow.xml.length;
+        const newTableXml = shiftedTableXml.substring(0, insertPos) + '\n' + newRowXml + shiftedTableXml.substring(insertPos);
 
         // Update rowCnt attribute
         const updatedTableXml = newTableXml.replace(/rowCnt="(\d+)"/, (_m, cnt) => `rowCnt="${parseInt(cnt) + 1}"`);
@@ -13229,6 +13608,14 @@ export class HwpxDocument {
 
         // Update colCnt
         tableXml = tableXml.replace(/colCnt="(\d+)"/, (_m, cnt) => `colCnt="${parseInt(cnt) + 1}"`);
+
+        // Keep the table inside its original width. The new column cloned the
+        // template column's width, so the columns summed to more than the
+        // table: reported 2026-09-24, 4 × 11765 + 11765 = 58825 > body 51024
+        // while <hp:sz width> still said 47060, and the table ran past the
+        // right margin. Scale every column by the same factor so the total is
+        // exactly the table's width again.
+        tableXml = this.fitColumnsToTableWidth(tableXml);
 
         xml = xml.substring(0, tables[insert.tableIndex].startIndex) + tableXml + xml.substring(tables[insert.tableIndex].endIndex);
       }

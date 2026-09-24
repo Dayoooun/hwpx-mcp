@@ -619,14 +619,20 @@ When NOT to use:
     description: `⭐ RECOMMENDED for finding tables. Returns ALL tables with their headers and metadata.
 
 Returns for each table:
-- table_index: Global index (use this for other table operations)
+- section_index + table_index_in_section: pass BOTH to tools that take section_index
+  (update_table_cell, get_table_cell, get_table, insert_table_row, insert_table_column,
+  merge_cells, insert_nested_table, …)
+- table_index: position across the whole document. ONLY for tools that take no
+  section_index (get_cell_context, batch_fill_table, insert_image_in_cell,
+  render_mermaid_in_cell, insert_paragraph after_table)
 - header: Text from the paragraph BEFORE the table (usually the table title)
 - size: rows × cols
 - is_empty: Whether table has content
 - first_row_preview: Preview of first row data
 
-Use this FIRST when working with tables, then use the table_index for:
-- get_table, update_table_cell, insert_image_in_cell, etc.
+In a document with one section both indices are equal. With a cover section plus
+a body section they differ: passing table_index to update_table_cell writes to a
+DIFFERENT table (or fails) — use table_index_in_section there.
 
 Alternative tools:
 - find_table_by_header: Search by header text
@@ -4691,7 +4697,11 @@ function success(data: any) {
 }
 
 function error(message: string) {
-  return { content: [{ type: 'text', text: JSON.stringify({ error: message }) }] };
+  // isError tells the MCP client the call failed. Without it, a missing
+  // argument or a refused write came back as a normal result whose body merely
+  // contained {"error": …}, and agents treated it as success (reported
+  // 2026-09-24). The JSON body is kept for clients that read it.
+  return { content: [{ type: 'text', text: JSON.stringify({ error: message }) }], isError: true };
 }
 
 function escapeHtml(text: string): string {

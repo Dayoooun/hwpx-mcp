@@ -176,8 +176,11 @@ describe('Complex Workflow E2E Tests', () => {
       doc.updateParagraphText(0, 0, 0, '수정된 제목');
       doc.updateParagraphText(0, 1, 0, '수정된 날짜');
       doc.updateParagraphTextPreserveStyles(0, 2, '수정된 다중run');
-      doc.updateParagraphText(0, 3, 0, '수정된 설명');  // 표 다음 문단
-      doc.updateParagraphText(0, 5, 0, '수정된 결론');  // 마지막 문단
+      // Layout: [p1, p2, p3, 표 t1, p4, 표 t2, p5, p6]. Elements 3 and 5 are
+      // tables; these edits used to target them and silently changed nothing,
+      // which this test never noticed because it did not check them.
+      doc.updateParagraphText(0, 4, 0, '수정된 설명');  // 표 다음 문단 (p4)
+      doc.updateParagraphText(0, 6, 0, '수정된 결론');  // 결론 문단 1 (p5)
 
       // 5개 표 셀 수정
       doc.updateTableCell(0, 0, 0, 0, '수정된 헤더1');
@@ -197,6 +200,8 @@ describe('Complex Workflow E2E Tests', () => {
       expect(doc.getParagraph(0, 0)?.text).toBe('수정된 제목');
       expect(doc.getParagraph(0, 1)?.text).toBe('수정된 날짜');
       expect(doc.getParagraph(0, 2)?.text).toBe('수정된 다중run');
+      expect(doc.getParagraph(0, 4)?.text).toBe('수정된 설명');
+      expect(doc.getParagraph(0, 6)?.text).toBe('수정된 결론');
 
       // 표 검증
       const table = doc.findTable(0, 0);
