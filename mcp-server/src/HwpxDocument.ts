@@ -3066,7 +3066,24 @@ export class HwpxDocument {
     }
 
     this.saveState();
+    // Mirror applyTableRowDeletesToXml so later edits read the same addresses the
+    // XML has after replay: a vertical merge from an earlier row that reaches the
+    // deleted row loses one row, and cells below move up one row. Stale rowAddr
+    // made the row-insert guard refuse an insert below a merge and allow one
+    // through it (CodeRabbit, 2026-09-24).
+    for (let r = 0; r < rowIndex; r++) {
+      for (const cell of table.rows[r]?.cells ?? []) {
+        const top = cell.rowAddr ?? r;
+        const span = cell.rowSpan ?? 1;
+        if (span > 1 && top + span > rowIndex) cell.rowSpan = span - 1;
+      }
+    }
     table.rows.splice(rowIndex, 1);
+    for (const row of table.rows) {
+      for (const cell of row.cells) {
+        if (cell.rowAddr !== undefined && cell.rowAddr > rowIndex) cell.rowAddr -= 1;
+      }
+    }
 
     this.queueTableOp(this._pendingTableRowDeletes, {
       sectionIndex,
@@ -3162,8 +3179,15 @@ export class HwpxDocument {
     if (!table || (table.rows[0]?.cells.length || 0) <= 1) return false;
 
     this.saveState();
+    // Mirror applyTableColumnDeletesToXml: cells after the deleted column move one
+    // column left. A write queued after the delete carries the cell's colAddr and
+    // the XML is matched by it, so a stale address sent the text nowhere
+    // (CodeRabbit, 2026-09-24; 0.3.3 dropped these writes too).
     for (const row of table.rows) {
       row.cells.splice(colIndex, 1);
+      for (const cell of row.cells) {
+        if (cell.colAddr !== undefined && cell.colAddr > colIndex) cell.colAddr -= 1;
+      }
     }
 
     this.queueTableOp(this._pendingTableColumnDeletes, {

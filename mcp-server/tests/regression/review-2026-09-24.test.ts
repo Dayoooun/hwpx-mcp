@@ -413,6 +413,42 @@ describe('표 편집은 호출한 순서대로 저장된다 (CodeRabbit 3차, 0.
       ['3,0:20[2x1]', '3,1:21'], ['4,1:31'],
     ]);
   });
+
+  it('열 삭제 → 칸 쓰기: 한 칸씩 당겨진 열 번호의 칸에 들어간다', async () => {
+    // deleteTableColumn 이 메모리의 뒤쪽 칸 colAddr 를 줄이지 않았다. 저장 때 XML 은 먼저
+    // 열을 지우고 주소를 당기므로, 옛 주소로 찾는 쓰기는 없는 칸을 찾아 버려졌다
+    // (CodeRabbit 4차; 0.3.3 에서도 버려짐).
+    const d = await table(2, 3);
+    d.deleteTableColumn(0, 0, 0);
+    d.updateTableCell(0, 0, 0, 1, 'Z');
+    d.updateTableCell(0, 0, 1, 0, 'Y');
+    expect(await savedEqualsMemory(d)).toEqual([['01', 'Z'], ['Y', '12']]);
+  });
+
+  it('열 삭제 → 행 삽입 → 새 행 쓰기: 새 행이 두 칸이고 쓴 글이 남는다', async () => {
+    const d = await table(2, 3);
+    d.deleteTableColumn(0, 0, 1);
+    d.insertTableRow(0, 0, 0);
+    d.updateTableCell(0, 0, 1, 1, 'Z');
+    expect(await savedEqualsMemory(d)).toEqual([['00', '02'], ['', 'Z'], ['10', '12']]);
+  });
+
+  it('행 삭제 뒤 세로 병합 경계: 병합 끝 행 뒤 삽입은 되고 병합 가운데 삽입은 거부된다', async () => {
+    // deleteTableRow 가 메모리 rowAddr 를 당기지 않아, 행 삽입의 병합 가르기 검사가
+    // 한 행 어긋났다. 병합 아래 삽입은 거부하고 병합을 가르는 삽입은 통과시켰다.
+    const merged = async () => {
+      const seed = HwpxDocument.createNew('dm', 'delete-then-insert');
+      seed.insertTable(0, 0, 4, 2);
+      seed.mergeCells(0, 0, 1, 0, 2, 0);               // 1~2행 세로 병합
+      const { doc } = await roundTrip(seed);
+      doc.deleteTableRow(0, 0, 0);                      // 병합은 이제 0~1행
+      return doc;
+    };
+    const below = await merged();
+    expect(below.insertTableRow(0, 0, 1)).toBe(true);
+    const through = await merged();
+    expect(() => through.insertTableRow(0, 0, 0)).toThrow(/split the merged cell/);
+  });
 });
 
 describe('병합 뒤 칸 쓰기는 병합된 표의 그 칸에 들어간다 (호출 순서 적용 뒤 드러남)', () => {
