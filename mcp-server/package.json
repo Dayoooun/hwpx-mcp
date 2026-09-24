@@ -50,6 +50,11 @@
     "prepublishOnly": "npm run build",
     "start": "node dist/index.js",
     "test": "vitest run",
+    "test:unit": "vitest run src tests/unit",
+    "test:module": "vitest run tests/module",
+    "test:regression": "vitest run tests/regression",
+    "test:e2e": "npm run build && vitest run tests/e2e",
+    "test:versions": "node scripts/version-matrix.mjs",
     "test:security": "npm run build && node --test test-save-security.mjs",
     "test:watch": "vitest"
   },
