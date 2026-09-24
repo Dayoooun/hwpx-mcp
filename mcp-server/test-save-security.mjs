@@ -14,10 +14,15 @@ async function withServer(run) {
   const client = new Client({ name: 'save-security-test', version: '1.0.0' });
   try {
     await client.connect(new StdioClientTransport({ command: process.execPath, args: [server], cwd: directory }));
+    // isError must agree with the body: a refused save is an error on both
+    // channels, a completed one on neither. Each test asserts which it expects
+    // through `result.error`; this checks the MCP flag never contradicts it.
     const call = async (name, args) => {
       const result = await client.callTool({ name, arguments: args });
-      assert.equal(result.isError, undefined);
-      return JSON.parse(result.content[0].text);
+      const body = JSON.parse(result.content[0].text);
+      assert.equal(result.isError === true, body.error !== undefined,
+        `isError=${result.isError} but body.error=${JSON.stringify(body.error)}`);
+      return body;
     };
     const created = await call('create_document', { title: 'Security regression' });
     assert.ok(created.doc_id);

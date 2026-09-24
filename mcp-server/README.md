@@ -298,13 +298,23 @@ AI 동작:
 
 ## 테스트
 
+테스트는 네 층으로 나뉘고, CI(`.github/workflows/mcp-server-ci.yml`)가 층마다 따로 돌려
+하나라도 실패하면 merge 를 막습니다.
+
 ```bash
 cd mcp-server
-npm test                    # vitest 단위 테스트
+npm test                    # 모든 층을 한 번에 (vitest)
+npm run test:unit           # 단위: src/**/*.test.ts, tests/unit
+npm run test:module         # 모듈: 문서 API → 저장 → 다시 열기로 판정
+npm run test:regression     # 회귀: 신고 1건당 파일 1개, 신고 문장을 주석으로 붙임
+npm run test:e2e            # 종단간: 빌드한 MCP 서버를 stdio 로 띄워 호출
 npm run test:security       # 빌드 후 실제 MCP 저장 경로 공격·반복 저장·실패 정리 검사
-node test-mcp-e2e.mjs       # 16개 기본 E2E 테스트
-node test-new-persistence-e2e.mjs  # 8개 persistence E2E 테스트
+npm run test:versions -- 0.3.3 local   # 같은 e2e 를 게시된 버전과 로컬 빌드에 돌려 표로 비교
 ```
+
+e2e 는 `HWPX_MCP_SERVER` 로 대상 서버를 고릅니다. `local`(기본)은 이 저장소의
+`dist/index.js`, `npm:0.3.3` 은 게시된 버전입니다. `local` 서버를 띄울 Node 는
+`HWPX_MCP_NODE` 로 바꿉니다(CI 는 Node 18·22 로 돌립니다).
 
 문단 저장 회귀 테스트는 개인 PC의 문서 경로 대신 합성 HWPX를 사용합니다.
 여러 `hp:t`로 나뉜 텍스트·빈 문자열·XML 특수문자·동일한 문단 ID/본문의 대상 선택을 검사하며,

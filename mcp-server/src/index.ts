@@ -9,6 +9,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { HwpxDocument, ImagePositionOptions } from './HwpxDocument';
 import { HangingIndentCalculator } from './HangingIndentCalculator';
+import { findMalformedXmlParts } from './XmlWellFormed';
 
 const MCP_VERSION: string = require('../package.json').version;
 console.error(`[HWPX MCP] Server starting - ${MCP_VERSION} - ${new Date().toISOString()}`);
@@ -619,14 +620,20 @@ When NOT to use:
     description: `⭐ RECOMMENDED for finding tables. Returns ALL tables with their headers and metadata.
 
 Returns for each table:
-- table_index: Global index (use this for other table operations)
+- section_index + table_index_in_section: pass BOTH to tools that take section_index
+  (update_table_cell, get_table_cell, get_table, insert_table_row, insert_table_column,
+  merge_cells, insert_nested_table, …)
+- table_index: position across the whole document. ONLY for tools that take no
+  section_index (get_cell_context, batch_fill_table, insert_image_in_cell,
+  render_mermaid_in_cell, insert_paragraph after_table)
 - header: Text from the paragraph BEFORE the table (usually the table title)
 - size: rows × cols
 - is_empty: Whether table has content
 - first_row_preview: Preview of first row data
 
-Use this FIRST when working with tables, then use the table_index for:
-- get_table, update_table_cell, insert_image_in_cell, etc.
+In a document with one section both indices are equal. With a cover section plus
+a body section they differ: passing table_index to update_table_cell writes to a
+DIFFERENT table (or fails) — use table_index_in_section there.
 
 Alternative tools:
 - find_table_by_header: Search by header text
@@ -2462,24 +2469,13 @@ Call get_tool_guide with: template, table, image, search, read, create`
                   throw new Error(`Missing required files: ${missingFiles.join(', ')}`);
                 }
 
-                // Verify all section XML files are valid
-                const sectionFiles = Object.keys(zip.files).filter(f => f.match(/^Contents\/section\d+\.xml$/));
-                for (const sectionFile of sectionFiles) {
-                  const file = zip.file(sectionFile);
-                  if (file) {
-                    const xmlContent = await file.async('string');
-                    if (!xmlContent || !xmlContent.includes('<?xml')) {
-                      throw new Error(`Invalid XML in ${sectionFile}`);
-                    }
-                    // Check for truncated XML (incomplete tag at end)
-                    if (xmlContent.match(/<[^>]*$/)) {
-                      throw new Error(`Truncated XML in ${sectionFile}`);
-                    }
-                    // Check for broken opening tags (< followed by < without >)
-                    if (xmlContent.match(/<[^>]*</)) {
-                      throw new Error(`Broken tag structure in ${sectionFile}`);
-                    }
-                  }
+                // Every XML part must actually parse. The old textual checks
+                // (<?xml present, no dangling '<') passed a section with a
+                // mismatched close tag, and the save reported
+                // integrity_verified: true for a file Hancom cannot open.
+                const malformed = await findMalformedXmlParts(zip);
+                if (malformed.length > 0) {
+                  throw new Error(`Malformed XML: ${malformed.slice(0, 3).join('; ')}`);
                 }
               } catch (verifyErr) {
                 // Clean up temp file
@@ -4691,7 +4687,11 @@ function success(data: any) {
 }
 
 function error(message: string) {
-  return { content: [{ type: 'text', text: JSON.stringify({ error: message }) }] };
+  // isError tells the MCP client the call failed. Without it, a missing
+  // argument or a refused write came back as a normal result whose body merely
+  // contained {"error": …}, and agents treated it as success (reported
+  // 2026-09-24). The JSON body is kept for clients that read it.
+  return { content: [{ type: 'text', text: JSON.stringify({ error: message }) }], isError: true };
 }
 
 function escapeHtml(text: string): string {

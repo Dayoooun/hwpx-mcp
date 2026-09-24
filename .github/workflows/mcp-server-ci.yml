@@ -1,0 +1,168 @@
+# hwpx-mcp server CI — four test layers, each a separate required check.
+#
+# Order is cheapest first; later layers `needs:` earlier ones so a broken build
+# never spends minutes on e2e. Every job runs on every PR.
+#
+#   static      typecheck (tsc --noEmit)
+#   unit        in-process API + pure logic            (src/**/*.test.ts, tests/unit)
+#   module      document API judged on saved files      (tests/module)
+#   regression  one file per reported incident          (tests/regression)
+#   e2e         real MCP server over stdio              (tests/e2e) + save security
+#   versions    same e2e against published versions     (report only — see below)
+#
+# The main ruleset requires: static, unit, module, regression, e2e (18), e2e (22).
+# `versions` is informational: published versions are EXPECTED to fail the
+# scenarios fixed later. It fails only if local regresses against the latest
+# published version (scripts/version-matrix.mjs).
+name: mcp-server CI
+
+on:
+  # No paths filter on pull_request: these checks are required on main, and a
+  # required check that never runs (a PR touching only the VS Code extension)
+  # would leave that PR blocked forever.
+  pull_request:
+  push:
+    branches: [main]
+    paths:
+      - 'mcp-server/**'
+      - '.github/workflows/mcp-server-ci.yml'
+
+# Least privilege: jobs only read the repository. The token is not written to
+# .git/config either (persist-credentials: false), so npm ci and test
+# processes cannot pick it up.
+permissions:
+  contents: read
+
+concurrency:
+  group: mcp-server-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: mcp-server
+
+jobs:
+  static:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: mcp-server/package-lock.json
+      - run: npm ci
+      - name: Typecheck
+        run: npx tsc --noEmit -p tsconfig.json
+      - name: No focused or skipped tests
+        run: |
+          if grep -rnE '\b(it|test|describe)\.(only|skip)\(' src tests --include='*.ts'; then
+            echo "::error::.only/.skip left in tests"; exit 1
+          fi
+
+  unit:
+    needs: static
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: mcp-server/package-lock.json
+      - run: npm ci
+      - run: npm run test:unit
+
+  module:
+    needs: static
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: mcp-server/package-lock.json
+      - run: npm ci
+      - run: npm run test:module
+
+  regression:
+    needs: static
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: mcp-server/package-lock.json
+      - run: npm ci
+      - run: npm run test:regression
+
+  e2e:
+    needs: [unit, module, regression]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Node that RUNS THE SERVER: lowest supported (package.json engines >=18)
+        # and current LTS. The test runner itself (vitest 4) needs Node 20+, so
+        # it always runs on 20 and launches the server with the matrix Node.
+        node: [18, 22]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Node for the server under test
+        id: server-node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Remember server Node path
+        run: echo "HWPX_MCP_NODE=$(which node)" >> "$GITHUB_ENV" && node --version
+      - name: Node for the test runner
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: mcp-server/package-lock.json
+      - run: npm ci
+      - name: MCP stdio end-to-end (server on Node ${{ matrix.node }})
+        run: |
+          "$HWPX_MCP_NODE" --version
+          npm run test:e2e
+      - name: Save-path security (server on Node ${{ matrix.node }})
+        run: npm run build && "$HWPX_MCP_NODE" --test test-save-security.mjs
+
+  versions:
+    needs: e2e
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: mcp-server/package-lock.json
+      - run: npm ci
+      - name: Version matrix (published vs local)
+        run: npm run test:versions -- 0.3.0 0.3.3 local | tee version-matrix.txt
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo '### Version matrix'
+            echo '```'
+            sed -n '/시나리오/,$p' version-matrix.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
