@@ -8,6 +8,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { HwpxDocument } from '../../src/HwpxDocument';
+import { error } from '../../src/ToolResult';
 import {
   sectionXml, roundTrip, withSectionXml, assertBalanced,
   rowAddrsOfFirstTable, paragraphText, cellText,
@@ -658,5 +659,18 @@ describe('병합 뒤 칸 쓰기는 병합된 표의 그 칸에 들어간다 (호
     expect(t.rows[0].cells.map(txt)).toEqual(['A', 'C']);
     expect(t.rows[0].cells.map(c => c.colAddr)).toEqual([0, 2]);
     expect(t.rows[1].cells.map(txt)).toEqual(['', 'E', '']);
+  });
+});
+describe('⑥ 실패한 호출이 isError: false 로 옴', () => {
+  /** 회신 ⑥: 필수값 누락·가려진 칸 쓰기처럼 실패한 호출도 isError 가 false 였다(0.3.3). */
+  it('도구 오류 결과는 isError: true 이고, 가려진 칸 쓰기는 오류로 막힌다', () => {
+    const r = error('Missing required argument for insert_paragraph: section_index');
+    expect(r.isError).toBe(true);
+    expect(JSON.parse((r.content[0] as { text: string }).text)).toEqual({ error: 'Missing required argument for insert_paragraph: section_index' });
+
+    const doc = HwpxDocument.createNew('r6', 'covered');
+    doc.insertTable(0, 0, 2, 2);
+    doc.mergeCells(0, 0, 0, 0, 0, 1);
+    expect(() => doc.updateTableCell(0, 0, 0, 1, 'x')).toThrow(/covered by the merged cell/);
   });
 });
