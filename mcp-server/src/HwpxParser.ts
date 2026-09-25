@@ -1512,7 +1512,9 @@ export class HwpxParser {
 
     for (const el of elements) {
       if (el.type === 'p') {
-        const paragraph = this.parseParagraph(el.xml);
+        // Own content only: the paragraphs inside its text boxes, headers and
+        // captions are elements of their own (withoutNestedContent).
+        const paragraph = this.parseParagraph(this.withoutNestedContent(el.xml));
 
         // Store XML position from original XML for direct updates
         // This enables fast paragraph updates without re-parsing during save()
@@ -2139,6 +2141,45 @@ export class HwpxParser {
     }
 
     return paragraphs;
+  }
+
+  /**
+   * The paragraph with every nested container (table, text box, drawing
+   * object, header/footer, caption, equation, note…) cut out, leaving only its
+   * own runs and text. Section paragraphs are read from this: the paragraphs
+   * inside those containers are listed as elements of their own, and the save
+   * path writes a paragraph's text into exactly these own <hp:t>
+   * (HwpxDocument.ownRunText). Reading the whole paragraph instead ended its
+   * run at the first nested </hp:run>: a paragraph "[text box] own text" read
+   * as the text box's text, its own text was never seen, and a whole-paragraph
+   * edit reopened as the old text box text (CodeRabbit, PR #17; 41 of 16,733
+   * paragraphs with own text in 275 Hancom originals lost it on reading).
+   */
+  private static withoutNestedContent(paragraphXml: string): string {
+    const nested = /<hp:(tbl|subList|equation|pic|rect|ellipse|polygon|curve|arc|line|container|drawText|textart|ole|footNote|endNote|header|footer)\b/;
+    const openEnd = paragraphXml.indexOf('>') + 1;
+    let rest = paragraphXml.slice(openEnd);
+    let own = '';
+    for (;;) {
+      const m = rest.match(nested);
+      if (!m || m.index === undefined) { own += rest; break; }
+      own += rest.slice(0, m.index);
+      const re = new RegExp(`<(/?)hp:${m[1]}\\b[^>]*?(/?)>`, 'g');
+      re.lastIndex = m.index;
+      let depth = 0;
+      let end = rest.length;
+      let t: RegExpExecArray | null;
+      while ((t = re.exec(rest)) !== null) {
+        if (t[2]) {
+          if (depth === 0) { end = t.index + t[0].length; break; }
+          continue;
+        }
+        depth += t[1] ? -1 : 1;
+        if (depth === 0) { end = t.index + t[0].length; break; }
+      }
+      rest = rest.slice(end);
+    }
+    return paragraphXml.slice(0, openEnd) + own;
   }
 
   private static parseParagraph(xml: string): HwpxParagraph {

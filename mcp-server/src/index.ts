@@ -10,6 +10,7 @@ import * as path from 'path';
 import { HwpxDocument, ImagePositionOptions } from './HwpxDocument';
 import { HangingIndentCalculator } from './HangingIndentCalculator';
 import { findMalformedXmlParts } from './XmlWellFormed';
+import { success, error, findMissingArgs as missingArgsOf } from './ToolResult';
 
 const MCP_VERSION: string = require('../package.json').version;
 console.error(`[HWPX MCP] Server starting - ${MCP_VERSION} - ${new Date().toISOString()}`);
@@ -257,7 +258,7 @@ Example workflow for templates:
 3. Save - all original formatting preserved
 
 ⚠️ If you need to CHANGE alignment/style, use set_paragraph_style instead.
-⚠️ For paragraphs with multiple styled runs (bold + normal), use update_paragraph_text_preserve_styles.`,
+⚠️ With run_index 0 (default) the whole paragraph is replaced: the new text takes the FIRST run's character shape and the other runs are emptied. To keep a bold/plain split, use update_paragraph_text_preserve_styles.`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -2172,16 +2173,8 @@ const requiredArgsByTool = new Map<string, string[]>(
   ])
 );
 
-/**
- * Report the exact missing arguments instead of letting the handler fail with a
- * generic message. `section_index` is declared required on the insert/update
- * tools, but omitting it used to surface as "Failed to insert paragraph", which
- * reads like document corruption and sends callers off inspecting the file.
- */
 function findMissingArgs(toolName: string, args: Record<string, unknown> | undefined): string[] {
-  const required = requiredArgsByTool.get(toolName);
-  if (!required || required.length === 0) return [];
-  return required.filter(key => args?.[key] === undefined || args?.[key] === null);
+  return missingArgsOf(requiredArgsByTool, toolName, args);
 }
 
 // ============================================================
@@ -2616,17 +2609,22 @@ Call get_tool_guide with: template, table, image, search, read, create`
         if (!doc) return error('Document not found');
         if (doc.format === 'hwp') return error('HWP files are read-only');
 
-        const sectionIndex = args?.section_index as number;
-        const paragraphIndex = args?.paragraph_index as number;
-        const text = args?.text as string;
-
-        // Auto-use preserve styles method for multi-run paragraphs
-        const para = doc.getParagraph(sectionIndex, paragraphIndex);
-        if (para && para.runs && para.runs.length > 1) {
-          doc.updateParagraphTextPreserveStyles(sectionIndex, paragraphIndex, text);
-        } else {
-          doc.updateParagraphText(sectionIndex, paragraphIndex, args?.run_index as number ?? 0, text);
-        }
+        // Always replace through updateParagraphText. Replacing run 0 means
+        // "replace the whole paragraph": the text goes into the first run and
+        // the other runs are emptied, so it takes the first run's character
+        // shape. This handler used to send any multi-run paragraph to
+        // updateParagraphTextPreserveStyles, which spreads the new text across
+        // the old runs by length — a paragraph with a plain run and a bold run,
+        // replaced wholesale, came out bold from the middle on (reported
+        // 2026-09-24, and still true in 0.3.4 because the fix only reached
+        // updateParagraphText). Keeping each run's style is what
+        // update_paragraph_text_preserve_styles is for.
+        doc.updateParagraphText(
+          args?.section_index as number,
+          args?.paragraph_index as number,
+          args?.run_index as number ?? 0,
+          args?.text as string
+        );
         return success({ message: 'Paragraph updated' });
       }
 
@@ -4680,18 +4678,6 @@ Call get_tool_guide with: template, table, image, search, read, create`
 
 function getDoc(docId: string): HwpxDocument | undefined {
   return openDocuments.get(docId);
-}
-
-function success(data: any) {
-  return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
-}
-
-function error(message: string) {
-  // isError tells the MCP client the call failed. Without it, a missing
-  // argument or a refused write came back as a normal result whose body merely
-  // contained {"error": …}, and agents treated it as success (reported
-  // 2026-09-24). The JSON body is kept for clients that read it.
-  return { content: [{ type: 'text', text: JSON.stringify({ error: message }) }], isError: true };
 }
 
 function escapeHtml(text: string): string {

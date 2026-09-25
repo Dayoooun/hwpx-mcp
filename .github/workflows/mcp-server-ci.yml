@@ -156,7 +156,7 @@ jobs:
           cache-dependency-path: mcp-server/package-lock.json
       - run: npm ci
       - name: Version matrix (published vs local)
-        run: npm run test:versions -- 0.3.0 0.3.3 local | tee version-matrix.txt
+        run: npm run test:versions -- 0.3.0 0.3.3 0.3.4 local | tee version-matrix.txt
       - name: Summary
         if: always()
         run: |

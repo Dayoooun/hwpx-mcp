@@ -216,6 +216,160 @@ describe('⑤ 글자 모양이 섞인 문단을 통째로 바꾸면 뒤쪽이 �
   });
 });
 
+describe('⑤ 뒤: 문단 통째 교체가 성공이라 답하고 글을 엉뚱한 곳에 둠 (0.3.5, 한/글 원본에서 실측)', () => {
+  /**
+   * 한/글 원본 150건 문단 11,754개 중 710개는 메모리 글과 그 문단 XML 의 "자기 글"
+   * (findDirectChildRuns → ownRunText) 이 달랐고, 그런 문단에 update_paragraph_text 를
+   * 걸면 100건 표본에서 13/13 이 제자리에 들어가지 않았다(같은 문단은 51/51 제자리).
+   *   (가) 261개 — 자기 글이 없다. 글이 전부 글상자 안에 있다(파서가 글상자 글을 이
+   *        문단 글로 올린다). 새 글은 글상자 뒤 빈 <hp:t> 에 들어가 화면에 안 보였다.
+   *   (나) 449개 — 자기 글은 있는데 run 번호가 어긋난다. 파서는 <hp:t> 하나를 탭·고정폭
+   *        빈칸 앞뒤로 여러 run 으로 쪼개므로, run 0 이 <hp:t> 조각 하나만 가리켰다.
+   */
+  it('(나) 고정폭 빈칸으로 시작하는 문단을 통째로 바꾸면 새 글만 남는다', async () => {
+    const seed = HwpxDocument.createNew('fw', 'fwspace');
+    seed.insertParagraph(0, -1, 'placeholder');
+    // 한/글 보도자료 문단 머리 모양 (hwpx-h-02 실측): 빈칸 + 고정폭 빈칸 run, 그 뒤 본문 run
+    const doc = await withSectionXml(seed, x => x.replace(
+      /<hp:run charPrIDRef="0"><hp:t>placeholder<\/hp:t><\/hp:run>/,
+      '<hp:run charPrIDRef="0"><hp:t> <hp:fwSpace/></hp:t></hp:run>' +
+      '<hp:run charPrIDRef="0"><hp:t>2025년 2분기 해외직접투자액은</hp:t></hp:run>'));
+    const p = doc.content.sections[0].elements.findIndex(
+      e => e.type === 'paragraph' && e.data.runs.some((r: { text: string }) => r.text.includes('2분기')));
+
+    doc.updateParagraphText(0, p, 0, '새 문장');
+    const { doc: back } = await roundTrip(doc);
+    expect(paragraphText(back, 0, p)).toBe('새 문장');
+  });
+
+  it('(나) 탭이 든 문단을 통째로 바꾸면 탭 뒤 글이 남지 않는다', async () => {
+    const seed = HwpxDocument.createNew('tab', 'tab');
+    seed.insertParagraph(0, -1, 'placeholder');
+    // 목차 줄 모양 (SO-SUEOP 실측): 한 <hp:t> 안에 글 · 탭 · 쪽 번호
+    const doc = await withSectionXml(seed, x => x.replace(
+      /<hp:run charPrIDRef="0"><hp:t>placeholder<\/hp:t><\/hp:run>/,
+      '<hp:run charPrIDRef="0"><hp:t>20) 유예 오상원<hp:tab width="30284" leader="3" type="0"/>36</hp:t></hp:run>'));
+    const p = doc.content.sections[0].elements.findIndex(
+      e => e.type === 'paragraph' && e.data.runs.some((r: { text: string }) => r.text.includes('유예')));
+
+    doc.updateParagraphText(0, p, 0, '새 목차 줄');
+    const { doc: back } = await roundTrip(doc);
+    expect(paragraphText(back, 0, p)).toBe('새 목차 줄');
+  });
+
+  it('통째 교체 뒤 같은 문단의 다른 run 을 고쳐도 그 글이 저장본에 남는다 (CodeRabbit PR #17)', async () => {
+    // "A<hp:tab/>B" 는 메모리에서 ["A", "", "B"] 다. run 0 통째 교체 뒤 run 2 를 고치면 메모리는
+    // "newX" 인데, 저장 때 run 2 를 XML 노드로 다시 찾다가 못 찾아 X 가 빠졌다.
+    const seed = HwpxDocument.createNew('aw', 'after-whole');
+    seed.insertParagraph(0, -1, 'placeholder');
+    const doc = await withSectionXml(seed, x => x.replace(
+      /<hp:run charPrIDRef="0"><hp:t>placeholder<\/hp:t><\/hp:run>/,
+      '<hp:run charPrIDRef="0"><hp:t>A<hp:tab width="1" leader="0" type="0"/>B</hp:t></hp:run>'));
+    const p = doc.content.sections[0].elements.findIndex(
+      e => e.type === 'paragraph' && e.data.runs.some((r: { text: string }) => r.text === 'A'));
+
+    doc.updateParagraphText(0, p, 0, 'new');
+    doc.updateParagraphText(0, p, 2, 'X');
+    expect(paragraphText(doc, 0, p)).toBe('newX');
+    const { doc: back } = await roundTrip(doc);
+    expect(paragraphText(back, 0, p)).toBe('newX');
+  });
+
+  it('통째 교체 앞의 run 편집은 통째 교체가 덮는다', async () => {
+    const seed = HwpxDocument.createNew('bw', 'before-whole');
+    seed.insertParagraph(0, -1, 'placeholder');
+    const doc = await withSectionXml(seed, x => x.replace(
+      /<hp:run charPrIDRef="0"><hp:t>placeholder<\/hp:t><\/hp:run>/,
+      '<hp:run charPrIDRef="0"><hp:t>A</hp:t></hp:run><hp:run charPrIDRef="0"><hp:t>B</hp:t></hp:run>'));
+    const p = doc.content.sections[0].elements.findIndex(
+      e => e.type === 'paragraph' && e.data.runs.some((r: { text: string }) => r.text === 'A'));
+
+    doc.updateParagraphText(0, p, 1, 'Y');
+    doc.updateParagraphText(0, p, 0, '마지막');
+    const { doc: back } = await roundTrip(doc);
+    expect(paragraphText(back, 0, p)).toBe('마지막');
+  });
+
+  it('(가) 글이 전부 글상자 안에 있는 문단은 빈 문단으로 읽고, 글상자 글은 그 속 문단으로 고친다', async () => {
+    const seed = HwpxDocument.createNew('box', 'textbox');
+    seed.insertParagraph(0, -1, '앞 문단');
+    seed.insertParagraph(0, 0, 'placeholder');
+    // 행정업무운영 편람 실측 모양: 문단의 자기 run 에는 글상자와 빈 <hp:t/> 뿐이고 글은 글상자 안
+    const box =
+      '<hp:rect id="1" zOrder="0"><hp:drawText lastWidth="1000" name="" editable="0"><hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="TOP">' +
+      '<hp:p id="0" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="0"><hp:t>글상자 안 제목</hp:t></hp:run></hp:p>' +
+      '</hp:subList></hp:drawText></hp:rect>';
+    const doc = await withSectionXml(seed, x => x.replace(
+      /<hp:run charPrIDRef="0"><hp:t>placeholder<\/hp:t><\/hp:run>/,
+      `<hp:run charPrIDRef="0">${box}<hp:t/></hp:run>`));
+    const els = doc.content.sections[0].elements;
+    const withBox = els.findIndex((e, i) => e.type === 'paragraph' && els[i + 1]?.type === 'rect');
+    const inner = els.findIndex(e => e.type === 'paragraph' && paragraphText(doc, 0, els.indexOf(e)) === '글상자 안 제목');
+    // 0.3.4 까지는 글상자를 품은 문단이 글상자 글을 자기 글로 읽었다. 고치면 글상자 옆 빈 자리에 찍혔다.
+    expect(paragraphText(doc, 0, withBox)).toBe('');
+    expect(inner).toBeGreaterThan(withBox);
+
+    doc.updateParagraphText(0, inner, 0, '새 제목');
+    const { doc: back, buf } = await roundTrip(doc);
+    const xml = await sectionXml(buf);
+    expect(xml).toContain('<hp:t>새 제목</hp:t></hp:run></hp:p></hp:subList>');
+    expect(xml).not.toContain('글상자 안 제목');
+    expect(paragraphText(back, 0, inner)).toBe('새 제목');
+  });
+
+  it('글상자 뒤에 자기 글이 있는 문단을 통째로 바꾸면 다시 열어도 새 글이다 (CodeRabbit PR #17)', async () => {
+    // 파서가 문단 전체에서 run 을 읽으면 첫 </hp:run>(글상자 속 문단의 것)에서 run 이 끝나
+    // 글상자 뒤 자기 글을 못 읽었다. 저장본에는 새 글이 있는데 다시 열면 글상자 글 "안" 이 나왔다.
+    const seed = HwpxDocument.createNew('after-box', 'after-box');
+    seed.insertParagraph(0, -1, 'placeholder');
+    const box =
+      '<hp:rect id="1" zOrder="0"><hp:drawText lastWidth="1000" name="" editable="0"><hp:subList id="">' +
+      '<hp:p id="0" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="0"><hp:t>안</hp:t></hp:run></hp:p>' +
+      '</hp:subList></hp:drawText></hp:rect>';
+    const doc = await withSectionXml(seed, x => x.replace(
+      /<hp:run charPrIDRef="0"><hp:t>placeholder<\/hp:t><\/hp:run>/,
+      `<hp:run charPrIDRef="0">${box}<hp:t>바깥</hp:t></hp:run>`));
+    const els = doc.content.sections[0].elements;
+    const outer = els.findIndex((e, i) => e.type === 'paragraph' && els[i + 1]?.type === 'rect');
+    expect(paragraphText(doc, 0, outer)).toBe('바깥');
+
+    doc.updateParagraphText(0, outer, 0, '바깥 새 글');
+    expect(paragraphText(doc, 0, outer)).toBe('바깥 새 글');
+    const { doc: back } = await roundTrip(doc);
+    expect(paragraphText(back, 0, outer)).toBe('바깥 새 글');
+  });
+
+  it('글상자 속 문단과 그 글상자를 품은 문단을 한 번에 고쳐도 둘 다 저장된다 (CodeRabbit PR #17)', async () => {
+    // 파서는 글상자 속 문단을 본문 문단으로도 올린다(메모리: [빈, 바깥 문단, rect, 속 문단]). 두 문단의
+    // XML 범위가 겹치고, 저장은 시작이 뒤인 속 문단을 먼저 쓴다. 속 글이 길어지면 미리 잰 바깥 문단의
+    // 끝 위치가 문단 한가운데를 가리켜, 바깥 문단의 자기 글을 찾지 못하고 쓰기가 빠졌다.
+    const seed = HwpxDocument.createNew('nest', 'nested');
+    seed.insertParagraph(0, -1, 'placeholder');
+    const box =
+      '<hp:rect id="1" zOrder="0"><hp:drawText lastWidth="1000" name="" editable="0"><hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="TOP">' +
+      '<hp:p id="0" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="0"><hp:t>안</hp:t></hp:run></hp:p>' +
+      '</hp:subList></hp:drawText></hp:rect>';
+    const doc = await withSectionXml(seed, x => x.replace(
+      /<hp:run charPrIDRef="0"><hp:t>placeholder<\/hp:t><\/hp:run>/,
+      `<hp:run charPrIDRef="0">${box}<hp:t>바깥</hp:t></hp:run>`));
+    const els = doc.content.sections[0].elements;
+    const outer = els.findIndex((e, i) => e.type === 'paragraph' && els[i + 1]?.type === 'rect');
+    const inner = els.findIndex((e, i) => i > outer && e.type === 'paragraph' && paragraphText(doc, 0, i) === '안');
+    expect(outer).toBeGreaterThanOrEqual(0);
+    expect(inner).toBeGreaterThan(outer);   // 바깥 문단이 rect 앞(시작이 먼저), 올려진 속 문단이 뒤
+
+    const LONG = '글상자 안의 글이 훨씬 길어졌습니다. 바깥 문단의 끝 위치가 이만큼 밀립니다.';
+    doc.updateParagraphText(0, inner, 0, LONG);
+    doc.updateParagraphText(0, outer, 0, '바깥 새 글');
+    const xml = await sectionXml(await doc.save());
+    const { xmlWellFormednessError } = await import('../../src/XmlWellFormed');
+    expect(xmlWellFormednessError(xml)).toBeNull();
+    expect(xml).toContain(`<hp:t>${LONG}</hp:t></hp:run></hp:p></hp:subList>`);
+    expect(xml).toContain('</hp:rect><hp:t>바깥 새 글</hp:t>');
+    expect(xml).not.toContain('>바깥<');
+  });
+});
+
 describe('② (나) 저장 검증이 깨진 XML 을 통과시킴 — 그림 칸 쓰기에서 실측', () => {
   /**
    * 한/글 원본 209건 첫 표 (0,0) 칸 쓰기 중 18건(보도자료 양식 등)의 저장본이

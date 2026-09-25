@@ -144,3 +144,75 @@ describe('병합이 있는 표의 행·열 삽입', () => {
     expect(w0[0]).toBe(w1[0] + w1[1]);              // 병합 칸 = 아래 두 칸
   });
 });
+
+describe('글자 모양이 섞인 문단 (⑤)', () => {
+  /**
+   * 한/글 원본 134건에서 글자 run 이 둘 이상이고 글자 모양이 서로 다른 본문 문단을
+   * 통째로 바꿨을 때, 0.3.3 은 24건에서 새 글이 첫 run 과 다른 글자 모양에 들어갔다.
+   * 한/글처럼 문단 id 를 모두 0 으로 두고, 모양이 셋인 문단(보통·굵게·기울임)으로 본다.
+   */
+  async function mixedDoc() {
+    const seed = HwpxDocument.createNew('m8', 'mixed');
+    seed.insertParagraph(0, -1, '앞 문단');
+    seed.insertParagraph(0, 0, 'placeholder');
+    seed.insertParagraph(0, 1, '뒤 문단');
+    return withSectionXml(seed, x => allIdsZero(x.replace(
+      /(<hp:run charPrIDRef=")(\d+)(">)<hp:t>placeholder<\/hp:t><\/hp:run>/,
+      '$1$2$3<hp:t>보통 </hp:t></hp:run><hp:run charPrIDRef="7"><hp:t>굵게 </hp:t></hp:run><hp:run charPrIDRef="9"><hp:t>기울임</hp:t></hp:run>')));
+  }
+
+  it('run 0 을 바꾸면 새 글 전체가 첫 run 의 글자 모양 하나에 들어가고 이웃 문단은 그대로다', async () => {
+    const doc = await mixedDoc();
+    const p = paragraphIndexOf(doc, 0, '보통 굵게 기울임');
+    doc.updateParagraphText(0, p, 0, '한 문장으로 통째로');
+
+    const { buf, doc: back } = await roundTrip(doc);
+    const xml = await sectionXml(buf);
+    expect(assertBalanced(xml)).toEqual({});
+    expect(paragraphText(back, 0, p)).toBe('한 문장으로 통째로');
+    const para = xml.slice(xml.lastIndexOf('<hp:p ', xml.indexOf('한 문장')), xml.indexOf('</hp:p>', xml.indexOf('한 문장')));
+    const shapesWithText = [...para.matchAll(/<hp:run charPrIDRef="(\d+)">([\s\S]*?)<\/hp:run>/g)]
+      .filter(m => /<hp:t>[^<]+<\/hp:t>/.test(m[2])).map(m => m[1]);
+    expect(shapesWithText).toHaveLength(1);
+    expect(shapesWithText[0]).not.toMatch(/^(7|9)$/);
+    expect(back.getParagraphs(0).map(q => q.text)).toEqual(expect.arrayContaining(['앞 문단', '뒤 문단']));
+  });
+
+  it('preserve_styles 는 세 글자 모양을 그대로 두고 길이 비율로 나눠 담는다', async () => {
+    const doc = await mixedDoc();
+    const p = paragraphIndexOf(doc, 0, '보통 굵게 기울임');
+    expect(doc.updateParagraphTextPreserveStyles(0, p, 'ABCDEFGHIJKLMNOP')).toBe(true);
+    const xml = await sectionXml(await doc.save());
+    const para = xml.slice(xml.lastIndexOf('<hp:p ', xml.indexOf('ABC')), xml.indexOf('</hp:p>', xml.indexOf('ABC')));
+    const shapes = [...para.matchAll(/<hp:run charPrIDRef="(\d+)">([\s\S]*?)<\/hp:run>/g)]
+      .filter(m => /<hp:t>[^<]+<\/hp:t>/.test(m[2])).map(m => m[1]);
+    expect(shapes.slice(1)).toEqual(['7', '9']);
+  });
+});
+
+describe('열 삽입 뒤 표 폭 (④)', () => {
+  /** 회신 실측: 4×4 표에 열을 넣으니 칸 폭 11765 가 그대로 하나 늘어 칸 합 58825 > 본문 폭 51024. */
+  it('칸 폭이 서로 다른 한/글 표에 열을 넣어도 표 폭은 그대로이고 원래 칸의 비율이 유지된다', async () => {
+    const seed = HwpxDocument.createNew('m9', 'col');
+    seed.insertTable(0, 0, 2, 3);
+    // 한/글 양식처럼 칸 폭이 제각각인 표: 20000 / 10000 / 17060 = 47060 (회신 표 폭).
+    const widths = [20000, 10000, 17060];
+    const doc = await withSectionXml(seed, x => {
+      let i = 0;
+      return x.replace(/<hp:sz width="\d+"/, '<hp:sz width="47060"')
+        .replace(/<hp:cellSz width="\d+"/g, m => m.replace(/\d+/, String(widths[i++ % 3])));
+    });
+    doc.insertTableColumn(0, 0, 1);
+
+    const xml = await sectionXml(await doc.save());
+    const t = xml.slice(xml.indexOf('<hp:tbl'), xml.indexOf('</hp:tbl>'));
+    expect(+t.match(/<hp:sz width="(\d+)"/)![1]).toBe(47060);
+    for (const row of t.split('</hp:tr>').filter(r => r.includes('<hp:tr'))) {
+      const w = [...row.matchAll(/<hp:cellSz width="(\d+)"/g)].map(m => +m[1]);
+      expect(w).toHaveLength(4);
+      expect(w.reduce((a, b) => a + b, 0)).toBe(47060);
+      expect(w[0]).toBeGreaterThan(w[3]);         // 20000 칸이 17060 칸보다 넓은 관계 유지
+      expect(w[0]).toBeGreaterThan(w[1] * 1.9);   // 20000 : 10000 비율 유지
+    }
+  });
+});

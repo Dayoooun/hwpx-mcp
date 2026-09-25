@@ -2,8 +2,8 @@
 /**
  * 버전 매트릭스 — 같은 종단간 시나리오를 여러 서버 버전에 돌려 표로 낸다.
  *
- *   npm run test:versions                 # 기본: 게시된 0.3.0, 0.3.3 + local
- *   npm run test:versions -- 0.3.3 local  # 원하는 것만
+ *   npm run test:versions                 # 기본: 게시된 0.3.0, 0.3.3, 0.3.4 + local
+ *   npm run test:versions -- 0.3.4 local  # 원하는 것만
  *
  * 쓰임:
  *   - 리뷰어가 "0.3.0 에서 5개, 0.3.3 에서 10개 통과"라고 알려 주면, 같은 표를
@@ -19,7 +19,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 const args = process.argv.slice(2);
-const targets = (args.length ? args : ['0.3.0', '0.3.3', 'local'])
+const targets = (args.length ? args : ['0.3.0', '0.3.3', '0.3.4', 'local'])
   .map(t => (t === 'local' || t.startsWith('npm:') ? t : `npm:${t}`));
 
 if (targets.includes('local')) {

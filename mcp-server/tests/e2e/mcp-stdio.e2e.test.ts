@@ -105,6 +105,151 @@ describe(`MCP stdio 종단간 [${server}]`, () => {
     expect(assertBalanced(xml)).toEqual({});
   });
 
+  /**
+   * Rewrite section0 of a saved file and reopen it through the server — for
+   * shapes 한/글 writes but the tools cannot build (mixed character shapes in one
+   * paragraph, a heading and a table in one paragraph, repeated paragraph ids).
+   */
+  async function reopenEdited(file: string, name: string, edit: (xml: string) => string): Promise<string> {
+    const zip = await JSZip.loadAsync(fs.readFileSync(file));
+    const xml = await zip.file('Contents/section0.xml')!.async('string');
+    const next = edit(xml);
+    if (next === xml) throw new Error(`fixture edit for ${name} matched nothing`);
+    zip.file('Contents/section0.xml', next);
+    const edited = path.join(workDir, `${name}.hwpx`);
+    fs.writeFileSync(edited, await zip.generateAsync({ type: 'nodebuffer' }));
+    return (await mcp.ok('open_document', { file_path: edited })).doc_id;
+  }
+
+  /** (charPrIDRef, own text) of each text run of the saved paragraph holding `marker`. */
+  function runsOfParagraphWith(xml: string, marker: string): Array<{ char: string; text: string }> {
+    const at = xml.indexOf(marker);
+    if (at < 0) return [];
+    const p = xml.slice(xml.lastIndexOf('<hp:p ', at), xml.indexOf('</hp:p>', at));
+    return [...p.matchAll(/<hp:run charPrIDRef="(\d+)"[^>]*>([\s\S]*?)<\/hp:run>/g)]
+      .map(m => ({ char: m[1], text: [...m[2].matchAll(/<hp:t>([^<]*)<\/hp:t>/g)].map(t => t[1]).join('') }))
+      .filter(r => r.text);
+  }
+
+  it('⑤ 글자 모양이 섞인 문단을 update_paragraph_text 로 통째로 바꾸면 새 글이 모두 첫 글자 모양이다', async () => {
+    // 회신 ⑤: 앞은 보통·뒤는 굵게인 문단을 통째로 바꾸면 셋째 줄쯤부터 굵게 바뀐다.
+    // 0.3.4 까지 처리부가 run 이 여럿이면 길이 비율로 나눠 담는 쪽으로 넘겼다.
+    const { id, file } = await newDoc('mixed-src');
+    await mcp.ok('insert_paragraph', { doc_id: id, section_index: 0, after_index: -1, text: 'placeholder' });
+    await mcp.ok('save_document', { doc_id: id });
+    const doc = await reopenEdited(file, 'mixed', x => x.replace(
+      /(<hp:run charPrIDRef=")(\d+)(">)<hp:t>placeholder<\/hp:t><\/hp:run>/,
+      '$1$2$3<hp:t>보통으로 쓴 앞부분 문장입니다. </hp:t></hp:run><hp:run charPrIDRef="7"><hp:t>여기부터 굵게 쓴 뒷부분 문장입니다.</hp:t></hp:run>'));
+
+    const para = (await mcp.ok('get_paragraphs', { doc_id: doc, section_index: 0 })).paragraphs
+      .find((p: { text: string }) => p.text.includes('보통으로'));
+    const NEW = '문단 전체를 새 문장으로 바꿉니다. 이 문장은 길어서 한 줄을 넘기고 둘째 줄과 셋째 줄까지 이어집니다.';
+    await mcp.ok('update_paragraph_text', { doc_id: doc, section_index: 0, paragraph_index: para.index, text: NEW });
+    const out = path.join(workDir, 'mixed-out.hwpx');
+    await mcp.ok('save_document', { doc_id: doc, output_path: out });
+
+    const xml = await savedSection(out);
+    expect(assertBalanced(xml)).toEqual({});
+    const firstShape = runsOfParagraphWith(xml, NEW.slice(0, 8))[0]?.char;
+    // 새 글은 한 run 에 통째로 있고, 굵은 run(7) 에는 글이 남지 않는다.
+    expect(runsOfParagraphWith(xml, NEW.slice(0, 8))).toEqual([{ char: firstShape, text: NEW }]);
+    expect(firstShape).not.toBe('7');
+  });
+
+  it('⑤ 글자 모양을 run 마다 지키려면 update_paragraph_text_preserve_styles 가 그대로 나눠 담는다', async () => {
+    const { id, file } = await newDoc('mixed-keep-src');
+    await mcp.ok('insert_paragraph', { doc_id: id, section_index: 0, after_index: -1, text: 'placeholder' });
+    await mcp.ok('save_document', { doc_id: id });
+    const doc = await reopenEdited(file, 'mixed-keep', x => x.replace(
+      /(<hp:run charPrIDRef=")(\d+)(">)<hp:t>placeholder<\/hp:t><\/hp:run>/,
+      '$1$2$3<hp:t>굵지않음 </hp:t></hp:run><hp:run charPrIDRef="7"><hp:t>굵음</hp:t></hp:run>'));
+    const para = (await mcp.ok('get_paragraphs', { doc_id: doc, section_index: 0 })).paragraphs
+      .find((p: { text: string }) => p.text.includes('굵지않음'));
+    await mcp.ok('update_paragraph_text_preserve_styles', { doc_id: doc, section_index: 0, paragraph_index: para.index, text: '보통문장 굵은' });
+    const out = path.join(workDir, 'mixed-keep-out.hwpx');
+    await mcp.ok('save_document', { doc_id: doc, output_path: out });
+    const runs = runsOfParagraphWith(await savedSection(out), '보통');
+    expect(runs.map(r => r.char)).toContain('7');
+    expect(runs.map(r => r.text).join('')).toBe('보통문장 굵은');
+  });
+
+  it('⑤ 뒤: 고정폭 빈칸으로 시작하는 문단도 update_paragraph_text 로 통째로 바뀐다', async () => {
+    // 한/글 보도자료 문단 머리(" <hp:fwSpace/>")처럼 파서가 한 <hp:t> 를 여러 run 으로 쪼개는 문단.
+    // 0.3.4 는 run 0 조각만 바꿔 나머지 글이 남았다(한/글 원본 150건 문단 449개가 이 모양).
+    const { id, file } = await newDoc('fw-src');
+    await mcp.ok('insert_paragraph', { doc_id: id, section_index: 0, after_index: -1, text: 'placeholder' });
+    await mcp.ok('save_document', { doc_id: id });
+    const doc = await reopenEdited(file, 'fw', x => x.replace(
+      /(<hp:run charPrIDRef=")(\d+)(">)<hp:t>placeholder<\/hp:t><\/hp:run>/,
+      '$1$2$3<hp:t> <hp:fwSpace/></hp:t></hp:run><hp:run charPrIDRef="0"><hp:t>2025년 2분기 해외직접투자액은</hp:t></hp:run>'));
+    const para = (await mcp.ok('get_paragraphs', { doc_id: doc, section_index: 0 })).paragraphs
+      .find((p: { text: string }) => p.text.includes('2분기'));
+    await mcp.ok('update_paragraph_text', { doc_id: doc, section_index: 0, paragraph_index: para.index, text: '새 문장' });
+    const out = path.join(workDir, 'fw-out.hwpx');
+    await mcp.ok('save_document', { doc_id: doc, output_path: out });
+    const xml = await savedSection(out);
+    expect(xml).not.toContain('2025년 2분기');
+    expect(runsOfParagraphWith(xml, '새 문장').map(r => r.text)).toEqual(['새 문장']);
+  });
+
+  it('⑤ 뒤: 글상자를 품은 문단은 자기 글로 읽히고, 글상자 글은 그 속 문단으로 고친다', async () => {
+    const { id, file } = await newDoc('box-src');
+    await mcp.ok('insert_paragraph', { doc_id: id, section_index: 0, after_index: -1, text: 'placeholder' });
+    await mcp.ok('save_document', { doc_id: id });
+    const box =
+      '<hp:rect id="1" zOrder="0"><hp:drawText lastWidth="1000" name="" editable="0"><hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="TOP">' +
+      '<hp:p id="0" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="0"><hp:t>글상자 안 제목</hp:t></hp:run></hp:p>' +
+      '</hp:subList></hp:drawText></hp:rect>';
+    const doc = await reopenEdited(file, 'box', x => x.replace(
+      /(<hp:run charPrIDRef=")(\d+)(">)<hp:t>placeholder<\/hp:t><\/hp:run>/,
+      `$1$2$3${box}<hp:t>바깥 글</hp:t></hp:run>`));
+    const paras = (await mcp.ok('get_paragraphs', { doc_id: doc, section_index: 0 })).paragraphs as Array<{ index: number; text: string }>;
+    // 0.3.4 까지는 글상자를 품은 문단이 "글상자 안 제목" 으로 읽혔다. 고치면 새 글이 글상자 옆에 찍혔다.
+    const outer = paras.find(p => p.text === '바깥 글');
+    const inner = paras.find(p => p.text === '글상자 안 제목');
+    expect(outer).toBeDefined();
+    expect(inner).toBeDefined();
+    await mcp.ok('update_paragraph_text', { doc_id: doc, section_index: 0, paragraph_index: inner!.index, text: '새 제목' });
+    await mcp.ok('update_paragraph_text', { doc_id: doc, section_index: 0, paragraph_index: outer!.index, text: '새 바깥 글' });
+    const out = path.join(workDir, 'box-out.hwpx');
+    await mcp.ok('save_document', { doc_id: doc, output_path: out });
+    const xml = await savedSection(out);
+    expect(xml).toContain('<hp:t>새 제목</hp:t></hp:run></hp:p></hp:subList>');
+    expect(xml).toContain('</hp:rect><hp:t>새 바깥 글</hp:t>');
+    expect(xml).not.toContain('글상자 안 제목');
+    const back = (await mcp.ok('open_document', { file_path: out })).doc_id;
+    const texts = ((await mcp.ok('get_paragraphs', { doc_id: back, section_index: 0 })).paragraphs as Array<{ text: string }>).map(p => p.text);
+    expect(texts).toContain('새 바깥 글');
+    expect(texts).toContain('새 제목');
+  });
+
+  it('② 제목 글과 목차 표를 품은 문단을 preserve_styles 로 고치면 제목만 바뀌고 저장본이 정상이다', async () => {
+    // 회신 ②: 연구보고서 "제1장 연구의 개요(작성중)1" 은 목차 표를 품은 문단이었다.
+    // 0.3.3 은 한/글 원본 60건 중 44건에서 표 칸 글자를 바꿨다. 한/글처럼 문단 id 를 모두 0 으로 둔다.
+    const { id, file } = await newDoc('toc-src');
+    await mcp.ok('insert_paragraph', { doc_id: id, section_index: 0, after_index: -1, text: '표지' });
+    await mcp.ok('insert_table', { doc_id: id, section_index: 0, after_index: 0, rows: 3, cols: 2 });
+    for (let r = 0; r < 3; r++) for (let c = 0; c < 2; c++)
+      await mcp.ok('update_table_cell', { doc_id: id, section_index: 0, table_index: 0, row: r, col: c, text: `목차${r}${c}` });
+    await mcp.ok('insert_paragraph', { doc_id: id, section_index: 0, after_index: 1, text: '본문' });
+    await mcp.ok('save_document', { doc_id: id });
+    const doc = await reopenEdited(file, 'toc', x => x
+      .replace(/(<hp:p [^>]*><hp:run[^>]*>)(<hp:tbl)/, '$1<hp:t>제1장 연구의 개요(작성중)1</hp:t></hp:run><hp:run charPrIDRef="0">$2')
+      .replace(/<hp:p id="[^"]*"/g, '<hp:p id="0"'));
+
+    const heading = (await mcp.ok('get_paragraphs', { doc_id: doc, section_index: 0 })).paragraphs
+      .find((p: { text: string }) => p.text.includes('제1장'));
+    await mcp.ok('update_paragraph_text_preserve_styles', { doc_id: doc, section_index: 0, paragraph_index: heading.index, text: '시험 문구' });
+    const out = path.join(workDir, 'toc-out.hwpx');
+    await mcp.ok('save_document', { doc_id: doc, output_path: out, verify_integrity: true });
+
+    const xml = await savedSection(out);
+    expect(assertBalanced(xml)).toEqual({});
+    expect(xml.replace(/<[^>]+>/g, '')).toContain('시험 문구');
+    expect([...xml.matchAll(/<hp:t>(목차\d\d)<\/hp:t>/g)].map(m => m[1]))
+      .toEqual(['목차00', '목차01', '목차10', '목차11', '목차20', '목차21']);
+  });
+
   it('③ 두 구역 문서: get_table_map 의 구역 안 순번으로 쓰면 본문 표에 들어간다', async () => {
     const { id, file } = await newDoc('sections');
     await mcp.ok('insert_table', { doc_id: id, section_index: 0, after_index: 0, rows: 2, cols: 2 });

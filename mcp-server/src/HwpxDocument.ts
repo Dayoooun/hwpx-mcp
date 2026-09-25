@@ -149,7 +149,14 @@ export class HwpxDocument {
     paragraph?: HwpxParagraph;
     runIndex: number;
     oldText: string;
-    newText: string
+    newText: string;
+    /**
+     * Replace the paragraph's whole own text (run 0 of updateParagraphText).
+     * Applied by position in the XML, not by run index: the parser splits one
+     * <hp:t> into several memory runs around tabs, full-width spaces and
+     * similar, so a memory run index names a different XML text node there.
+     */
+    wholeParagraph?: boolean;
   }> = [];
   /**
    * `col` is the cell's position in the memory row; `colAddr` is its grid column.
@@ -871,36 +878,35 @@ export class HwpxDocument {
     // Track for XML update - always add if we have a zip (HWPX file)
     // Similar to updateTableCell which always tracks changes
     if (this._zip) {
-      const oldText = paragraph.runs[runIndex].text || '';
       const paragraphOccurrence = this.getParagraphOccurrence(sectionIndex, elementIndex, paragraph.id || '');
-      this._pendingDirectTextUpdates.push({
-        sectionIndex,
-        elementIndex,
-        paragraphId: paragraph.id || '',  // Use stable paragraph ID for reliable identification
-        paragraphOccurrence,
-        paragraph,
-        runIndex,
-        oldText,
-        newText: text
-      });
-
-      // When updating run 0, clear other runs (full paragraph replacement)
       if (runIndex === 0) {
-        for (let i = 1; i < paragraph.runs.length; i++) {
-          const otherOldText = paragraph.runs[i].text || '';
-          if (otherOldText) {
-            this._pendingDirectTextUpdates.push({
-              sectionIndex,
-              elementIndex,
-              paragraphId: paragraph.id || '',
-              paragraphOccurrence,
-              paragraph,
-              runIndex: i,
-              oldText: otherOldText,
-              newText: ''  // Clear other runs
-            });
-          }
-        }
+        // Whole-paragraph replacement is written by position (see
+        // wholeParagraph): the new text goes into the paragraph's first own
+        // text node and its other own text nodes are emptied. A paragraph that
+        // holds a text box reads as its own text only; the box's text is the
+        // next element, so editing it writes inside the box.
+        this._pendingDirectTextUpdates.push({
+          sectionIndex,
+          elementIndex,
+          paragraphId: paragraph.id || '',
+          paragraphOccurrence,
+          paragraph,
+          runIndex: 0,
+          oldText: paragraph.runs.map(r => r.text || '').join(''),
+          newText: text,
+          wholeParagraph: true,
+        });
+      } else {
+        this._pendingDirectTextUpdates.push({
+          sectionIndex,
+          elementIndex,
+          paragraphId: paragraph.id || '',  // Use stable paragraph ID for reliable identification
+          paragraphOccurrence,
+          paragraph,
+          runIndex,
+          oldText: paragraph.runs[runIndex].text || '',
+          newText: text
+        });
       }
     }
 
@@ -8243,8 +8249,39 @@ export class HwpxDocument {
 
       // STEP 3: Apply updates using pre-computed positions
       for (const [elementIndex, updates] of sortedEntries) {
-        const target = paragraphTargets.get(elementIndex);
-        if (!target) continue;
+        const found = paragraphTargets.get(elementIndex);
+        if (!found) continue;
+        // Writes go bottom-to-top, so a start computed before them still names
+        // this paragraph. Its end may not: the parser lifts a text-box paragraph
+        // out as its own element, so the box's paragraph and the paragraph that
+        // holds the box overlap, and the inner one (later start) is written first.
+        // If that changed length, the pre-computed end fell inside the outer
+        // paragraph and its write was dropped (CodeRabbit, PR #17). Re-measure.
+        const end = this.findBalancedParagraphEnd(xml, found.start);
+        if (end === -1) continue;
+        const target = { start: found.start, end, xml: xml.slice(found.start, end) };
+
+        // A whole-paragraph replacement (run 0 of updateParagraphText) is
+        // written by position and replaces every earlier edit of this
+        // paragraph. Run edits made after it are folded into its text, not
+        // applied as a second pass: after a whole replacement the XML has one
+        // text node while memory can still hold several runs (the parser split
+        // "A<hp:tab/>B" into ["A", "", "B"]), so run N no longer names an XML
+        // node and a second pass dropped the edit (CodeRabbit, PR #17).
+        // Updates are in call order here (the list is filled in call order).
+        const lastWhole = updates.map(u => !!u.wholeParagraph).lastIndexOf(true);
+        if (lastWhole !== -1) {
+          const runTexts = [updates[lastWhole].newText];
+          for (const u of updates.slice(lastWhole + 1)) {
+            // Memory after the replacement: run 0 holds the new text, runs
+            // 1.. are empty until edited; an edit sets that run's text.
+            runTexts[u.runIndex] = u.newText;
+          }
+          const text = Array.from(runTexts, t => t ?? '').join('');
+          const current = { start: target.start, end: target.end, xml: xml.slice(target.start, target.end) };
+          xml = this.replaceWholeParagraphText(xml, current, text);
+          continue;
+        }
 
         // Sort by runIndex to process in order
         updates.sort((a, b) => a.runIndex - b.runIndex);
@@ -9067,6 +9104,65 @@ export class HwpxDocument {
 
     // Final fallback: return index-based result anyway
     return indexBasedTarget;
+  }
+
+  /**
+   * Replace the whole own text of a paragraph (run 0 of updateParagraphText).
+   *
+   * The new text goes into the paragraph's first own text node — the first
+   * <hp:t> with text, outside every nested container — and every other own
+   * text node is emptied, including characters written as elements inside
+   * them (tab, full-width space, line break). The first run's character shape
+   * therefore carries the whole sentence. Nested content (tables, text boxes,
+   * equations, pictures, notes) and all attributes stay byte-for-byte.
+   *
+   * Written by position rather than memory run index: the parser splits one
+   * <hp:t> into several memory runs around tabs and full-width spaces, so run 0
+   * named only a fragment and the rest of the old text survived (measured
+   * 2026-09-25 on 150 Hancom originals: 449 of 11,754 paragraphs).
+   */
+  private replaceWholeParagraphText(
+    xml: string,
+    target: { start: number; end: number; xml: string },
+    newText: string
+  ): string {
+    let paragraphXml = target.xml;
+    const escaped = this.escapeXml(newText);
+    const runs = this.findDirectChildRuns(paragraphXml);
+    // Own text nodes of each run, as (run, has non-empty own text).
+    const hasText = (runXml: string) =>
+      [...this.ownRunText(runXml).matchAll(/<hp:t\b[^>]*>([\s\S]*?)<\/hp:t>/g)]
+        .some(m => /<hp:(?:tab|fwSpace|nbSpace|lineBreak)\b/.test(m[1]) || m[1].replace(/<[^>]+>/g, '') !== '');
+    let firstIdx = runs.findIndex(r => hasText(r.xml));
+    // No own text anywhere: fall back to the first own <hp:t> (empty paragraph).
+    if (firstIdx === -1) firstIdx = runs.findIndex(r => /<hp:t\b/.test(this.ownRunText(r.xml)));
+
+    for (let i = runs.length - 1; i >= 0; i--) {
+      const run = runs[i];
+      let written = i !== firstIdx;   // only the first chosen run receives the text
+      const newRunXml = this.mapOwnRunText(run.xml, part => part.replace(
+        /<hp:t\b([^>]*?)\/>|<hp:t\b([^>]*)>([\s\S]*?)<\/hp:t>/g,
+        (_m, selfAttrs: string | undefined, attrs: string | undefined) => {
+          const text = written ? '' : escaped;
+          written = true;
+          return `<hp:t${selfAttrs ?? attrs ?? ''}>${text}</hp:t>`;
+        }
+      ));
+      paragraphXml = paragraphXml.slice(0, run.start) + newRunXml + paragraphXml.slice(run.end);
+    }
+
+    if (firstIdx === -1) {
+      // The paragraph has no <hp:t> of its own: add one to its first run.
+      const firstRun = runs[0];
+      if (firstRun) {
+        const openEnd = firstRun.xml.indexOf('>') + 1;
+        const withText = firstRun.xml.endsWith('/>')
+          ? firstRun.xml.replace(/\/>$/, `><hp:t>${escaped}</hp:t></hp:run>`)
+          : firstRun.xml.slice(0, openEnd) + `<hp:t>${escaped}</hp:t>` + firstRun.xml.slice(openEnd);
+        paragraphXml = paragraphXml.slice(0, firstRun.start) + withText + paragraphXml.slice(firstRun.end);
+      }
+    }
+    return xml.slice(0, target.start) + paragraphXml + xml.slice(target.end);
   }
 
   /**
