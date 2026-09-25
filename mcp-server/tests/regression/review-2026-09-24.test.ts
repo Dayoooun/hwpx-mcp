@@ -311,6 +311,37 @@ describe('⑤ 뒤: 문단 통째 교체가 성공이라 답하고 글을 엉뚱�
     const { buf } = await roundTrip(doc);
     expect(await sectionXml(buf)).toContain('>글상자 안 제목<');
   });
+  it('글상자 속 문단과 그 글상자를 품은 문단을 한 번에 고쳐도 둘 다 저장된다 (CodeRabbit PR #17)', async () => {
+    // 파서는 글상자 속 문단을 본문 문단으로도 올린다(메모리: [빈, 바깥 문단, rect, 속 문단]). 두 문단의
+    // XML 범위가 겹치고, 저장은 시작이 뒤인 속 문단을 먼저 쓴다. 속 글이 길어지면 미리 잰 바깥 문단의
+    // 끝 위치가 문단 한가운데를 가리켜, 바깥 문단의 자기 글을 찾지 못하고 쓰기가 빠졌다.
+    const seed = HwpxDocument.createNew('nest', 'nested');
+    seed.insertParagraph(0, -1, 'placeholder');
+    const box =
+      '<hp:rect id="1" zOrder="0"><hp:drawText lastWidth="1000" name="" editable="0"><hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="TOP">' +
+      '<hp:p id="0" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="0"><hp:t>안</hp:t></hp:run></hp:p>' +
+      '</hp:subList></hp:drawText></hp:rect>';
+    const doc = await withSectionXml(seed, x => x.replace(
+      /<hp:run charPrIDRef="0"><hp:t>placeholder<\/hp:t><\/hp:run>/,
+      `<hp:run charPrIDRef="0">${box}<hp:t>바깥</hp:t></hp:run>`));
+    const els = doc.content.sections[0].elements;
+    const withBoxText = els
+      .map((e, i) => (e.type === 'paragraph' && e.data.runs.map((r: { text: string }) => r.text).join('') === '안' ? i : -1))
+      .filter(i => i >= 0);
+    expect(withBoxText).toHaveLength(2);
+    const [outer, inner] = withBoxText;     // 바깥 문단이 rect 앞(시작이 먼저), 올려진 속 문단이 뒤
+    expect(els[outer + 1].type).toBe('rect');
+
+    const LONG = '글상자 안의 글이 훨씬 길어졌습니다. 바깥 문단의 끝 위치가 이만큼 밀립니다.';
+    doc.updateParagraphText(0, inner, 0, LONG);
+    doc.updateParagraphText(0, outer, 0, '바깥 새 글');
+    const xml = await sectionXml(await doc.save());
+    const { xmlWellFormednessError } = await import('../../src/XmlWellFormed');
+    expect(xmlWellFormednessError(xml)).toBeNull();
+    expect(xml).toContain(`<hp:t>${LONG}</hp:t></hp:run></hp:p></hp:subList>`);
+    expect(xml).toContain('</hp:rect><hp:t>바깥 새 글</hp:t>');
+    expect(xml).not.toContain('>바깥<');
+  });
 });
 
 describe('② (나) 저장 검증이 깨진 XML 을 통과시킴 — 그림 칸 쓰기에서 실측', () => {

@@ -8258,8 +8258,17 @@ export class HwpxDocument {
 
       // STEP 3: Apply updates using pre-computed positions
       for (const [elementIndex, updates] of sortedEntries) {
-        const target = paragraphTargets.get(elementIndex);
-        if (!target) continue;
+        const found = paragraphTargets.get(elementIndex);
+        if (!found) continue;
+        // Writes go bottom-to-top, so a start computed before them still names
+        // this paragraph. Its end may not: the parser lifts a text-box paragraph
+        // out as its own element, so the box's paragraph and the paragraph that
+        // holds the box overlap, and the inner one (later start) is written first.
+        // If that changed length, the pre-computed end fell inside the outer
+        // paragraph and its write was dropped (CodeRabbit, PR #17). Re-measure.
+        const end = this.findBalancedParagraphEnd(xml, found.start);
+        if (end === -1) continue;
+        const target = { start: found.start, end, xml: xml.slice(found.start, end) };
 
         // A whole-paragraph replacement (run 0 of updateParagraphText) is
         // written by position and replaces every earlier edit of this
