@@ -78,6 +78,8 @@ describe('표를 품은 문단 (②)', () => {
 
     const { buf, doc: back } = await roundTrip(doc);
     expect(assertBalanced(await sectionXml(buf))).toEqual({});
+    // 문단 자기 글은 표 앞·뒤 두 run 에 비율로 나뉘어 저장되고, 합치면 새 글이다.
+    expect(paragraphText(back, 0, host)).toBe('새 제목과 쪽');
     for (let r = 0; r < 2; r++) for (let c = 0; c < 2; c++) expect(cellText(back, 0, 0, r, c)).toBe(`칸${r}${c}`);
   });
 });

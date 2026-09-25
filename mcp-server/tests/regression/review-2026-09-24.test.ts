@@ -156,6 +156,7 @@ describe('② 표를 품은 문단을 preserve_styles 로 고치면 글이 사�
 
     const { buf, doc: back } = await roundTrip(doc);
     expect(assertBalanced(await sectionXml(buf))).toEqual({});
+    expect(paragraphText(back, 0, heading)).toBe('시험 문구입니다');
     for (let r = 0; r < 3; r++) for (let c = 0; c < 2; c++) expect(cellText(back, 0, 0, r, c)).toBe(`목차${r}${c}`);
   });
 
