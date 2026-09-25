@@ -1558,6 +1558,13 @@ export interface HwpxParagraph {
     start: number;         // Start byte offset in section XML
     end: number;           // End byte offset in section XML
   };
+  /**
+   * False when the paragraph's own runs carry no text: every character the
+   * parser gave it came from a text box or drawing object inside it. Set at
+   * parse time from the paragraph XML; undefined for paragraphs built in
+   * memory (they always hold their own text).
+   */
+  _hasOwnText?: boolean;
 }
 
 export interface HeaderFooter {

@@ -216,6 +216,70 @@ describe('⑤ 글자 모양이 섞인 문단을 통째로 바꾸면 뒤쪽이 �
   });
 });
 
+describe('⑤ 뒤: 문단 통째 교체가 성공이라 답하고 글을 엉뚱한 곳에 둠 (0.3.5, 한/글 원본에서 실측)', () => {
+  /**
+   * 한/글 원본 150건 문단 11,754개 중 710개는 메모리 글과 그 문단 XML 의 "자기 글"
+   * (findDirectChildRuns → ownRunText) 이 달랐고, 그런 문단에 update_paragraph_text 를
+   * 걸면 100건 표본에서 13/13 이 제자리에 들어가지 않았다(같은 문단은 51/51 제자리).
+   *   (가) 261개 — 자기 글이 없다. 글이 전부 글상자 안에 있다(파서가 글상자 글을 이
+   *        문단 글로 올린다). 새 글은 글상자 뒤 빈 <hp:t> 에 들어가 화면에 안 보였다.
+   *   (나) 449개 — 자기 글은 있는데 run 번호가 어긋난다. 파서는 <hp:t> 하나를 탭·고정폭
+   *        빈칸 앞뒤로 여러 run 으로 쪼개므로, run 0 이 <hp:t> 조각 하나만 가리켰다.
+   */
+  it('(나) 고정폭 빈칸으로 시작하는 문단을 통째로 바꾸면 새 글만 남는다', async () => {
+    const seed = HwpxDocument.createNew('fw', 'fwspace');
+    seed.insertParagraph(0, -1, 'placeholder');
+    // 한/글 보도자료 문단 머리 모양 (hwpx-h-02 실측): 빈칸 + 고정폭 빈칸 run, 그 뒤 본문 run
+    const doc = await withSectionXml(seed, x => x.replace(
+      /<hp:run charPrIDRef="0"><hp:t>placeholder<\/hp:t><\/hp:run>/,
+      '<hp:run charPrIDRef="0"><hp:t> <hp:fwSpace/></hp:t></hp:run>' +
+      '<hp:run charPrIDRef="0"><hp:t>2025년 2분기 해외직접투자액은</hp:t></hp:run>'));
+    const p = doc.content.sections[0].elements.findIndex(
+      e => e.type === 'paragraph' && e.data.runs.some((r: { text: string }) => r.text.includes('2분기')));
+
+    doc.updateParagraphText(0, p, 0, '새 문장');
+    const { doc: back } = await roundTrip(doc);
+    expect(paragraphText(back, 0, p)).toBe('새 문장');
+  });
+
+  it('(나) 탭이 든 문단을 통째로 바꾸면 탭 뒤 글이 남지 않는다', async () => {
+    const seed = HwpxDocument.createNew('tab', 'tab');
+    seed.insertParagraph(0, -1, 'placeholder');
+    // 목차 줄 모양 (SO-SUEOP 실측): 한 <hp:t> 안에 글 · 탭 · 쪽 번호
+    const doc = await withSectionXml(seed, x => x.replace(
+      /<hp:run charPrIDRef="0"><hp:t>placeholder<\/hp:t><\/hp:run>/,
+      '<hp:run charPrIDRef="0"><hp:t>20) 유예 오상원<hp:tab width="30284" leader="3" type="0"/>36</hp:t></hp:run>'));
+    const p = doc.content.sections[0].elements.findIndex(
+      e => e.type === 'paragraph' && e.data.runs.some((r: { text: string }) => r.text.includes('유예')));
+
+    doc.updateParagraphText(0, p, 0, '새 목차 줄');
+    const { doc: back } = await roundTrip(doc);
+    expect(paragraphText(back, 0, p)).toBe('새 목차 줄');
+  });
+
+  it('(가) 글이 전부 글상자 안에 있는 문단은 성공이라 하지 않고 거부한다', async () => {
+    const seed = HwpxDocument.createNew('box', 'textbox');
+    seed.insertParagraph(0, -1, '앞 문단');
+    seed.insertParagraph(0, 0, 'placeholder');
+    // 행정업무운영 편람 실측 모양: 문단의 자기 run 에는 글상자와 빈 <hp:t/> 뿐이고 글은 글상자 안
+    const box =
+      '<hp:rect id="1" zOrder="0"><hp:drawText lastWidth="1000" name="" editable="0"><hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="TOP">' +
+      '<hp:p id="0" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="0"><hp:t>글상자 안 제목</hp:t></hp:run></hp:p>' +
+      '</hp:subList></hp:drawText></hp:rect>';
+    const doc = await withSectionXml(seed, x => x.replace(
+      /<hp:run charPrIDRef="0"><hp:t>placeholder<\/hp:t><\/hp:run>/,
+      `<hp:run charPrIDRef="0">${box}<hp:t/></hp:run>`));
+    const p = doc.content.sections[0].elements.findIndex(
+      e => e.type === 'paragraph' && e.data.runs.some((r: { text: string }) => r.text.includes('글상자 안')));
+    expect(p).toBeGreaterThanOrEqual(0);
+
+    expect(() => doc.updateParagraphText(0, p, 0, '새 제목')).toThrow(/text box|글상자/i);
+    // 거부했으면 저장본의 글상자 글은 그대로다
+    const { buf } = await roundTrip(doc);
+    expect(await sectionXml(buf)).toContain('>글상자 안 제목<');
+  });
+});
+
 describe('② (나) 저장 검증이 깨진 XML 을 통과시킴 — 그림 칸 쓰기에서 실측', () => {
   /**
    * 한/글 원본 209건 첫 표 (0,0) 칸 쓰기 중 18건(보도자료 양식 등)의 저장본이

@@ -149,7 +149,14 @@ export class HwpxDocument {
     paragraph?: HwpxParagraph;
     runIndex: number;
     oldText: string;
-    newText: string
+    newText: string;
+    /**
+     * Replace the paragraph's whole own text (run 0 of updateParagraphText).
+     * Applied by position in the XML, not by run index: the parser splits one
+     * <hp:t> into several memory runs around tabs, full-width spaces and
+     * similar, so a memory run index names a different XML text node there.
+     */
+    wholeParagraph?: boolean;
   }> = [];
   /**
    * `col` is the cell's position in the memory row; `colAddr` is its grid column.
@@ -871,36 +878,44 @@ export class HwpxDocument {
     // Track for XML update - always add if we have a zip (HWPX file)
     // Similar to updateTableCell which always tracks changes
     if (this._zip) {
-      const oldText = paragraph.runs[runIndex].text || '';
       const paragraphOccurrence = this.getParagraphOccurrence(sectionIndex, elementIndex, paragraph.id || '');
-      this._pendingDirectTextUpdates.push({
-        sectionIndex,
-        elementIndex,
-        paragraphId: paragraph.id || '',  // Use stable paragraph ID for reliable identification
-        paragraphOccurrence,
-        paragraph,
-        runIndex,
-        oldText,
-        newText: text
-      });
-
-      // When updating run 0, clear other runs (full paragraph replacement)
       if (runIndex === 0) {
-        for (let i = 1; i < paragraph.runs.length; i++) {
-          const otherOldText = paragraph.runs[i].text || '';
-          if (otherOldText) {
-            this._pendingDirectTextUpdates.push({
-              sectionIndex,
-              elementIndex,
-              paragraphId: paragraph.id || '',
-              paragraphOccurrence,
-              paragraph,
-              runIndex: i,
-              oldText: otherOldText,
-              newText: ''  // Clear other runs
-            });
-          }
+        // Whole-paragraph replacement is written by position (see
+        // wholeParagraph): the new text goes into the paragraph's first own
+        // text node and its other own text nodes are emptied. Refuse when the
+        // paragraph has no own text at all — its text lives in a text box the
+        // parser lifted into it, and the write would land beside the box, out
+        // of sight, after answering success (measured 2026-09-25: 261 of
+        // 11,754 paragraphs in 150 Hancom originals).
+        if (paragraph._hasOwnText === false && paragraph.runs.some(r => (r.text ?? '').trim() !== '')) {
+          throw new Error(
+            `Paragraph ${elementIndex} in section ${sectionIndex} holds no text of its own: its text ` +
+            `is inside a text box or drawing object in that paragraph, which update_paragraph_text ` +
+            `cannot edit. Use replace_text to change words inside the text box.`
+          );
         }
+        this._pendingDirectTextUpdates.push({
+          sectionIndex,
+          elementIndex,
+          paragraphId: paragraph.id || '',
+          paragraphOccurrence,
+          paragraph,
+          runIndex: 0,
+          oldText: paragraph.runs.map(r => r.text || '').join(''),
+          newText: text,
+          wholeParagraph: true,
+        });
+      } else {
+        this._pendingDirectTextUpdates.push({
+          sectionIndex,
+          elementIndex,
+          paragraphId: paragraph.id || '',  // Use stable paragraph ID for reliable identification
+          paragraphOccurrence,
+          paragraph,
+          runIndex,
+          oldText: paragraph.runs[runIndex].text || '',
+          newText: text
+        });
       }
     }
 
@@ -8246,6 +8261,24 @@ export class HwpxDocument {
         const target = paragraphTargets.get(elementIndex);
         if (!target) continue;
 
+        // A whole-paragraph replacement (run 0 of updateParagraphText) is
+        // written by position and replaces every earlier edit of this
+        // paragraph; only run edits made after it are applied on top. Updates
+        // are still in call order here (the list is filled in call order).
+        const lastWhole = updates.map(u => !!u.wholeParagraph).lastIndexOf(true);
+        if (lastWhole !== -1) {
+          const current = { start: target.start, end: target.end, xml: xml.slice(target.start, target.end) };
+          xml = this.replaceWholeParagraphText(xml, current, updates[lastWhole].newText);
+          const after = updates.slice(lastWhole + 1);
+          if (after.length > 0) {
+            const end = this.findBalancedParagraphEnd(xml, target.start);
+            const rewritten = { start: target.start, end, xml: xml.slice(target.start, end) };
+            after.sort((a, b) => a.runIndex - b.runIndex);
+            xml = this.replaceRunsInParagraphDirect(xml, rewritten, after);
+          }
+          continue;
+        }
+
         // Sort by runIndex to process in order
         updates.sort((a, b) => a.runIndex - b.runIndex);
 
@@ -9067,6 +9100,65 @@ export class HwpxDocument {
 
     // Final fallback: return index-based result anyway
     return indexBasedTarget;
+  }
+
+  /**
+   * Replace the whole own text of a paragraph (run 0 of updateParagraphText).
+   *
+   * The new text goes into the paragraph's first own text node — the first
+   * <hp:t> with text, outside every nested container — and every other own
+   * text node is emptied, including characters written as elements inside
+   * them (tab, full-width space, line break). The first run's character shape
+   * therefore carries the whole sentence. Nested content (tables, text boxes,
+   * equations, pictures, notes) and all attributes stay byte-for-byte.
+   *
+   * Written by position rather than memory run index: the parser splits one
+   * <hp:t> into several memory runs around tabs and full-width spaces, so run 0
+   * named only a fragment and the rest of the old text survived (measured
+   * 2026-09-25 on 150 Hancom originals: 449 of 11,754 paragraphs).
+   */
+  private replaceWholeParagraphText(
+    xml: string,
+    target: { start: number; end: number; xml: string },
+    newText: string
+  ): string {
+    let paragraphXml = target.xml;
+    const escaped = this.escapeXml(newText);
+    const runs = this.findDirectChildRuns(paragraphXml);
+    // Own text nodes of each run, as (run, has non-empty own text).
+    const hasText = (runXml: string) =>
+      [...this.ownRunText(runXml).matchAll(/<hp:t\b[^>]*>([\s\S]*?)<\/hp:t>/g)]
+        .some(m => /<hp:(?:tab|fwSpace|nbSpace|lineBreak)\b/.test(m[1]) || m[1].replace(/<[^>]+>/g, '') !== '');
+    let firstIdx = runs.findIndex(r => hasText(r.xml));
+    // No own text anywhere: fall back to the first own <hp:t> (empty paragraph).
+    if (firstIdx === -1) firstIdx = runs.findIndex(r => /<hp:t\b/.test(this.ownRunText(r.xml)));
+
+    for (let i = runs.length - 1; i >= 0; i--) {
+      const run = runs[i];
+      let written = i !== firstIdx;   // only the first chosen run receives the text
+      const newRunXml = this.mapOwnRunText(run.xml, part => part.replace(
+        /<hp:t\b([^>]*?)\/>|<hp:t\b([^>]*)>([\s\S]*?)<\/hp:t>/g,
+        (_m, selfAttrs: string | undefined, attrs: string | undefined) => {
+          const text = written ? '' : escaped;
+          written = true;
+          return `<hp:t${selfAttrs ?? attrs ?? ''}>${text}</hp:t>`;
+        }
+      ));
+      paragraphXml = paragraphXml.slice(0, run.start) + newRunXml + paragraphXml.slice(run.end);
+    }
+
+    if (firstIdx === -1) {
+      // The paragraph has no <hp:t> of its own: add one to its first run.
+      const firstRun = runs[0];
+      if (firstRun) {
+        const openEnd = firstRun.xml.indexOf('>') + 1;
+        const withText = firstRun.xml.endsWith('/>')
+          ? firstRun.xml.replace(/\/>$/, `><hp:t>${escaped}</hp:t></hp:run>`)
+          : firstRun.xml.slice(0, openEnd) + `<hp:t>${escaped}</hp:t>` + firstRun.xml.slice(openEnd);
+        paragraphXml = paragraphXml.slice(0, firstRun.start) + withText + paragraphXml.slice(firstRun.end);
+      }
+    }
+    return xml.slice(0, target.start) + paragraphXml + xml.slice(target.end);
   }
 
   /**

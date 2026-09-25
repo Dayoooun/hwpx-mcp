@@ -8,6 +8,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { HwpxDocument } from '../../src/HwpxDocument';
+import { HwpxParser } from '../../src/HwpxParser';
 import { success, error, findMissingArgs } from '../../src/ToolResult';
 
 const doc = () => HwpxDocument.createNew('u', 'unit');
@@ -170,6 +171,56 @@ describe('⑤ 글자 모양이 섞인 문단: 메모리에서 run 0 교체', () 
     expect(d.getParagraph(0, p)!.text).toBe('첫 글');
     d.updateParagraphText(0, p, 5, '무시');
     expect(d.getParagraph(0, p)!.text).toBe('첫 글');
+  });
+});
+
+describe('⑤ 뒤: 문단 통째 교체는 자기 글 자리에 위치로 쓴다 (0.3.5)', () => {
+  const replace = (p: string, text: string) => {
+    const d = doc();
+    return priv(d).replaceWholeParagraphText(p, { start: 0, end: p.length, xml: p }, text) as string;
+  };
+  const ownTexts = (p: string) => {
+    const d = doc();
+    return (priv(d).findDirectChildRuns(p) as Array<{ xml: string }>)
+      .map(r => [...(priv(d).ownRunText(r.xml) as string).matchAll(/<hp:t\b[^>]*>([\s\S]*?)<\/hp:t>/g)].map(m => m[1]).join(''));
+  };
+
+  it('고정폭 빈칸만 있는 첫 run 은 비우고 새 글은 그 run 한 곳에 쓴다', () => {
+    const p = '<hp:p id="0"><hp:run charPrIDRef="3"><hp:t> <hp:fwSpace/></hp:t></hp:run>' +
+      '<hp:run charPrIDRef="4"><hp:t>본문</hp:t></hp:run></hp:p>';
+    expect(ownTexts(replace(p, '새 글'))).toEqual(['새 글', '']);
+  });
+
+  it('한 <hp:t> 안의 탭과 뒤 글도 지운다', () => {
+    const p = '<hp:p id="0"><hp:run charPrIDRef="0"><hp:t>목차<hp:tab width="1" leader="3" type="0"/>36</hp:t></hp:run></hp:p>';
+    expect(ownTexts(replace(p, '새 줄'))).toEqual(['새 줄']);
+  });
+
+  it('수식·표 같은 중첩 내용은 그대로 두고 그 앞뒤 자기 글만 바꾼다', () => {
+    const eq = '<hp:equation id="1"><hp:script>n</hp:script></hp:equation>';
+    const p = `<hp:p id="0"><hp:run charPrIDRef="0"><hp:t>(단, </hp:t>${eq}<hp:t>은 자연수)</hp:t></hp:run></hp:p>`;
+    const out = replace(p, '새');
+    expect(out).toContain(eq);
+    expect(ownTexts(out)).toEqual(['새']);
+  });
+
+  it('자기 <hp:t> 가 없는 문단은 첫 run 에 새로 만든다', () => {
+    const p = '<hp:p id="0"><hp:run charPrIDRef="5"/></hp:p>';
+    expect(replace(p, '처음')).toBe('<hp:p id="0"><hp:run charPrIDRef="5"><hp:t>처음</hp:t></hp:run></hp:p>');
+  });
+
+  it('새 글의 XML 특수 문자를 이스케이프한다', () => {
+    const p = '<hp:p id="0"><hp:run charPrIDRef="0"><hp:t>a</hp:t></hp:run></hp:p>';
+    expect(replace(p, '<b> & "c"')).toContain('<hp:t>&lt;b&gt; &amp; &quot;c&quot;</hp:t>');
+  });
+
+  it('파서는 글이 전부 글상자 안에 있는 문단에 자기 글이 없다고 표시한다', () => {
+    const hasOwn = (x: string) => (HwpxParser as unknown as { hasOwnText(x: string): boolean }).hasOwnText(x);
+    const box = '<hp:rect id="1"><hp:drawText><hp:subList><hp:p id="0"><hp:run><hp:t>글상자 글</hp:t></hp:run></hp:p></hp:subList></hp:drawText></hp:rect>';
+    expect(hasOwn(`<hp:p id="0"><hp:run charPrIDRef="0">${box}<hp:t/></hp:run></hp:p>`)).toBe(false);
+    expect(hasOwn(`<hp:p id="0"><hp:run charPrIDRef="0">${box}<hp:t>밖</hp:t></hp:run></hp:p>`)).toBe(true);
+    expect(hasOwn('<hp:p id="0"><hp:run><hp:t><hp:fwSpace/></hp:t></hp:run></hp:p>')).toBe(true);
+    expect(hasOwn('<hp:p id="0"><hp:run><hp:t>  </hp:t></hp:run></hp:p>')).toBe(false);
   });
 });
 

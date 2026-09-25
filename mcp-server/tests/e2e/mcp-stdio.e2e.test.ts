@@ -173,6 +173,46 @@ describe(`MCP stdio 종단간 [${server}]`, () => {
     expect(runs.map(r => r.text).join('')).toBe('보통문장 굵은');
   });
 
+  it('⑤ 뒤: 고정폭 빈칸으로 시작하는 문단도 update_paragraph_text 로 통째로 바뀐다', async () => {
+    // 한/글 보도자료 문단 머리(" <hp:fwSpace/>")처럼 파서가 한 <hp:t> 를 여러 run 으로 쪼개는 문단.
+    // 0.3.4 는 run 0 조각만 바꿔 나머지 글이 남았다(한/글 원본 150건 문단 449개가 이 모양).
+    const { id, file } = await newDoc('fw-src');
+    await mcp.ok('insert_paragraph', { doc_id: id, section_index: 0, after_index: -1, text: 'placeholder' });
+    await mcp.ok('save_document', { doc_id: id });
+    const doc = await reopenEdited(file, 'fw', x => x.replace(
+      /(<hp:run charPrIDRef=")(\d+)(">)<hp:t>placeholder<\/hp:t><\/hp:run>/,
+      '$1$2$3<hp:t> <hp:fwSpace/></hp:t></hp:run><hp:run charPrIDRef="0"><hp:t>2025년 2분기 해외직접투자액은</hp:t></hp:run>'));
+    const para = (await mcp.ok('get_paragraphs', { doc_id: doc, section_index: 0 })).paragraphs
+      .find((p: { text: string }) => p.text.includes('2분기'));
+    await mcp.ok('update_paragraph_text', { doc_id: doc, section_index: 0, paragraph_index: para.index, text: '새 문장' });
+    const out = path.join(workDir, 'fw-out.hwpx');
+    await mcp.ok('save_document', { doc_id: doc, output_path: out });
+    const xml = await savedSection(out);
+    expect(xml).not.toContain('2025년 2분기');
+    expect(runsOfParagraphWith(xml, '새 문장').map(r => r.text)).toEqual(['새 문장']);
+  });
+
+  it('⑤ 뒤: 글이 전부 글상자 안에 있는 문단은 isError 로 거절되고 글상자 글은 그대로다', async () => {
+    const { id, file } = await newDoc('box-src');
+    await mcp.ok('insert_paragraph', { doc_id: id, section_index: 0, after_index: -1, text: 'placeholder' });
+    await mcp.ok('save_document', { doc_id: id });
+    const box =
+      '<hp:rect id="1" zOrder="0"><hp:drawText lastWidth="1000" name="" editable="0"><hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="TOP">' +
+      '<hp:p id="0" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="0"><hp:t>글상자 안 제목</hp:t></hp:run></hp:p>' +
+      '</hp:subList></hp:drawText></hp:rect>';
+    const doc = await reopenEdited(file, 'box', x => x.replace(
+      /(<hp:run charPrIDRef=")(\d+)(">)<hp:t>placeholder<\/hp:t><\/hp:run>/,
+      `$1$2$3${box}<hp:t/></hp:run>`));
+    const para = (await mcp.ok('get_paragraphs', { doc_id: doc, section_index: 0 })).paragraphs
+      .find((p: { text: string }) => p.text.includes('글상자 안'));
+    const r = await mcp.call('update_paragraph_text', { doc_id: doc, section_index: 0, paragraph_index: para.index, text: '새 제목' });
+    expect(r.isError).toBe(true);
+    expect(r.raw).toMatch(/no text of its own/);
+    const out = path.join(workDir, 'box-out.hwpx');
+    await mcp.ok('save_document', { doc_id: doc, output_path: out });
+    expect(await savedSection(out)).toContain('>글상자 안 제목<');
+  });
+
   it('② 제목 글과 목차 표를 품은 문단을 preserve_styles 로 고치면 제목만 바뀌고 저장본이 정상이다', async () => {
     // 회신 ②: 연구보고서 "제1장 연구의 개요(작성중)1" 은 목차 표를 품은 문단이었다.
     // 0.3.3 은 한/글 원본 60건 중 44건에서 표 칸 글자를 바꿨다. 한/글처럼 문단 id 를 모두 0 으로 둔다.

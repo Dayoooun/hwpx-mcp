@@ -1523,6 +1523,11 @@ export class HwpxParser {
             end: el.originalXmlPosition.end,
           };
         }
+        // Record whether the paragraph's own runs carry any text. A paragraph
+        // that anchors a text box or drawing object gets that object's text as
+        // its runs (parseRun scans the whole run), but a whole-paragraph edit
+        // can only write the paragraph's own <hp:t>, which sit beside the box.
+        paragraph._hasOwnText = this.hasOwnText(el.xml);
 
         // Check if this paragraph should have a footnote reference
         // (footnote was in original XML but removed from cleanedXml)
@@ -2139,6 +2144,41 @@ export class HwpxParser {
     }
 
     return paragraphs;
+  }
+
+  /**
+   * Whether a paragraph has text of its own: a non-empty <hp:t> outside every
+   * nested container (table, text box, drawing object, equation, note…).
+   * Mirrors HwpxDocument.ownRunText, which the save path uses to write text.
+   */
+  private static hasOwnText(paragraphXml: string): boolean {
+    const nested = /<hp:(tbl|subList|equation|pic|rect|ellipse|polygon|curve|arc|line|container|drawText|textart|ole|footNote|endNote|header|footer)\b/;
+    let rest = paragraphXml.slice(paragraphXml.indexOf('>') + 1);
+    let own = '';
+    for (;;) {
+      const m = rest.match(nested);
+      if (!m || m.index === undefined) { own += rest; break; }
+      own += rest.slice(0, m.index);
+      const re = new RegExp(`<(/?)hp:${m[1]}\\b[^>]*?(/?)>`, 'g');
+      re.lastIndex = m.index;
+      let depth = 0;
+      let end = rest.length;
+      let t: RegExpExecArray | null;
+      while ((t = re.exec(rest)) !== null) {
+        if (t[2]) {
+          if (depth === 0) { end = t.index + t[0].length; break; }
+          continue;
+        }
+        depth += t[1] ? -1 : 1;
+        if (depth === 0) { end = t.index + t[0].length; break; }
+      }
+      rest = rest.slice(end);
+    }
+    // A character in <hp:t>: visible text, or one written as an element.
+    for (const t of own.matchAll(/<hp:t\b[^>]*>([\s\S]*?)<\/hp:t>/g)) {
+      if (/<hp:(?:tab|fwSpace|nbSpace|lineBreak)\b/.test(t[1]) || t[1].replace(/<[^>]+>/g, '').trim() !== '') return true;
+    }
+    return false;
   }
 
   private static parseParagraph(xml: string): HwpxParagraph {
