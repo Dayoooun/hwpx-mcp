@@ -7,6 +7,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { HwpxDocument } from '../../src/HwpxDocument';
+import { error, findMissingArgs } from '../../src/ToolResult';
 import { sectionXml, roundTrip, withSectionXml, assertBalanced, paragraphText, cellText, paragraphIndexOf } from '../helpers/hwpx';
 
 /** 한/글은 여러 문단에 같은 id 를 쓴다 (325 섹션 중 209 섹션에서 id="0"/"2147483648" 반복). */
@@ -214,5 +215,38 @@ describe('열 삽입 뒤 표 폭 (④)', () => {
       expect(w[0]).toBeGreaterThan(w[3]);         // 20000 칸이 17060 칸보다 넓은 관계 유지
       expect(w[0]).toBeGreaterThan(w[1] * 1.9);   // 20000 : 10000 비율 유지
     }
+  });
+});
+
+describe('실패한 호출의 결과 (⑥)', () => {
+  /**
+   * 회신 ⑥: 필수값 누락·가려진 칸 쓰기처럼 실패한 호출도 isError 가 false 로 왔다.
+   * 문서 API 가 거부하는 경우와 도구 결과 봉투(ToolResult)를 함께 불러, 서버 처리부와 같은
+   * 조합(거부 → error() → isError)이 되는지 본다. 거부한 편집은 저장본에도 남지 않는다.
+   */
+  const refusal = (fn: () => unknown) => {
+    try { fn(); return null; } catch (e) { return error((e as Error).message); }
+  };
+
+  it('가려진 칸에 쓰면 isError 로 거부되고 저장본의 병합 칸 글은 그대로다', async () => {
+    const doc = HwpxDocument.createNew('m10', 'covered');
+    doc.insertTable(0, 0, 2, 3);
+    doc.mergeCells(0, 0, 0, 0, 0, 1);
+    doc.updateTableCell(0, 0, 0, 0, '병합 칸');
+    const r = refusal(() => doc.updateTableCell(0, 0, 0, 1, '가려진 칸'));
+    expect(r?.isError).toBe(true);
+    expect(JSON.stringify(r)).toMatch(/covered by the merged cell at \(0, 0\)/);
+    const { buf, doc: back } = await roundTrip(doc);
+    const xml = await sectionXml(buf);
+    expect(xml).not.toContain('가려진 칸');
+    expect(cellText(back, 0, 0, 0, 0)).toBe('병합 칸');
+  });
+
+  it('필수값이 빠진 호출은 빠진 이름을 담아 isError 로 돌려준다', () => {
+    const required = new Map([['update_table_cell', ['doc_id', 'section_index', 'table_index', 'row', 'col', 'text']]]);
+    const missing = findMissingArgs(required, 'update_table_cell', { doc_id: 'd', section_index: 0, table_index: 0, row: 0, col: 0 });
+    expect(missing).toEqual(['text']);
+    const r = error(`Missing required argument for update_table_cell: ${missing.join(', ')}`);
+    expect(r.isError).toBe(true);
   });
 });
