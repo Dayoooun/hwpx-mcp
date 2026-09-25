@@ -257,6 +257,39 @@ describe('⑤ 뒤: 문단 통째 교체가 성공이라 답하고 글을 엉뚱�
     expect(paragraphText(back, 0, p)).toBe('새 목차 줄');
   });
 
+  it('통째 교체 뒤 같은 문단의 다른 run 을 고쳐도 그 글이 저장본에 남는다 (CodeRabbit PR #17)', async () => {
+    // "A<hp:tab/>B" 는 메모리에서 ["A", "", "B"] 다. run 0 통째 교체 뒤 run 2 를 고치면 메모리는
+    // "newX" 인데, 저장 때 run 2 를 XML 노드로 다시 찾다가 못 찾아 X 가 빠졌다.
+    const seed = HwpxDocument.createNew('aw', 'after-whole');
+    seed.insertParagraph(0, -1, 'placeholder');
+    const doc = await withSectionXml(seed, x => x.replace(
+      /<hp:run charPrIDRef="0"><hp:t>placeholder<\/hp:t><\/hp:run>/,
+      '<hp:run charPrIDRef="0"><hp:t>A<hp:tab width="1" leader="0" type="0"/>B</hp:t></hp:run>'));
+    const p = doc.content.sections[0].elements.findIndex(
+      e => e.type === 'paragraph' && e.data.runs.some((r: { text: string }) => r.text === 'A'));
+
+    doc.updateParagraphText(0, p, 0, 'new');
+    doc.updateParagraphText(0, p, 2, 'X');
+    expect(paragraphText(doc, 0, p)).toBe('newX');
+    const { doc: back } = await roundTrip(doc);
+    expect(paragraphText(back, 0, p)).toBe('newX');
+  });
+
+  it('통째 교체 앞의 run 편집은 통째 교체가 덮는다', async () => {
+    const seed = HwpxDocument.createNew('bw', 'before-whole');
+    seed.insertParagraph(0, -1, 'placeholder');
+    const doc = await withSectionXml(seed, x => x.replace(
+      /<hp:run charPrIDRef="0"><hp:t>placeholder<\/hp:t><\/hp:run>/,
+      '<hp:run charPrIDRef="0"><hp:t>A</hp:t></hp:run><hp:run charPrIDRef="0"><hp:t>B</hp:t></hp:run>'));
+    const p = doc.content.sections[0].elements.findIndex(
+      e => e.type === 'paragraph' && e.data.runs.some((r: { text: string }) => r.text === 'A'));
+
+    doc.updateParagraphText(0, p, 1, 'Y');
+    doc.updateParagraphText(0, p, 0, '마지막');
+    const { doc: back } = await roundTrip(doc);
+    expect(paragraphText(back, 0, p)).toBe('마지막');
+  });
+
   it('(가) 글이 전부 글상자 안에 있는 문단은 성공이라 하지 않고 거부한다', async () => {
     const seed = HwpxDocument.createNew('box', 'textbox');
     seed.insertParagraph(0, -1, '앞 문단');

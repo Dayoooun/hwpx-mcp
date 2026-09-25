@@ -8263,19 +8263,23 @@ export class HwpxDocument {
 
         // A whole-paragraph replacement (run 0 of updateParagraphText) is
         // written by position and replaces every earlier edit of this
-        // paragraph; only run edits made after it are applied on top. Updates
-        // are still in call order here (the list is filled in call order).
+        // paragraph. Run edits made after it are folded into its text, not
+        // applied as a second pass: after a whole replacement the XML has one
+        // text node while memory can still hold several runs (the parser split
+        // "A<hp:tab/>B" into ["A", "", "B"]), so run N no longer names an XML
+        // node and a second pass dropped the edit (CodeRabbit, PR #17).
+        // Updates are in call order here (the list is filled in call order).
         const lastWhole = updates.map(u => !!u.wholeParagraph).lastIndexOf(true);
         if (lastWhole !== -1) {
-          const current = { start: target.start, end: target.end, xml: xml.slice(target.start, target.end) };
-          xml = this.replaceWholeParagraphText(xml, current, updates[lastWhole].newText);
-          const after = updates.slice(lastWhole + 1);
-          if (after.length > 0) {
-            const end = this.findBalancedParagraphEnd(xml, target.start);
-            const rewritten = { start: target.start, end, xml: xml.slice(target.start, end) };
-            after.sort((a, b) => a.runIndex - b.runIndex);
-            xml = this.replaceRunsInParagraphDirect(xml, rewritten, after);
+          const runTexts = [updates[lastWhole].newText];
+          for (const u of updates.slice(lastWhole + 1)) {
+            // Memory after the replacement: run 0 holds the new text, runs
+            // 1.. are empty until edited; an edit sets that run's text.
+            runTexts[u.runIndex] = u.newText;
           }
+          const text = Array.from(runTexts, t => t ?? '').join('');
+          const current = { start: target.start, end: target.end, xml: xml.slice(target.start, target.end) };
+          xml = this.replaceWholeParagraphText(xml, current, text);
           continue;
         }
 
