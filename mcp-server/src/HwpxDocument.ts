@@ -882,18 +882,9 @@ export class HwpxDocument {
       if (runIndex === 0) {
         // Whole-paragraph replacement is written by position (see
         // wholeParagraph): the new text goes into the paragraph's first own
-        // text node and its other own text nodes are emptied. Refuse when the
-        // paragraph has no own text at all — its text lives in a text box the
-        // parser lifted into it, and the write would land beside the box, out
-        // of sight, after answering success (measured 2026-09-25: 261 of
-        // 11,754 paragraphs in 150 Hancom originals).
-        if (paragraph._hasOwnText === false && paragraph.runs.some(r => (r.text ?? '').trim() !== '')) {
-          throw new Error(
-            `Paragraph ${elementIndex} in section ${sectionIndex} holds no text of its own: its text ` +
-            `is inside a text box or drawing object in that paragraph, which update_paragraph_text ` +
-            `cannot edit. Use replace_text to change words inside the text box.`
-          );
-        }
+        // text node and its other own text nodes are emptied. A paragraph that
+        // holds a text box reads as its own text only; the box's text is the
+        // next element, so editing it writes inside the box.
         this._pendingDirectTextUpdates.push({
           sectionIndex,
           elementIndex,

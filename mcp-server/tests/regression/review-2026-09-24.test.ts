@@ -290,7 +290,7 @@ describe('⑤ 뒤: 문단 통째 교체가 성공이라 답하고 글을 엉뚱�
     expect(paragraphText(back, 0, p)).toBe('마지막');
   });
 
-  it('(가) 글이 전부 글상자 안에 있는 문단은 성공이라 하지 않고 거부한다', async () => {
+  it('(가) 글이 전부 글상자 안에 있는 문단은 빈 문단으로 읽고, 글상자 글은 그 속 문단으로 고친다', async () => {
     const seed = HwpxDocument.createNew('box', 'textbox');
     seed.insertParagraph(0, -1, '앞 문단');
     seed.insertParagraph(0, 0, 'placeholder');
@@ -302,15 +302,43 @@ describe('⑤ 뒤: 문단 통째 교체가 성공이라 답하고 글을 엉뚱�
     const doc = await withSectionXml(seed, x => x.replace(
       /<hp:run charPrIDRef="0"><hp:t>placeholder<\/hp:t><\/hp:run>/,
       `<hp:run charPrIDRef="0">${box}<hp:t/></hp:run>`));
-    const p = doc.content.sections[0].elements.findIndex(
-      e => e.type === 'paragraph' && e.data.runs.some((r: { text: string }) => r.text.includes('글상자 안')));
-    expect(p).toBeGreaterThanOrEqual(0);
+    const els = doc.content.sections[0].elements;
+    const withBox = els.findIndex((e, i) => e.type === 'paragraph' && els[i + 1]?.type === 'rect');
+    const inner = els.findIndex(e => e.type === 'paragraph' && paragraphText(doc, 0, els.indexOf(e)) === '글상자 안 제목');
+    // 0.3.4 까지는 글상자를 품은 문단이 글상자 글을 자기 글로 읽었다. 고치면 글상자 옆 빈 자리에 찍혔다.
+    expect(paragraphText(doc, 0, withBox)).toBe('');
+    expect(inner).toBeGreaterThan(withBox);
 
-    expect(() => doc.updateParagraphText(0, p, 0, '새 제목')).toThrow(/text box|글상자/i);
-    // 거부했으면 저장본의 글상자 글은 그대로다
-    const { buf } = await roundTrip(doc);
-    expect(await sectionXml(buf)).toContain('>글상자 안 제목<');
+    doc.updateParagraphText(0, inner, 0, '새 제목');
+    const { doc: back, buf } = await roundTrip(doc);
+    const xml = await sectionXml(buf);
+    expect(xml).toContain('<hp:t>새 제목</hp:t></hp:run></hp:p></hp:subList>');
+    expect(xml).not.toContain('글상자 안 제목');
+    expect(paragraphText(back, 0, inner)).toBe('새 제목');
   });
+
+  it('글상자 뒤에 자기 글이 있는 문단을 통째로 바꾸면 다시 열어도 새 글이다 (CodeRabbit PR #17)', async () => {
+    // 파서가 문단 전체에서 run 을 읽으면 첫 </hp:run>(글상자 속 문단의 것)에서 run 이 끝나
+    // 글상자 뒤 자기 글을 못 읽었다. 저장본에는 새 글이 있는데 다시 열면 글상자 글 "안" 이 나왔다.
+    const seed = HwpxDocument.createNew('after-box', 'after-box');
+    seed.insertParagraph(0, -1, 'placeholder');
+    const box =
+      '<hp:rect id="1" zOrder="0"><hp:drawText lastWidth="1000" name="" editable="0"><hp:subList id="">' +
+      '<hp:p id="0" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="0"><hp:t>안</hp:t></hp:run></hp:p>' +
+      '</hp:subList></hp:drawText></hp:rect>';
+    const doc = await withSectionXml(seed, x => x.replace(
+      /<hp:run charPrIDRef="0"><hp:t>placeholder<\/hp:t><\/hp:run>/,
+      `<hp:run charPrIDRef="0">${box}<hp:t>바깥</hp:t></hp:run>`));
+    const els = doc.content.sections[0].elements;
+    const outer = els.findIndex((e, i) => e.type === 'paragraph' && els[i + 1]?.type === 'rect');
+    expect(paragraphText(doc, 0, outer)).toBe('바깥');
+
+    doc.updateParagraphText(0, outer, 0, '바깥 새 글');
+    expect(paragraphText(doc, 0, outer)).toBe('바깥 새 글');
+    const { doc: back } = await roundTrip(doc);
+    expect(paragraphText(back, 0, outer)).toBe('바깥 새 글');
+  });
+
   it('글상자 속 문단과 그 글상자를 품은 문단을 한 번에 고쳐도 둘 다 저장된다 (CodeRabbit PR #17)', async () => {
     // 파서는 글상자 속 문단을 본문 문단으로도 올린다(메모리: [빈, 바깥 문단, rect, 속 문단]). 두 문단의
     // XML 범위가 겹치고, 저장은 시작이 뒤인 속 문단을 먼저 쓴다. 속 글이 길어지면 미리 잰 바깥 문단의
@@ -325,12 +353,10 @@ describe('⑤ 뒤: 문단 통째 교체가 성공이라 답하고 글을 엉뚱�
       /<hp:run charPrIDRef="0"><hp:t>placeholder<\/hp:t><\/hp:run>/,
       `<hp:run charPrIDRef="0">${box}<hp:t>바깥</hp:t></hp:run>`));
     const els = doc.content.sections[0].elements;
-    const withBoxText = els
-      .map((e, i) => (e.type === 'paragraph' && e.data.runs.map((r: { text: string }) => r.text).join('') === '안' ? i : -1))
-      .filter(i => i >= 0);
-    expect(withBoxText).toHaveLength(2);
-    const [outer, inner] = withBoxText;     // 바깥 문단이 rect 앞(시작이 먼저), 올려진 속 문단이 뒤
-    expect(els[outer + 1].type).toBe('rect');
+    const outer = els.findIndex((e, i) => e.type === 'paragraph' && els[i + 1]?.type === 'rect');
+    const inner = els.findIndex((e, i) => i > outer && e.type === 'paragraph' && paragraphText(doc, 0, i) === '안');
+    expect(outer).toBeGreaterThanOrEqual(0);
+    expect(inner).toBeGreaterThan(outer);   // 바깥 문단이 rect 앞(시작이 먼저), 올려진 속 문단이 뒤
 
     const LONG = '글상자 안의 글이 훨씬 길어졌습니다. 바깥 문단의 끝 위치가 이만큼 밀립니다.';
     doc.updateParagraphText(0, inner, 0, LONG);

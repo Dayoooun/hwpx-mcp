@@ -214,13 +214,18 @@ describe('⑤ 뒤: 문단 통째 교체는 자기 글 자리에 위치로 쓴다
     expect(replace(p, '<b> & "c"')).toContain('<hp:t>&lt;b&gt; &amp; &quot;c&quot;</hp:t>');
   });
 
-  it('파서는 글이 전부 글상자 안에 있는 문단에 자기 글이 없다고 표시한다', () => {
-    const hasOwn = (x: string) => (HwpxParser as unknown as { hasOwnText(x: string): boolean }).hasOwnText(x);
+  it('파서는 문단을 읽을 때 글상자·머리말 같은 중첩 내용을 빼고 자기 run 만 남긴다', () => {
+    const own = (x: string) => (HwpxParser as unknown as { withoutNestedContent(x: string): string }).withoutNestedContent(x);
     const box = '<hp:rect id="1"><hp:drawText><hp:subList><hp:p id="0"><hp:run><hp:t>글상자 글</hp:t></hp:run></hp:p></hp:subList></hp:drawText></hp:rect>';
-    expect(hasOwn(`<hp:p id="0"><hp:run charPrIDRef="0">${box}<hp:t/></hp:run></hp:p>`)).toBe(false);
-    expect(hasOwn(`<hp:p id="0"><hp:run charPrIDRef="0">${box}<hp:t>밖</hp:t></hp:run></hp:p>`)).toBe(true);
-    expect(hasOwn('<hp:p id="0"><hp:run><hp:t><hp:fwSpace/></hp:t></hp:run></hp:p>')).toBe(true);
-    expect(hasOwn('<hp:p id="0"><hp:run><hp:t>  </hp:t></hp:run></hp:p>')).toBe(false);
+    // 글상자 속 문단의 </hp:run> 에서 run 이 끝나지 않도록, 글상자를 통째로 뺀 뒤 읽는다.
+    expect(own(`<hp:p id="0"><hp:run charPrIDRef="0">${box}<hp:t>밖</hp:t></hp:run></hp:p>`))
+      .toBe('<hp:p id="0"><hp:run charPrIDRef="0"><hp:t>밖</hp:t></hp:run></hp:p>');
+    const header = '<hp:ctrl><hp:header id="1"><hp:subList><hp:p id="0"><hp:run><hp:t>머리말</hp:t></hp:run></hp:p></hp:subList></hp:header></hp:ctrl>';
+    expect(own(`<hp:p id="0"><hp:run>${header}<hp:t>본문</hp:t></hp:run></hp:p>`))
+      .toBe('<hp:p id="0"><hp:run><hp:ctrl></hp:ctrl><hp:t>본문</hp:t></hp:run></hp:p>');
+    // 자기 closing 요소와 중첩 없는 문단은 그대로다.
+    expect(own('<hp:p id="0"><hp:run><hp:pic id="2"/><hp:t>a<hp:tab/>b</hp:t></hp:run></hp:p>'))
+      .toBe('<hp:p id="0"><hp:run><hp:t>a<hp:tab/>b</hp:t></hp:run></hp:p>');
   });
 });
 
