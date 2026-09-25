@@ -138,6 +138,27 @@ describe('② 표를 품은 문단을 preserve_styles 로 고치면 글이 사�
     for (let r = 0; r < 3; r++) for (let c = 0; c < 2; c++) expect(cellText(back, 0, 0, r, c)).toBe(`목차${r}${c}`);
   });
 
+  it('표 뒤에도 자기 글("…(작성중)1" 의 "1")이 있는 문단을 바꿔도 표 칸 글자는 그대로다', async () => {
+    // 연구보고서 목차 줄처럼 문단이 [제목 글][목차 표][쪽 번호 글] 순서다. 0.3.3 은 preserve_styles 가
+    // 표 뒤 run 을 표 칸 안 run 으로 세어, 칸 글자 여섯 개가 첫 칸 하나로 합쳐지고 나머지가 비었다.
+    const seed = HwpxDocument.createNew('t3', 'toc-tail');
+    seed.insertParagraph(0, -1, '표지');
+    seed.insertTable(0, 0, 3, 2);
+    for (let r = 0; r < 3; r++) for (let c = 0; c < 2; c++) seed.updateTableCell(0, 0, r, c, `목차${r}${c}`);
+    seed.insertParagraph(0, 1, '본문');
+    const doc = await withSectionXml(seed, x => x
+      .replace(/(<hp:p [^>]*><hp:run[^>]*>)(<hp:tbl[\s\S]*?<\/hp:tbl>)/, (_m, open: string, tbl: string) =>
+        `${open}<hp:t>제1장 연구의 개요(작성중)</hp:t></hp:run><hp:run charPrIDRef="0">${tbl}<hp:t>1</hp:t>`)
+      .replace(/<hp:p id="[^"]*"/g, '<hp:p id="0"'));
+    const heading = doc.content.sections[0].elements.findIndex(
+      e => e.type === 'paragraph' && paragraphTextOf(e).includes('제1장'));
+    expect(doc.updateParagraphTextPreserveStyles(0, heading, '시험 문구입니다')).toBe(true);
+
+    const { buf, doc: back } = await roundTrip(doc);
+    expect(assertBalanced(await sectionXml(buf))).toEqual({});
+    for (let r = 0; r < 3; r++) for (let c = 0; c < 2; c++) expect(cellText(back, 0, 0, r, c)).toBe(`목차${r}${c}`);
+  });
+
   it('표 요소를 가리킨 update_paragraph_text 는 성공이라 하지 않는다', async () => {
     const seed = HwpxDocument.createNew('t2', 'table-el');
     seed.insertTable(0, 0, 2, 2);

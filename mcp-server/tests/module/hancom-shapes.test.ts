@@ -26,7 +26,7 @@ describe('같은 id 가 반복되는 문단', () => {
   });
 });
 
-describe('표를 품은 문단', () => {
+describe('표를 품은 문단 (②)', () => {
   /** 한/글 원본 60건 중 표를 품은 문단 대부분이 글자 run + 표 run 구조였다. */
   async function docWithTableHost() {
     const seed = HwpxDocument.createNew('m2', 'host');
@@ -61,6 +61,25 @@ describe('표를 품은 문단', () => {
     expect(back.getParagraphs(0).some(p => p.text === '뒤-수정')).toBe(true);
     expect(cellText(back, 0, 0, 0, 0)).toBe('칸 가');
   });
+
+  it('표 앞뒤에 자기 글이 있는 문단을 preserve_styles 로 바꿔도 표 칸마다 제 글자가 남는다 (②)', async () => {
+    // 회신 ②의 목차 줄 모양 [글][표][쪽 번호]. 0.3.3 은 표 뒤 글 run 을 표 칸 run 으로 세어 칸 글자를
+    // 첫 칸 하나로 합쳤다.
+    const seed = HwpxDocument.createNew('m2b', 'host-tail');
+    seed.insertParagraph(0, -1, '앞 문단');
+    seed.insertTable(0, 0, 2, 2);
+    for (let r = 0; r < 2; r++) for (let c = 0; c < 2; c++) seed.updateTableCell(0, 0, r, c, `칸${r}${c}`);
+    const doc = await withSectionXml(seed, x => allIdsZero(x.replace(
+      /(<hp:p [^>]*><hp:run[^>]*>)(<hp:tbl[\s\S]*?<\/hp:tbl>)/,
+      (_m, open: string, tbl: string) => `${open}<hp:t>표 제목</hp:t></hp:run><hp:run charPrIDRef="0">${tbl}<hp:t>7</hp:t>`)));
+    const host = doc.content.sections[0].elements.findIndex(
+      e => e.type === 'paragraph' && e.data.runs.some((r: { text: string }) => r.text === '표 제목'));
+    expect(doc.updateParagraphTextPreserveStyles(0, host, '새 제목과 쪽')).toBe(true);
+
+    const { buf, doc: back } = await roundTrip(doc);
+    expect(assertBalanced(await sectionXml(buf))).toEqual({});
+    for (let r = 0; r < 2; r++) for (let c = 0; c < 2; c++) expect(cellText(back, 0, 0, r, c)).toBe(`칸${r}${c}`);
+  });
 });
 
 describe('머리말을 품은 첫 문단', () => {
@@ -82,7 +101,7 @@ describe('머리말을 품은 첫 문단', () => {
   });
 });
 
-describe('구역이 둘 이상인 문서', () => {
+describe('구역이 둘 이상인 문서 (③)', () => {
   it('insert_section 뒤 저장해도 구역 수와 각 구역 내용이 유지된다', async () => {
     const doc = HwpxDocument.createNew('m4', 'sections');
     doc.insertParagraph(0, -1, '표지');
@@ -109,9 +128,26 @@ describe('구역이 둘 이상인 문서', () => {
     expect(back.getParagraphs(0).map(p => p.text)).toContain('새 첫 구역');
     expect(back.getParagraphs(1).map(p => p.text)).toContain('원래 첫 구역');
   });
+
+  it('get_table_map 의 구역 안 순번으로 쓰면 표지 표가 아니라 본문 표에 들어간다', async () => {
+    // 회신 ③: 문서 전체 순번(1)을 표 편집 도구에 넣으면 본문 구역에 그 번호 표가 없어 실패했다.
+    const doc = HwpxDocument.createNew('m5b', 'table-index');
+    doc.insertTable(0, 0, 2, 2);
+    doc.updateTableCell(0, 0, 0, 0, '표지 표');
+    doc.insertSection(0);
+    doc.insertTable(1, -1, 2, 2);
+    const body = doc.getTableMap().find(t => t.section_index === 1)!;
+    expect([body.table_index, body.table_index_in_section]).toEqual([1, 0]);
+    expect(doc.updateTableCell(1, body.table_index_in_section, 1, 1, '본문 표')).toBe(true);
+
+    const { doc: back } = await roundTrip(doc);
+    expect(cellText(back, 1, 0, 1, 1)).toBe('본문 표');
+    expect(cellText(back, 0, 0, 0, 0)).toBe('표지 표');
+    expect(cellText(back, 0, 0, 1, 1)).toBe('');
+  });
 });
 
-describe('병합이 있는 표의 행·열 삽입', () => {
+describe('병합이 있는 표의 행·열 삽입 (①④)', () => {
   it('가로 병합 행 아래에 행을 넣어도 병합과 rowAddr 가 맞다', async () => {
     const seed = HwpxDocument.createNew('m6', 'merge');
     seed.insertTable(0, 0, 3, 3);
