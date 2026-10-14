@@ -111,6 +111,35 @@ describe('redo 뒤 저장', () => {
   });
 });
 
+describe('되돌리기 기록은 뒤의 수정에 바뀌지 않는다', () => {
+  // 대기 항목을 기록과 문서가 같이 쓰면, 뒤의 수정이 항목을 그 자리에서 고칠 때
+  // 기록까지 바뀌어 undo 뒤 메모리와 저장본이 달라졌다(Codex 검증 2026-10-14 재현).
+  it('내어쓰기를 두 번 바꾸고 한 번 되돌리면 첫 값이 저장된다', async () => {
+    const seed = HwpxDocument.createNew('h', 'undo');
+    seed.insertParagraph(0, -1, '내어쓰기 문단');
+    const doc = (await roundTrip(seed)).doc;
+    const at = paragraphIndexOf(doc, 0, '내어쓰기 문단');
+    expect(doc.setHangingIndent(0, at, 10)).toBe(true);
+    expect(doc.setHangingIndent(0, at, 20)).toBe(true);
+    doc.undo();
+    expect(doc.getHangingIndent(0, at)).toBe(10);
+
+    const { doc: back } = await roundTrip(doc);
+    expect(back.getHangingIndent(0, paragraphIndexOf(back, 0, '내어쓰기 문단'))).toBe(10);
+  });
+
+  it('표 수정 뒤 앞에 구역을 넣었다가 되돌리면 표 수정은 원래 구역에 저장된다', async () => {
+    const doc = await tableDoc();
+    doc.updateTableCell(0, 0, 0, 0, '남을 값');
+    doc.insertSection(-1);
+    doc.undo();
+    expect(cellText(doc, 0, 0, 0, 0)).toBe('남을 값');
+
+    const { doc: back } = await roundTrip(doc);
+    expect(cellText(back, 0, 0, 0, 0)).toBe('남을 값');
+  });
+});
+
 describe('저장은 되돌리기 경계', () => {
   it('저장 뒤에는 저장 전 수정을 되돌릴 수 없다(파일과 메모리가 어긋나지 않게)', async () => {
     const doc = await tableDoc();

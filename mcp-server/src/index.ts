@@ -1240,7 +1240,7 @@ batch_fill_table({
   // === Undo/Redo ===
   {
     name: 'undo',
-    description: 'Undo the last change(s). Supports multiple undo with count parameter.',
+    description: 'Undo the last change(s). Supports multiple undo with count parameter. Saving clears the undo/redo history: changes made before the last save cannot be undone.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1252,7 +1252,7 @@ batch_fill_table({
   },
   {
     name: 'redo',
-    description: 'Redo the last undone change(s). Supports multiple redo with count parameter.',
+    description: 'Redo the last undone change(s). Supports multiple redo with count parameter. Saving clears the undo/redo history.',
     inputSchema: {
       type: 'object',
       properties: {

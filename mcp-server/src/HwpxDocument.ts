@@ -623,12 +623,30 @@ export class HwpxDocument {
    * undo, save -> neither A nor B on disk; edit, undo, redo, save -> the edit
    * missing on disk while get_table_cell still showed it).
    */
+  /**
+   * Copy a queue so history and the live document never share an op object.
+   * Later edits change queued ops in place (a second hanging indent rewrites
+   * indentPt, insert/delete section renumbers sectionIndex), and a shared op
+   * would carry that change into the history entry, so undo restored memory
+   * but saved the newer value. Ops are flat records, so one level is enough.
+   * The call-order number lives in _tableOpSeq keyed by the op object; the
+   * copy takes over the original's number.
+   */
+  private copyQueue(ops: unknown[]): unknown[] {
+    return ops.map(op => {
+      if (!op || typeof op !== 'object') return op;
+      const copy = { ...(op as object) };
+      const seq = this._tableOpSeq.get(op);
+      if (seq !== undefined) this._tableOpSeq.set(copy, seq);
+      return copy;
+    });
+  }
+
   private captureState(): UndoEntry {
     const pending: Record<string, unknown[]> = {};
     for (const key of Object.keys(this)) {
       const value = (this as unknown as Record<string, unknown>)[key];
-      // Shallow copies keep op object identity, which _tableOpSeq is keyed by.
-      if (key.startsWith('_pending') && Array.isArray(value)) pending[key] = value.slice();
+      if (key.startsWith('_pending') && Array.isArray(value)) pending[key] = this.copyQueue(value);
     }
     // Direct text updates find their paragraph by object identity at save time
     // (applyDirectTextUpdatesToXml). The memory model comes back from JSON, so
@@ -648,7 +666,7 @@ export class HwpxDocument {
     this.deserializeContent(entry.content);
     this.clearAllPendingArrays();
     const self = this as unknown as Record<string, unknown>;
-    for (const [key, ops] of Object.entries(entry.pending)) self[key] = ops.slice();
+    for (const [key, ops] of Object.entries(entry.pending)) self[key] = this.copyQueue(ops);
     this._pendingDirectTextUpdates = entry.textUpdates.map(({ update, at }) => {
       const element = this._content.sections[update.sectionIndex]?.elements[at];
       const paragraph = at >= 0 && element?.type === 'paragraph' ? element.data : undefined;
