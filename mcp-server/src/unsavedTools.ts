@@ -26,17 +26,40 @@ export const UNSAVED_TOOLS: ReadonlyMap<string, string> = new Map([
   ['insert_rect', 'rectangle shapes'],
   ['insert_ellipse', 'ellipse shapes'],
   ['update_image_size', 'image size changes'],
+  ['set_cell_properties', 'cell size, background or alignment changes'],
   ['set_column_def', 'column definitions'],
   ['set_page_settings', 'page size and margins'],
   ['apply_style', 'paragraph style changes'],
 ]);
 
-export function unsavedToolError(tool: string): string | null {
+/**
+ * Arguments that a partly saved tool accepts but save_document does not
+ * write: the new charPr is built with textColor="#000000" shadeColor="none"
+ * and no underline/strikeout, the new paraPr with every margin and the
+ * first-line indent at 0. The rest of the tool is saved, so only a request
+ * that uses one of these is refused — whole, before anything changes.
+ */
+export const UNSAVED_ARGS: ReadonlyMap<string, readonly string[]> = new Map([
+  ['set_text_style', ['font_color', 'background_color', 'underline', 'strikethrough']],
+  ['set_paragraph_style', ['margin_left', 'margin_right', 'margin_top', 'margin_bottom', 'first_line_indent']],
+]);
+
+export function unsavedToolError(tool: string, args?: Record<string, unknown>): string | null {
   const what = UNSAVED_TOOLS.get(tool);
-  if (!what) return null;
-  return `${tool} is not available: save_document does not write ${what} to the HWPX file yet, ` +
-    'so the change would be lost on save. Nothing was changed.';
+  if (what) {
+    return `${tool} is not available: save_document does not write ${what} to the HWPX file yet, ` +
+      'so the change would be lost on save. Nothing was changed.';
+  }
+  const used = (UNSAVED_ARGS.get(tool) ?? []).filter(name => args?.[name] !== undefined);
+  if (used.length > 0) {
+    return `${tool} cannot save ${used.join(', ')}: save_document does not write ` +
+      `${used.length > 1 ? 'these settings' : 'this setting'} to the HWPX file yet. ` +
+      'Nothing was changed; call again without them.';
+  }
+  return null;
 }
 
 /** Prefix for the tool description, so clients see the limit before calling. */
+export const UNSAVED_ARG_NOTE = '⛔ Not saved yet — a call that uses this returns an error. ';
+
 export const UNSAVED_TOOL_NOTE = '⛔ NOT AVAILABLE — save_document cannot write this change to the file yet; calling it returns an error. ';

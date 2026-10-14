@@ -231,7 +231,7 @@ npm 서버의 저장 임시 파일·백업 보호는 파일 접근 범위 제한
 | `get_document_text` | 문서 전체 텍스트 추출 | `doc_id` |
 | `get_document_structure` | 문서 구조 조회 (섹션/단락/테이블/이미지 수) | `doc_id` |
 | `get_document_metadata` | 메타데이터 조회 (제목, 저자, 날짜 등) | `doc_id` |
-| `set_document_metadata` | 메타데이터 수정 (header.xml 에 자리가 없는 필드는 저장되지 않아 오류 — 새 문서·한컴 저장본) | `doc_id`, `title?`, `creator?`, `subject?`, `description?` |
+| `set_document_metadata` | 메타데이터 수정 (header.xml 에 자리가 없는 필드·빈 값으로 지우기는 저장되지 않아 오류 — 새 문서·한컴 저장본) | `doc_id`, `title?`, `creator?`, `subject?`, `description?` |
 | `get_word_count` | 글자수/단어수 통계 | `doc_id` |
 
 ### 📝 단락 (Paragraphs) - 8개
@@ -252,9 +252,9 @@ npm 서버의 저장 임시 파일·백업 보호는 파일 접근 범위 제한
 | Tool | 설명 | 주요 파라미터 |
 |------|------|--------------|
 | `get_text_style` | 글자 서식 조회 (폰트/크기/색상 등) | `doc_id`, `section_index`, `paragraph_index`, `run_index?` |
-| `set_text_style` | 글자 서식 설정 | `doc_id`, `section_index`, `paragraph_index`, `bold?`, `italic?`, `underline?`, `strikethrough?`, `font_name?`, `font_size?`, `font_color?`, `background_color?` |
+| `set_text_style` | 글자 서식 설정 (글자색·배경색·밑줄·취소선은 저장되지 않아 쓰면 오류) | `doc_id`, `section_index`, `paragraph_index`, `bold?`, `italic?`, `underline?`, `strikethrough?`, `font_name?`, `font_size?`, `font_color?`, `background_color?` |
 | `get_paragraph_style` | 문단 서식 조회 (정렬/줄간격/여백 등) | `doc_id`, `section_index`, `paragraph_index` |
-| `set_paragraph_style` | 문단 서식 설정 | `doc_id`, `section_index`, `paragraph_index`, `align?`, `line_spacing?`, `margin_*?`, `first_line_indent?` |
+| `set_paragraph_style` | 문단 서식 설정 (여백·첫 줄 들여쓰기는 저장되지 않아 쓰면 오류) | `doc_id`, `section_index`, `paragraph_index`, `align?`, `line_spacing?`, `margin_*?`, `first_line_indent?` |
 
 ### 🔍 검색/치환 (Search & Replace) - 4개
 
@@ -273,7 +273,7 @@ npm 서버의 저장 임시 파일·백업 보호는 파일 접근 범위 제한
 | `get_table` | 특정 테이블 전체 데이터 조회 | `doc_id`, `section_index`, `table_index` |
 | `get_table_cell` | 특정 셀 내용 조회 | `doc_id`, `section_index`, `table_index`, `row`, `col` |
 | `update_table_cell` | 셀 내용 수정 (스타일 보존) | `doc_id`, `section_index`, `table_index`, `row`, `col`, `text`, `char_shape_id?` |
-| `set_cell_properties` | 셀 속성 설정 (크기/배경색/정렬) | `doc_id`, `section_index`, `table_index`, `row`, `col`, `width?`, `height?`, `background_color?`, `vertical_align?` |
+| `set_cell_properties` | 셀 속성 설정 (크기/배경색/정렬) ⛔ 저장 미지원 — 호출 시 오류 | `doc_id`, `section_index`, `table_index`, `row`, `col`, `width?`, `height?`, `background_color?`, `vertical_align?` |
 | `insert_table` | 새 테이블 삽입 | `doc_id`, `section_index`, `after_index`, `rows`, `cols`, `width?` |
 | `insert_table_row` | 테이블에 행 삽입 | `doc_id`, `section_index`, `table_index`, `after_row`, `cell_texts?` |
 | `delete_table_row` | 테이블에서 행 삭제 | `doc_id`, `section_index`, `table_index`, `row_index` |

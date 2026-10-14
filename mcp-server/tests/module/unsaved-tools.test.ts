@@ -9,7 +9,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import JSZip from 'jszip';
 import { HwpxDocument } from '../../src/HwpxDocument';
-import { UNSAVED_TOOLS } from '../../src/unsavedTools';
+import { UNSAVED_ARGS, UNSAVED_TOOLS, unsavedToolError } from '../../src/unsavedTools';
 import { reopen, roundTrip, withSectionXml } from '../helpers/hwpx';
 
 /** 저장본의 XML·hpf 전부 (그림 등 바이너리는 뺀다). */
@@ -30,11 +30,12 @@ const MEMO =
   '<hp:subList><hp:p id="0" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0">' +
   '<hp:run charPrIDRef="0"><hp:t>MK_MEMO</hp:t></hp:run></hp:p></hp:subList></hp:fieldBegin></hp:ctrl>';
 
-/** 편집할 문서: 문단 셋, 그림 하나, 메모 하나가 이미 파일에 든 상태. */
+/** 편집할 문서: 문단 셋, 그림 하나, 메모 하나, 1×1 표 하나가 이미 파일에 든 상태. */
 let fixture: Buffer;
 beforeAll(async () => {
   const seed = HwpxDocument.createNew('u', 'unsaved');
   for (let i = 0; i < 3; i++) seed.insertParagraph(0, i - 1, `문단 ${i}`);
+  seed.insertTable(0, 2, 1, 1);
   seed.insertImage(0, 2, { data: PNG, mimeType: 'image/png', width: 20, height: 20 });
   const withMemo = await withSectionXml((await roundTrip(seed)).doc, xml =>
     xml.replace('<hp:t>문단 1</hp:t>', `${MEMO}<hp:t>문단 1</hp:t><hp:ctrl><hp:fieldEnd beginIDRef="${MEMO_ID}" fieldid="${MEMO_ID}"/></hp:ctrl>`));
@@ -57,6 +58,9 @@ const cases: Record<string, (d: HwpxDocument) => boolean> = {
     const img = d.getImages()[0];
     return !!img && d.updateImageSize(img.id, 40, 60) && d.getImages()[0].width === 40;
   },
+  set_cell_properties: d =>
+    d.setCellProperties(0, 0, 0, 0, { width: 12345, height: 5432, backgroundColor: '#123456' }) &&
+    d.getTableCell(0, 0, 0, 0)?.cell.backgroundColor === '#123456',
   set_column_def: d => d.setColumnDef(0, 2, 10),
   set_page_settings: d => d.setPageSettings(0, { width: 300, height: 400, marginTop: 10 }) &&
     d.getPageSettings(0)?.width === 300,
@@ -73,10 +77,12 @@ describe('저장 단계가 없는 편집 (도구를 막는 근거)', () => {
     expect([...UNSAVED_TOOLS.keys()].sort()).toEqual(Object.keys(cases).sort());
   });
 
-  it('재료 문서에 메모와 그림이 들어 있다', async () => {
+  it('재료 문서에 메모·그림·표가 들어 있다', async () => {
     const doc = await reopen(fixture);
     expect(doc.getMemos().map(m => m.id)).toEqual([MEMO_ID]);
     expect(doc.getImages()).toHaveLength(1);
+    expect(doc.getTableCell(0, 0, 0, 0)).not.toBeNull();
+    expect(doc.content.sections[0].elements[1].type).toBe('paragraph');
   });
 
   for (const [tool, edit] of Object.entries(cases)) {
@@ -87,6 +93,54 @@ describe('저장 단계가 없는 편집 (도구를 막는 근거)', () => {
       expect(await savedXml(doc)).toBe(untouched);
     });
   }
+});
+
+describe('일부만 저장되는 서식 도구 (입력 항목을 막는 근거)', () => {
+  // 새로 만든 charPr·paraPr 에 요청한 값이 들어갔는지 본다. 저장되게 고쳐지면 실패한다 —
+  // 그때 UNSAVED_ARGS 에서 그 항목을 빼고 여기 줄도 지운다.
+  async function headerAfter(edit: (d: HwpxDocument) => void): Promise<string> {
+    const doc = await reopen(fixture);
+    edit(doc);
+    const zip = await JSZip.loadAsync(await doc.save());
+    return zip.file('Contents/header.xml')!.async('string');
+  }
+
+  it('도구 설명과 막는 입력 항목이 이 시험과 같다', () => {
+    expect(Object.fromEntries(UNSAVED_ARGS)).toEqual({
+      set_text_style: ['font_color', 'background_color', 'underline', 'strikethrough'],
+      set_paragraph_style: ['margin_left', 'margin_right', 'margin_top', 'margin_bottom', 'first_line_indent'],
+    });
+  });
+
+  it('set_text_style: 굵기는 저장되고 글자색·배경색·밑줄·취소선은 저장되지 않는다', async () => {
+    const header = await headerAfter(d => d.applyCharacterStyle(0, 1, 0, {
+      bold: true, fontColor: '#FF0000', backgroundColor: '#FFFF00', underline: true, strikethrough: true,
+    }));
+    const added = header.slice(header.lastIndexOf('<hh:charPr '));
+    expect(added).toContain('<hh:bold/>');
+    expect(header).not.toMatch(/textColor="#FF0000"/i);
+    expect(header).not.toMatch(/shadeColor="#FFFF00"/i);
+    expect(added).not.toMatch(/<hh:underline[^>]*type="BOTTOM"/);
+    expect(added).not.toMatch(/<hh:strikeout[^>]*shape="(SOLID|DASH|DOT)/);
+  });
+
+  it('set_paragraph_style: 여백·첫 줄 들여쓰기는 모두 0 으로 저장된다', async () => {
+    const header = await headerAfter(d => d.applyParagraphStyle(0, 1, {
+      align: 'center', marginLeft: 20, marginRight: 20, marginTop: 30, marginBottom: 30, firstLineIndent: 10,
+    }));
+    const added = header.slice(header.lastIndexOf('<hh:paraPr '));
+    expect(added).toContain('horizontal="CENTER"');
+    for (const tag of ['intent', 'left', 'right', 'prev', 'next']) {
+      expect(added).toMatch(new RegExp(`<hc:${tag} value="0"`));
+    }
+  });
+
+  it('막는 항목을 쓰면 오류, 없으면 통과', () => {
+    expect(unsavedToolError('set_text_style', { bold: true, font_color: '#FF0000' })).toMatch(/cannot save font_color/);
+    expect(unsavedToolError('set_text_style', { bold: true })).toBeNull();
+    expect(unsavedToolError('set_paragraph_style', { align: 'center', margin_left: 0 })).toMatch(/margin_left/);
+    expect(unsavedToolError('set_paragraph_style', { align: 'center' })).toBeNull();
+  });
 });
 
 describe('문서 정보(set_document_metadata)', () => {

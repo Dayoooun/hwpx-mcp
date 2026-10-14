@@ -84,7 +84,7 @@ npm run build
 | `close_document` | 문서 닫기 |
 | `list_open_documents` | 열린 문서 목록 |
 | `get_document_metadata` | 메타데이터 조회 |
-| `set_document_metadata` | 메타데이터 설정 (header.xml 에 자리가 없는 필드는 오류) |
+| `set_document_metadata` | 메타데이터 설정 (header.xml 에 자리가 없는 필드·빈 값은 오류) |
 
 ### 문서 조회 (9개)
 | 도구 | 설명 |
@@ -118,9 +118,9 @@ npm run build
 | 도구 | 설명 |
 |------|------|
 | `get_text_style` | 문자 스타일 조회 |
-| `set_text_style` | 문자 스타일 설정 (폰트, 크기, 볼드 등) |
+| `set_text_style` | 문자 스타일 설정 (폰트, 크기, 볼드 등) (글자색·배경색·밑줄·취소선은 저장되지 않아 쓰면 오류) |
 | `get_paragraph_style` | 문단 스타일 조회 |
-| `set_paragraph_style` | 문단 스타일 설정 (정렬, 줄간격 등) |
+| `set_paragraph_style` | 문단 스타일 설정 (정렬, 줄간격 등) (여백·첫 줄 들여쓰기는 저장되지 않아 쓰면 오류) |
 | `get_styles` | 스타일 목록 |
 | `get_char_shapes` | 문자 모양 전체 |
 | `get_para_shapes` | 문단 모양 전체 |
@@ -158,7 +158,7 @@ npm run build
 | `delete_table` | 테이블 삭제 |
 | `update_table_cell` | 셀 수정 |
 | `replace_text_in_cell` | 셀 텍스트 치환 |
-| `set_cell_properties` | 셀 속성 |
+| `set_cell_properties` | 셀 속성 ⛔ 저장 미지원 — 호출 시 오류 |
 | `insert_table_row` | 행 추가 |
 | `delete_table_row` | 행 삭제 |
 | `insert_table_column` | 열 추가 |
