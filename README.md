@@ -231,7 +231,7 @@ npm 서버의 저장 임시 파일·백업 보호는 파일 접근 범위 제한
 | `get_document_text` | 문서 전체 텍스트 추출 | `doc_id` |
 | `get_document_structure` | 문서 구조 조회 (섹션/단락/테이블/이미지 수) | `doc_id` |
 | `get_document_metadata` | 메타데이터 조회 (제목, 저자, 날짜 등) | `doc_id` |
-| `set_document_metadata` | 메타데이터 수정 | `doc_id`, `title?`, `creator?`, `subject?`, `description?` |
+| `set_document_metadata` | 메타데이터 수정 ⛔ 저장 미지원 — 호출 시 오류 | `doc_id`, `title?`, `creator?`, `subject?`, `description?` |
 | `get_word_count` | 글자수/단어수 통계 | `doc_id` |
 
 ### 📝 단락 (Paragraphs) - 8개
@@ -303,9 +303,9 @@ npm 서버의 저장 임시 파일·백업 보호는 파일 접근 범위 제한
 
 | Tool | 설명 | 주요 파라미터 |
 |------|------|--------------|
-| `insert_line` | 선 도형 삽입 | `doc_id`, `section_index`, `after_index`, `x1`, `y1`, `x2`, `y2`, `stroke_color?`, `stroke_width?` |
-| `insert_rect` | 사각형 도형 삽입 | `doc_id`, `section_index`, `after_index`, `x`, `y`, `width`, `height`, `fill_color?`, `stroke_color?` |
-| `insert_ellipse` | 타원 도형 삽입 | `doc_id`, `section_index`, `after_index`, `cx`, `cy`, `rx`, `ry`, `fill_color?`, `stroke_color?` |
+| `insert_line` | 선 도형 삽입 ⛔ 저장 미지원 — 호출 시 오류 | `doc_id`, `section_index`, `after_index`, `x1`, `y1`, `x2`, `y2`, `stroke_color?`, `stroke_width?` |
+| `insert_rect` | 사각형 도형 삽입 ⛔ 저장 미지원 — 호출 시 오류 | `doc_id`, `section_index`, `after_index`, `x`, `y`, `width`, `height`, `fill_color?`, `stroke_color?` |
+| `insert_ellipse` | 타원 도형 삽입 ⛔ 저장 미지원 — 호출 시 오류 | `doc_id`, `section_index`, `after_index`, `cx`, `cy`, `rx`, `ry`, `fill_color?`, `stroke_color?` |
 
 ### 📑 머리글/바닥글 (Header/Footer) - 4개
 
@@ -321,32 +321,32 @@ npm 서버의 저장 임시 파일·백업 보호는 파일 접근 범위 제한
 | Tool | 설명 | 주요 파라미터 |
 |------|------|--------------|
 | `get_footnotes` | 문서 내 모든 각주 목록 | `doc_id` |
-| `insert_footnote` | 특정 위치에 각주 삽입 | `doc_id`, `section_index`, `paragraph_index`, `text` |
+| `insert_footnote` | 특정 위치에 각주 삽입 ⛔ 저장 미지원 — 호출 시 오류 | `doc_id`, `section_index`, `paragraph_index`, `text` |
 | `get_endnotes` | 문서 내 모든 미주 목록 | `doc_id` |
-| `insert_endnote` | 특정 위치에 미주 삽입 | `doc_id`, `section_index`, `paragraph_index`, `text` |
+| `insert_endnote` | 특정 위치에 미주 삽입 ⛔ 저장 미지원 — 호출 시 오류 | `doc_id`, `section_index`, `paragraph_index`, `text` |
 
 ### 🔗 북마크/하이퍼링크 (Bookmarks/Hyperlinks) - 4개
 
 | Tool | 설명 | 주요 파라미터 |
 |------|------|--------------|
 | `get_bookmarks` | 문서 내 모든 북마크 목록 | `doc_id` |
-| `insert_bookmark` | 특정 위치에 북마크 삽입 | `doc_id`, `section_index`, `paragraph_index`, `name` |
+| `insert_bookmark` | 특정 위치에 북마크 삽입 ⛔ 저장 미지원 — 호출 시 오류 | `doc_id`, `section_index`, `paragraph_index`, `name` |
 | `get_hyperlinks` | 문서 내 모든 하이퍼링크 목록 | `doc_id` |
-| `insert_hyperlink` | 하이퍼링크 삽입 | `doc_id`, `section_index`, `paragraph_index`, `url`, `text` |
+| `insert_hyperlink` | 하이퍼링크 삽입 ⛔ 저장 미지원 — 호출 시 오류 | `doc_id`, `section_index`, `paragraph_index`, `url`, `text` |
 
 ### ➗ 수식 (Equations) - 2개
 
 | Tool | 설명 | 주요 파라미터 |
 |------|------|--------------|
 | `get_equations` | 문서 내 모든 수식 목록 | `doc_id` |
-| `insert_equation` | 수식 삽입 (HWP 수식 스크립트 형식) | `doc_id`, `section_index`, `after_index`, `script` |
+| `insert_equation` | 수식 삽입 (HWP 수식 스크립트 형식) ⛔ 저장 미지원 — 호출 시 오류 | `doc_id`, `section_index`, `after_index`, `script` |
 
 ### 💬 메모 (Memos/Comments) - 3개
 
 | Tool | 설명 | 주요 파라미터 |
 |------|------|--------------|
 | `get_memos` | 문서 내 모든 메모/주석 목록 | `doc_id` |
-| `insert_memo` | 메모/주석 삽입 | `doc_id`, `section_index`, `paragraph_index`, `content`, `author?` |
+| `insert_memo` | 메모/주석 삽입 ⛔ 저장 미지원 — 호출 시 오류 | `doc_id`, `section_index`, `paragraph_index`, `content`, `author?` |
 | `delete_memo` | 메모/주석 삭제 | `doc_id`, `memo_id` |
 
 ### 📚 섹션 (Sections) - 5개
@@ -373,7 +373,7 @@ npm 서버의 저장 임시 파일·백업 보호는 파일 접근 범위 제한
 | Tool | 설명 | 주요 파라미터 |
 |------|------|--------------|
 | `get_column_def` | 단(Column) 설정 조회 | `doc_id`, `section_index?` |
-| `set_column_def` | 단 설정 변경 (다단 편집) | `doc_id`, `count`, `section_index?`, `type?`, `same_size?`, `gap?` |
+| `set_column_def` | 단 설정 변경 (다단 편집) ⛔ 저장 미지원 — 호출 시 오류 | `doc_id`, `count`, `section_index?`, `type?`, `same_size?`, `gap?` |
 
 ### 📤 내보내기 (Export) - 2개
 

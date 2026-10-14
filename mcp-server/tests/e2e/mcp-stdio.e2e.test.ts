@@ -28,8 +28,8 @@ beforeAll(async () => {
   mcp = await McpClient.start(workDir);
 }, 180_000);
 
-afterAll(() => {
-  mcp?.close();
+afterAll(async () => {
+  await mcp?.close();
   if (workDir) fs.rmSync(workDir, { recursive: true, force: true });
 });
 

@@ -400,17 +400,13 @@ export class HwpxDocument {
     const extension = path.toLowerCase();
 
     if (extension.endsWith('.hwp')) {
-      // HWP parsing would go here - for now return empty content
-      const content: HwpxContent = {
-        metadata: {},
-        sections: [],
-        images: new Map(),
-        binItems: new Map(),
-        binData: new Map(),
-        footnotes: [],
-        endnotes: [],
-      };
-      return new HwpxDocument(id, path, null, content, 'hwp');
+      // The HWP 5 binary format is not parsed. Opening it used to succeed with
+      // zero sections, so callers read an empty document and reported that the
+      // file had no text. Say so instead.
+      throw new Error(
+        'HWP (HWP 5 binary) files are not supported: the content cannot be read. ' +
+        'Save the file as HWPX in Hancom Office (or convert it) and open the .hwpx.'
+      );
     } else {
       const zip = await JSZip.loadAsync(data);
       const content = await HwpxParser.parse(zip);

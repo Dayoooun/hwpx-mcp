@@ -84,7 +84,7 @@ npm run build
 | `close_document` | 문서 닫기 |
 | `list_open_documents` | 열린 문서 목록 |
 | `get_document_metadata` | 메타데이터 조회 |
-| `set_document_metadata` | 메타데이터 설정 |
+| `set_document_metadata` | 메타데이터 설정 ⛔ 저장 미지원 — 호출 시 오류 |
 
 ### 문서 조회 (9개)
 | 도구 | 설명 |
@@ -126,7 +126,7 @@ npm run build
 | `get_para_shapes` | 문단 모양 전체 |
 | `apply_style` | 스타일 적용 |
 | `get_column_def` | 단 설정 조회 |
-| `set_column_def` | 단 설정 |
+| `set_column_def` | 단 설정 ⛔ 저장 미지원 — 호출 시 오류 |
 
 ### 내어쓰기 (8개)
 | 도구 | 설명 |
@@ -176,9 +176,9 @@ npm run build
 | `get_footer` | 꼬리글 조회 |
 | `set_footer` | 꼬리글 설정 |
 | `get_footnotes` | 각주 목록 |
-| `insert_footnote` | 각주 삽입 |
+| `insert_footnote` | 각주 삽입 ⛔ 저장 미지원 — 호출 시 오류 |
 | `get_endnotes` | 미주 목록 |
-| `insert_endnote` | 미주 삽입 |
+| `insert_endnote` | 미주 삽입 ⛔ 저장 미지원 — 호출 시 오류 |
 
 ### 이미지 (7개)
 | 도구 | 설명 |
@@ -195,25 +195,25 @@ npm run build
 | 도구 | 설명 |
 |------|------|
 | `get_bookmarks` | 북마크 목록 |
-| `insert_bookmark` | 북마크 삽입 |
+| `insert_bookmark` | 북마크 삽입 ⛔ 저장 미지원 — 호출 시 오류 |
 | `get_hyperlinks` | 하이퍼링크 목록 |
-| `insert_hyperlink` | 하이퍼링크 삽입 |
+| `insert_hyperlink` | 하이퍼링크 삽입 ⛔ 저장 미지원 — 호출 시 오류 |
 
 ### 수식/메모 (6개)
 | 도구 | 설명 |
 |------|------|
 | `get_equations` | 수식 목록 |
-| `insert_equation` | 수식 삽입 |
+| `insert_equation` | 수식 삽입 ⛔ 저장 미지원 — 호출 시 오류 |
 | `get_memos` | 메모 목록 |
-| `insert_memo` | 메모 삽입 |
+| `insert_memo` | 메모 삽입 ⛔ 저장 미지원 — 호출 시 오류 |
 | `delete_memo` | 메모 삭제 |
 
 ### 도형 (3개)
 | 도구 | 설명 |
 |------|------|
-| `insert_line` | 선 삽입 |
-| `insert_rect` | 사각형 삽입 |
-| `insert_ellipse` | 타원 삽입 |
+| `insert_line` | 선 삽입 ⛔ 저장 미지원 — 호출 시 오류 |
+| `insert_rect` | 사각형 삽입 ⛔ 저장 미지원 — 호출 시 오류 |
+| `insert_ellipse` | 타원 삽입 ⛔ 저장 미지원 — 호출 시 오류 |
 
 ### 섹션/페이지 (5개)
 | 도구 | 설명 |

@@ -136,7 +136,17 @@ export class McpClient {
     return r.body;
   }
 
-  close() {
-    this.proc.kill();
+  /**
+   * Stop the server and wait until it has exited. The server runs with the
+   * test's temp folder as its cwd; on Windows that folder cannot be removed
+   * while the process is alive, so afterAll failed with EPERM when it deleted
+   * the folder right after a kill() that had not taken effect yet.
+   */
+  close(): Promise<void> {
+    if (this.proc.exitCode !== null || this.proc.signalCode !== null) return Promise.resolve();
+    return new Promise(resolve => {
+      this.proc.once('exit', () => resolve());
+      this.proc.kill();
+    });
   }
 }

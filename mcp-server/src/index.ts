@@ -11,6 +11,7 @@ import { HwpxDocument, ImagePositionOptions } from './HwpxDocument';
 import { HangingIndentCalculator } from './HangingIndentCalculator';
 import { findMalformedXmlParts } from './XmlWellFormed';
 import { success, error, findMissingArgs as missingArgsOf } from './ToolResult';
+import { UNSAVED_TOOLS, UNSAVED_TOOL_NOTE, unsavedToolError } from './unsavedTools';
 
 const MCP_VERSION: string = require('../package.json').version;
 console.error(`[HWPX MCP] Server starting - ${MCP_VERSION} - ${new Date().toISOString()}`);
@@ -2160,7 +2161,11 @@ const server = new Server(
   }
 );
 
-server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
+server.setRequestHandler(ListToolsRequestSchema, async () => ({
+  tools: tools.map(tool =>
+    UNSAVED_TOOLS.has(tool.name) ? { ...tool, description: UNSAVED_TOOL_NOTE + tool.description } : tool
+  ),
+}));
 
 // ============================================================
 // Required-argument validation
@@ -2183,6 +2188,9 @@ function findMissingArgs(toolName: string, args: Record<string, unknown> | undef
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
+
+  const unsaved = unsavedToolError(name);
+  if (unsaved) return error(unsaved);
 
   const missing = findMissingArgs(name, args as Record<string, unknown> | undefined);
   if (missing.length > 0) {
