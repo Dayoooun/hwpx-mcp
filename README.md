@@ -252,9 +252,9 @@ npm 서버의 저장 임시 파일·백업 보호는 파일 접근 범위 제한
 | Tool | 설명 | 주요 파라미터 |
 |------|------|--------------|
 | `get_text_style` | 글자 서식 조회 (폰트/크기/색상 등) | `doc_id`, `section_index`, `paragraph_index`, `run_index?` |
-| `set_text_style` | 글자 서식 설정 (글자색·배경색·밑줄·취소선은 저장되지 않아 쓰면 오류) | `doc_id`, `section_index`, `paragraph_index`, `bold?`, `italic?`, `underline?`, `strikethrough?`, `font_name?`, `font_size?`, `font_color?`, `background_color?` |
+| `set_text_style` | 글자 서식 설정 (글자색·배경색·밑줄·취소선은 저장을 보장하지 못해 끄기를 포함해 쓰면 오류) | `doc_id`, `section_index`, `paragraph_index`, `bold?`, `italic?`, `underline?`, `strikethrough?`, `font_name?`, `font_size?`, `font_color?`, `background_color?` |
 | `get_paragraph_style` | 문단 서식 조회 (정렬/줄간격/여백 등) | `doc_id`, `section_index`, `paragraph_index` |
-| `set_paragraph_style` | 문단 서식 설정 (여백·첫 줄 들여쓰기는 저장되지 않아 쓰면 오류) | `doc_id`, `section_index`, `paragraph_index`, `align?`, `line_spacing?`, `margin_*?`, `first_line_indent?` |
+| `set_paragraph_style` | 문단 서식 설정 (여백·첫 줄 들여쓰기는 저장을 보장하지 못해 쓰면 오류) | `doc_id`, `section_index`, `paragraph_index`, `align?`, `line_spacing?`, `margin_*?`, `first_line_indent?` |
 
 ### 🔍 검색/치환 (Search & Replace) - 4개
 

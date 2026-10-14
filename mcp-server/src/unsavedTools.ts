@@ -33,11 +33,14 @@ export const UNSAVED_TOOLS: ReadonlyMap<string, string> = new Map([
 ]);
 
 /**
- * Arguments that a partly saved tool accepts but save_document does not
- * write: the new charPr is built with textColor="#000000" shadeColor="none"
- * and no underline/strikeout, the new paraPr with every margin and the
- * first-line indent at 0. The rest of the tool is saved, so only a request
- * that uses one of these is refused — whole, before anything changes.
+ * Arguments that a partly saved tool accepts but save_document cannot write
+ * reliably: the new charPr is built with textColor="#000000" shadeColor="none"
+ * and the underline/strikeout of the document's default charPr (id 0), the
+ * new paraPr with every margin and the first-line indent at 0. A request can
+ * still land by coincidence (black text, margin 0, underline=false when the
+ * default has none) but not in general, so turning a setting off is refused
+ * as well. The rest of the tool is saved, so only a request that uses one of
+ * these is refused — whole, before anything changes.
  */
 export const UNSAVED_ARGS: ReadonlyMap<string, readonly string[]> = new Map([
   ['set_text_style', ['font_color', 'background_color', 'underline', 'strikethrough']],
@@ -52,14 +55,14 @@ export function unsavedToolError(tool: string, args?: Record<string, unknown>): 
   }
   const used = (UNSAVED_ARGS.get(tool) ?? []).filter(name => args?.[name] !== undefined);
   if (used.length > 0) {
-    return `${tool} cannot save ${used.join(', ')}: save_document does not write ` +
-      `${used.length > 1 ? 'these settings' : 'this setting'} to the HWPX file yet. ` +
+    return `${tool} cannot save ${used.join(', ')}: save_document cannot write ` +
+      `${used.length > 1 ? 'these settings' : 'this setting'} to the HWPX file reliably yet (turning it off included). ` +
       'Nothing was changed; call again without them.';
   }
   return null;
 }
 
 /** Prefix for the tool description, so clients see the limit before calling. */
-export const UNSAVED_ARG_NOTE = '⛔ Not saved yet — a call that uses this returns an error. ';
+export const UNSAVED_ARG_NOTE = '⛔ Not saved yet — a call that uses this (true or false) returns an error. ';
 
 export const UNSAVED_TOOL_NOTE = '⛔ NOT AVAILABLE — save_document cannot write this change to the file yet; calling it returns an error. ';
