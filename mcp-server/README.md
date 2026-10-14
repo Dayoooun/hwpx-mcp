@@ -84,7 +84,7 @@ npm run build
 | `close_document` | 문서 닫기 |
 | `list_open_documents` | 열린 문서 목록 |
 | `get_document_metadata` | 메타데이터 조회 |
-| `set_document_metadata` | 메타데이터 설정 ⛔ 저장 미지원 — 호출 시 오류 |
+| `set_document_metadata` | 메타데이터 설정 (header.xml 에 자리가 없는 필드는 오류) |
 
 ### 문서 조회 (9개)
 | 도구 | 설명 |
@@ -124,7 +124,7 @@ npm run build
 | `get_styles` | 스타일 목록 |
 | `get_char_shapes` | 문자 모양 전체 |
 | `get_para_shapes` | 문단 모양 전체 |
-| `apply_style` | 스타일 적용 |
+| `apply_style` | 스타일 적용 ⛔ 저장 미지원 — 호출 시 오류 |
 | `get_column_def` | 단 설정 조회 |
 | `set_column_def` | 단 설정 ⛔ 저장 미지원 — 호출 시 오류 |
 
@@ -185,7 +185,7 @@ npm run build
 |------|------|
 | `get_images` | 이미지 목록 |
 | `insert_image` | 이미지 삽입 |
-| `update_image_size` | 이미지 크기 변경 |
+| `update_image_size` | 이미지 크기 변경 ⛔ 저장 미지원 — 호출 시 오류 |
 | `delete_image` | 이미지 삭제 |
 | `render_mermaid` | Mermaid 다이어그램 삽입 |
 | `insert_image_in_cell` | 셀에 이미지 삽입 |
@@ -206,7 +206,7 @@ npm run build
 | `insert_equation` | 수식 삽입 ⛔ 저장 미지원 — 호출 시 오류 |
 | `get_memos` | 메모 목록 |
 | `insert_memo` | 메모 삽입 ⛔ 저장 미지원 — 호출 시 오류 |
-| `delete_memo` | 메모 삭제 |
+| `delete_memo` | 메모 삭제 ⛔ 저장 미지원 — 호출 시 오류 |
 
 ### 도형 (3개)
 | 도구 | 설명 |
@@ -222,7 +222,7 @@ npm run build
 | `insert_section` | 섹션 삽입 |
 | `delete_section` | 섹션 삭제 |
 | `get_page_settings` | 페이지 설정 조회 |
-| `set_page_settings` | 페이지 설정 |
+| `set_page_settings` | 페이지 설정 ⛔ 저장 미지원 — 호출 시 오류 |
 
 ### 실행 취소/다시 실행 (2개)
 | 도구 | 설명 |

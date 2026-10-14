@@ -31,6 +31,14 @@ describe('저장되지 않는 도구', () => {
     expect((await mcp.ok('get_footnotes', { doc_id: id })).footnotes).toEqual([]);
   });
 
+  it('문서 정보는 저장할 자리가 없는 새 문서에서 오류를 돌려주고 바꾸지 않는다', async () => {
+    const id = (await mcp.ok('create_document', { file_path: path.join(workDir, 'm.hwpx'), title: '처음' })).doc_id;
+    const r = await mcp.call('set_document_metadata', { doc_id: id, title: '바꾼 제목' });
+    expect(r.isError).toBe(true);
+    expect(r.raw).toMatch(/cannot save title/);
+    expect((await mcp.ok('get_document_metadata', { doc_id: id })).metadata?.title).not.toBe('바꾼 제목');
+  });
+
   it('.hwp 파일은 빈 문서로 열리지 않고 오류가 난다', async () => {
     const file = path.join(workDir, 'old.hwp');
     fs.writeFileSync(file, Buffer.from('not parsed'));

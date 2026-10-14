@@ -231,7 +231,7 @@ npm 서버의 저장 임시 파일·백업 보호는 파일 접근 범위 제한
 | `get_document_text` | 문서 전체 텍스트 추출 | `doc_id` |
 | `get_document_structure` | 문서 구조 조회 (섹션/단락/테이블/이미지 수) | `doc_id` |
 | `get_document_metadata` | 메타데이터 조회 (제목, 저자, 날짜 등) | `doc_id` |
-| `set_document_metadata` | 메타데이터 수정 ⛔ 저장 미지원 — 호출 시 오류 | `doc_id`, `title?`, `creator?`, `subject?`, `description?` |
+| `set_document_metadata` | 메타데이터 수정 (header.xml 에 자리가 없는 필드는 저장되지 않아 오류 — 새 문서·한컴 저장본) | `doc_id`, `title?`, `creator?`, `subject?`, `description?` |
 | `get_word_count` | 글자수/단어수 통계 | `doc_id` |
 
 ### 📝 단락 (Paragraphs) - 8개
@@ -287,7 +287,7 @@ npm 서버의 저장 임시 파일·백업 보호는 파일 접근 범위 제한
 | Tool | 설명 | 주요 파라미터 |
 |------|------|--------------|
 | `get_page_settings` | 페이지 설정 조회 (용지 크기/여백) | `doc_id`, `section_index?` |
-| `set_page_settings` | 페이지 설정 변경 | `doc_id`, `section_index?`, `width?`, `height?`, `margin_*?`, `orientation?` |
+| `set_page_settings` | 페이지 설정 변경 ⛔ 저장 미지원 — 호출 시 오류 | `doc_id`, `section_index?`, `width?`, `height?`, `margin_*?`, `orientation?` |
 
 ### 🖼️ 이미지 (Images) - 5개
 
@@ -295,7 +295,7 @@ npm 서버의 저장 임시 파일·백업 보호는 파일 접근 범위 제한
 |------|------|--------------|
 | `get_images` | 문서 내 모든 이미지 목록 | `doc_id` |
 | `insert_image` | 이미지 파일 삽입 (BinData 자동 등록) | `doc_id`, `section_index`, `after_index`, `image_path`, `width?`, `height?` |
-| `update_image_size` | 기존 이미지 크기 변경 | `doc_id`, `section_index`, `image_index`, `width`, `height` |
+| `update_image_size` | 기존 이미지 크기 변경 ⛔ 저장 미지원 — 호출 시 오류 | `doc_id`, `section_index`, `image_index`, `width`, `height` |
 | `delete_image` | 이미지 삭제 | `doc_id`, `section_index`, `image_index` |
 | `render_mermaid` | **Mermaid 다이어그램을 이미지로 삽입** | `doc_id`, `mermaid_code`, `after_index`, `section_index?`, `width?`, `height?`, `theme?`, `background_color?` |
 
@@ -347,7 +347,7 @@ npm 서버의 저장 임시 파일·백업 보호는 파일 접근 범위 제한
 |------|------|--------------|
 | `get_memos` | 문서 내 모든 메모/주석 목록 | `doc_id` |
 | `insert_memo` | 메모/주석 삽입 ⛔ 저장 미지원 — 호출 시 오류 | `doc_id`, `section_index`, `paragraph_index`, `content`, `author?` |
-| `delete_memo` | 메모/주석 삭제 | `doc_id`, `memo_id` |
+| `delete_memo` | 메모/주석 삭제 ⛔ 저장 미지원 — 호출 시 오류 | `doc_id`, `memo_id` |
 
 ### 📚 섹션 (Sections) - 5개
 
@@ -366,7 +366,7 @@ npm 서버의 저장 임시 파일·백업 보호는 파일 접근 범위 제한
 | `get_styles` | 문서에 정의된 스타일 목록 | `doc_id` |
 | `get_char_shapes` | 글자 모양(CharShape) 정의 목록 | `doc_id` |
 | `get_para_shapes` | 문단 모양(ParaShape) 정의 목록 | `doc_id` |
-| `apply_style` | 단락에 스타일 적용 | `doc_id`, `section_index`, `paragraph_index`, `style_id` |
+| `apply_style` | 단락에 스타일 적용 ⛔ 저장 미지원 — 호출 시 오류 | `doc_id`, `section_index`, `paragraph_index`, `style_id` |
 
 ### 📰 단 설정 (Column Layout) - 2개
 

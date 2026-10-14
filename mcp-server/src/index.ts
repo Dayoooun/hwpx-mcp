@@ -2550,6 +2550,14 @@ Call get_tool_guide with: template, table, image, search, read, create`
         if (args?.subject) metadata.subject = args.subject;
         if (args?.description) metadata.description = args.description;
 
+        const unsavable = await doc.unsavableMetadataFields(Object.keys(metadata));
+        if (unsavable.length > 0) {
+          return error(
+            `set_document_metadata cannot save ${unsavable.join(', ')} for this document: save_document ` +
+            'writes metadata only into fields header.xml already holds, and this file has none for them ' +
+            '(Hancom Office keeps metadata in content.hpf). Nothing was changed.'
+          );
+        }
         doc.setMetadata(metadata);
         return success({ metadata: doc.getMetadata() });
       }

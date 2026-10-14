@@ -10303,6 +10303,17 @@ export class HwpxDocument {
   /**
    * Sync metadata to header.xml
    */
+  /**
+   * Metadata fields that save would silently drop for this document.
+   * syncMetadataToZip only rewrites an hh:<field> element header.xml already
+   * has; documents from createNew or Hancom Office have none (Hancom keeps
+   * metadata in content.hpf), so set_document_metadata refuses those fields.
+   */
+  async unsavableMetadataFields(fields: string[]): Promise<string[]> {
+    const headerXml = (await this._zip?.file('Contents/header.xml')?.async('string')) ?? '';
+    return fields.filter(field => !new RegExp(`<hh:${field}[^>]*>[^<]*</hh:${field}>`).test(headerXml));
+  }
+
   private async syncMetadataToZip(): Promise<void> {
     if (!this._zip) return;
 
