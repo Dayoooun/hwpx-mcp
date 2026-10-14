@@ -628,7 +628,9 @@ export class HwpxDocument {
    * Later edits change queued ops in place (a second hanging indent rewrites
    * indentPt, insert/delete section renumbers sectionIndex), and a shared op
    * would carry that change into the history entry, so undo restored memory
-   * but saved the newer value. Ops are flat records, so one level is enough.
+   * but saved the newer value. Those in-place changes touch top-level fields
+   * only, so one level is copied; nested values (style, position, cellTexts)
+   * stay shared and must not be changed in place after queueing.
    * The call-order number lives in _tableOpSeq keyed by the op object; the
    * copy takes over the original's number.
    */
