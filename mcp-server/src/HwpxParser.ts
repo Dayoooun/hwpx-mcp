@@ -1081,12 +1081,17 @@ export class HwpxParser {
   }
 
   private static parseStyleDefs(xml: string): void {
-    const styleRegex = /<hh:style\s+[^>]*id="(\d+)"[^>]*>([\s\S]*?)<\/hh:style>|<hh:style\s+[^>]*id="(\d+)"[^>]*\/>/gi;
+    // Handle self-closing tags first: a paired-tag match must not swallow
+    // following styles after a <hh:style .../> element.
+    const styleRegex = /<hh:style\b[^>]*\/>|<hh:style\b[^>]*>[\s\S]*?<\/hh:style>/gi;
     let match;
 
     while ((match = styleRegex.exec(xml)) !== null) {
-      const id = parseInt(match[1] || match[3]);
       const content = match[0];
+      // A loose "id=" suffix would also match langId="1042" with /i.
+      const idMatch = content.match(/\bid="(\d+)"/i);
+      if (!idMatch) continue;
+      const id = parseInt(idMatch[1], 10);
 
       const styleDef: import('./types').StyleDef = { id };
 
