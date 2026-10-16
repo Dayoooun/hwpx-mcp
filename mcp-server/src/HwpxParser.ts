@@ -2499,6 +2499,11 @@ export class HwpxParser {
     const specialElementRegex = /<hp:(tab|lineBreak|hypen|nbSpace|fwSpace|titleMark|markPenBegin|markPenEnd|autoNum|newNum|compose|dutmal|indexMark|pageHiding|pageNumCtrl|pageNum)(?:\s+([^>]*))?\s*(?:\/>|>([\s\S]*?)<\/hp:\1>)/gi;
     let lastIndex = 0;
     let specialMatch;
+    // Every run produced while a 형광펜 range is open carries its colour — text and special characters alike.
+    const push = (run: TextRun) => {
+      if (markPen.color) run.markPen = { color: markPen.color };
+      runs.push(run);
+    };
 
     while ((specialMatch = specialElementRegex.exec(tContent)) !== null) {
       // Process text before this special element
@@ -2506,11 +2511,7 @@ export class HwpxParser {
         const textBefore = tContent.substring(lastIndex, specialMatch.index);
         const cleanText = textBefore.replace(/<[^>]+>/g, '');
         if (cleanText) {
-          const run: TextRun = { text: this.decodeXmlEntities(cleanText), charStyle, hyperlink, field };
-          if (markPen.color) {
-            run.markPen = { color: markPen.color };
-          }
-          runs.push(run);
+          push({ text: this.decodeXmlEntities(cleanText), charStyle, hyperlink, field });
         }
       }
 
@@ -2530,27 +2531,27 @@ export class HwpxParser {
           else if (leaderType === 3) leader = 'dot';
           else if (leaderType === 4) leader = 'dashDot';
           else if (leaderType === 5) leader = 'dashDotDot';
-          runs.push({ text: '', charStyle, tab: { width, leader }, hyperlink, field });
+          push({ text: '', charStyle, tab: { width, leader }, hyperlink, field });
           break;
         }
         case 'linebreak': {
           // Line break (강제 줄 나눔, SHIFT-ENTER)
-          runs.push({ text: '\n', charStyle, hyperlink, field });
+          push({ text: '\n', charStyle, hyperlink, field });
           break;
         }
         case 'hypen': {
           // Soft hyphen (하이픈, CTRL-SHIFT-'-')
-          runs.push({ text: '\u00AD', charStyle, hyperlink, field });
+          push({ text: '\u00AD', charStyle, hyperlink, field });
           break;
         }
         case 'nbspace': {
           // Non-breaking space (묶음 빈칸, CTRL-ALT-SPACE)
-          runs.push({ text: '\u00A0', charStyle, hyperlink, field });
+          push({ text: '\u00A0', charStyle, hyperlink, field });
           break;
         }
         case 'fwspace': {
           // Full-width space (고정폭 빈칸, ALT-SPACE)
-          runs.push({ text: '\u3000', charStyle, hyperlink, field });
+          push({ text: '\u3000', charStyle, hyperlink, field });
           break;
         }
         case 'titlemark': {
@@ -2558,7 +2559,7 @@ export class HwpxParser {
           const ignoreMatch = attrs.match(/ignore="(true|false|1|0)"/i);
           const ignore = ignoreMatch ? (ignoreMatch[1] === 'true' || ignoreMatch[1] === '1') : false;
           // Title mark doesn't produce visible text but marks the title for TOC
-          runs.push({ text: '', charStyle, hyperlink, field });
+          push({ text: '', charStyle, hyperlink, field });
           break;
         }
         case 'markpenbegin': {
@@ -2575,7 +2576,7 @@ export class HwpxParser {
           const numTypeMatch = attrs.match(/numType="([^"]*)"/);
           const numType = numTypeMatch ? numTypeMatch[1] : 'Page';
           // AutoNum generates a number based on context, we just mark its presence
-          runs.push({ text: '', charStyle, hyperlink, field });
+          push({ text: '', charStyle, hyperlink, field });
           break;
         }
         case 'newnum': {
@@ -2583,7 +2584,7 @@ export class HwpxParser {
           const numTypeMatch = attrs.match(/numType="([^"]*)"/);
           const numMatch = attrs.match(/num="(\d+)"/);
           // NewNum resets the numbering
-          runs.push({ text: '', charStyle, hyperlink, field });
+          push({ text: '', charStyle, hyperlink, field });
           break;
         }
         case 'compose': {
@@ -2592,7 +2593,7 @@ export class HwpxParser {
           // Compose overlaps characters - we extract the text content
           const composeText = innerContent.replace(/<[^>]+>/g, '');
           if (composeText) {
-            runs.push({ text: this.decodeXmlEntities(composeText), charStyle, hyperlink, field });
+            push({ text: this.decodeXmlEntities(composeText), charStyle, hyperlink, field });
           }
           break;
         }
@@ -2604,7 +2605,7 @@ export class HwpxParser {
           const subText = subTextMatch ? subTextMatch[1] : '';
           // For now, just output the main text (subText is annotation above/below)
           if (mainText) {
-            runs.push({ text: this.decodeXmlEntities(mainText), charStyle, hyperlink, field });
+            push({ text: this.decodeXmlEntities(mainText), charStyle, hyperlink, field });
           }
           break;
         }
@@ -2613,25 +2614,25 @@ export class HwpxParser {
           const keyFirstMatch = attrs.match(/keyFirst="([^"]*)"/);
           const keySecondMatch = attrs.match(/keySecond="([^"]*)"/);
           // Index mark is invisible but marks text for index
-          runs.push({ text: '', charStyle, hyperlink, field });
+          push({ text: '', charStyle, hyperlink, field });
           break;
         }
         case 'pagehiding': {
           // Page hiding (감추기)
           // This is a control element, doesn't produce visible text
-          runs.push({ text: '', charStyle, hyperlink, field });
+          push({ text: '', charStyle, hyperlink, field });
           break;
         }
         case 'pagenumctrl': {
           // Page number control (쪽 번호 컨트롤)
           // This is a control element for page number settings
-          runs.push({ text: '', charStyle, hyperlink, field });
+          push({ text: '', charStyle, hyperlink, field });
           break;
         }
         case 'pagenum': {
           // Page number (쪽 번호)
           // This displays the page number - we use a placeholder
-          runs.push({ text: '#', charStyle, hyperlink, field });
+          push({ text: '#', charStyle, hyperlink, field });
           break;
         }
       }
@@ -2644,11 +2645,7 @@ export class HwpxParser {
       const remainingText = tContent.substring(lastIndex);
       const cleanText = remainingText.replace(/<[^>]+>/g, '');
       if (cleanText) {
-        const run: TextRun = { text: this.decodeXmlEntities(cleanText), charStyle, hyperlink, field };
-        if (markPen.color) {
-          run.markPen = { color: markPen.color };
-        }
-        runs.push(run);
+        push({ text: this.decodeXmlEntities(cleanText), charStyle, hyperlink, field });
       }
     }
   }
