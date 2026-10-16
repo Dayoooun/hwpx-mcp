@@ -2426,8 +2426,8 @@ export class HwpxParser {
     textSearchXml = textSearchXml.replace(/<hp:endNote\b[^>]*>[\s\S]*?<\/hp:endNote>/gi, '');
 
     // Walk <hp:t> and run-level markpen tags in document order, so a range opened
-    // outside <hp:t> colours the text that follows it.
-    const allTextTagsRegex = /<hp:t(?:\s[^>]*)?>(?:([\s\S]*?)<\/hp:t>)?|<hp:t\s*\/>|<hp:markpen(Begin|End)\b([^>]*)\/>/gi;
+    // outside <hp:t> colours the text that follows it. Markers may be self-closing or expanded (<x></x>).
+    const allTextTagsRegex = /<hp:t(?:\s[^>]*)?>(?:([\s\S]*?)<\/hp:t>)?|<hp:t\s*\/>|<hp:markpen(Begin|End)\b([^>]*?)\s*(?:\/>|>\s*<\/hp:markpen\2>)/gi;
     let tMatch;
     let foundTextTags = false;
 

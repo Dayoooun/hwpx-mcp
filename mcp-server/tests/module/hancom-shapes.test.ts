@@ -320,6 +320,12 @@ describe('형광펜 범위 (hp:markpenBegin … hp:markpenEnd)', () => {
     expect(markpens(doc, 1)).toEqual([['표 제목', '#FF0000'], ['끝', null]]);
   });
 
+  it('run 직속 표식을 펼친 꼴(<x></x>)로 써도 같은 범위로 읽는다', async () => {
+    const doc = await docWith(x => x.replace(/(<hp:run charPrIDRef="\d+">)<hp:t>A<\/hp:t>/,
+      '$1<hp:markpenBegin color="#FF0000"></hp:markpenBegin><hp:t>표 제목</hp:t><hp:markpenEnd></hp:markpenEnd><hp:t>끝</hp:t>'));
+    expect(markpens(doc, 1)).toEqual([['표 제목', '#FF0000'], ['끝', null]]);
+  });
+
   it('문단 끝까지 닫히지 않은 범위는 다음 문단으로 새지 않는다', async () => {
     const doc = await docWith(x => x.replace('<hp:t>A</hp:t>', '<hp:t>열림<hp:markpenBegin color="#0000FF"/>칠함</hp:t>'));
     expect(markpens(doc, 1)).toEqual([['열림', null], ['칠함', '#0000FF']]);
