@@ -288,3 +288,51 @@ describe('실패한 호출의 결과 (⑥)', () => {
     expect(r.isError).toBe(true);
   });
 });
+
+describe('형광펜 범위 (hp:markpenBegin … hp:markpenEnd)', () => {
+  // 한/글 12.30 HwpApp.dylib 를 REA·Ghidra 로 디컴파일: hp:t 자식 처리기 표(FUN_007a06a8)와 run 자식 표
+  // (FUN_007922b8) 양쪽에 markpenBegin(0x30000029)·markpenEnd(0x3000002a)가 따로 등록된다. 끝은 색이 없고
+  // 시작이 연 범위를 닫는다. rhwp 표본 30건: 같은 hp:t 24 · 다른 run 3 · 다른 문단 3 · hp:t 밖(run 직속) 3.
+  const markpens = (doc: HwpxDocument, i: number) =>
+    doc.getParagraph(0, i)!.runs.filter(r => r.text).map(r => [r.text, r.markPen?.color ?? null]);
+
+  async function docWith(edit: (x: string) => string) {
+    const seed = HwpxDocument.createNew('mp', 'mp');
+    seed.insertParagraph(0, -1, 'A');
+    seed.insertParagraph(0, 0, 'B');
+    return withSectionXml(seed, edit);
+  }
+
+  it('같은 hp:t 안의 범위는 그 글자만 칠한다', async () => {
+    const doc = await docWith(x => x.replace('<hp:t>A</hp:t>', '<hp:t>1<hp:markpenBegin color="#FFFF00"/>명<hp:markpenEnd/>뒤</hp:t>'));
+    expect(markpens(doc, 1)).toEqual([['1', null], ['명', '#FFFF00'], ['뒤', null]]);
+  });
+
+  it('run 경계를 넘는 범위는 다음 run 의 글까지 칠한다', async () => {
+    const doc = await docWith(x => x.replace(/(<hp:run charPrIDRef="(\d+)">)<hp:t>A<\/hp:t><\/hp:run>/,
+      '$1<hp:t>·<hp:markpenBegin color="#00FF00"/></hp:t></hp:run><hp:run charPrIDRef="$2"><hp:t>전체 말뚝<hp:markpenEnd/>)</hp:t></hp:run>'));
+    expect(markpens(doc, 1)).toEqual([['·', null], ['전체 말뚝', '#00FF00'], [')', null]]);
+  });
+
+  it('hp:t 밖(run 직속)에서 열린 범위도 뒤 글을 칠한다', async () => {
+    const doc = await docWith(x => x.replace(/(<hp:run charPrIDRef="\d+">)<hp:t>A<\/hp:t>/,
+      '$1<hp:markpenBegin color="#FF0000"/><hp:t>표 제목<hp:markpenEnd/>끝</hp:t>'));
+    expect(markpens(doc, 1)).toEqual([['표 제목', '#FF0000'], ['끝', null]]);
+  });
+
+  it('문단 끝까지 닫히지 않은 범위는 다음 문단으로 새지 않는다', async () => {
+    const doc = await docWith(x => x.replace('<hp:t>A</hp:t>', '<hp:t>열림<hp:markpenBegin color="#0000FF"/>칠함</hp:t>'));
+    expect(markpens(doc, 1)).toEqual([['열림', null], ['칠함', '#0000FF']]);
+    expect(markpens(doc, 2)).toEqual([['B', null]]);
+  });
+
+  it('저장해도 원래 표식이 그대로 남는다', async () => {
+    const doc = await docWith(x => x.replace(/(<hp:run charPrIDRef="(\d+)">)<hp:t>A<\/hp:t><\/hp:run>/,
+      '$1<hp:t>·<hp:markpenBegin color="#00FF00"/></hp:t></hp:run><hp:run charPrIDRef="$2"><hp:t>전체 말뚝<hp:markpenEnd/>)</hp:t></hp:run>'));
+    const { buf, doc: back } = await roundTrip(doc);
+    const xml = await sectionXml(buf);
+    expect(xml).toContain('<hp:t>·<hp:markpenBegin color="#00FF00"/></hp:t>');
+    expect(xml).toContain('<hp:t>전체 말뚝<hp:markpenEnd/>)</hp:t>');
+    expect(markpens(back, 1)).toEqual([['·', null], ['전체 말뚝', '#00FF00'], [')', null]]);
+  });
+});
