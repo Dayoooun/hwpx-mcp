@@ -329,6 +329,30 @@ describe(`MCP stdio 종단간 [${server}]`, () => {
     expect(fs.existsSync(out)).toBe(false);
   });
 
+  it('형광펜이 run 경계를 넘으면 get_paragraph 가 그 사이 글을 모두 형광펜으로 읽고, 저장해도 표식이 남는다', async () => {
+    // 한/글 12.30 HwpApp.dylib(REA·Ghidra): hp:t 의 자식 처리기 표(FUN_007a06a8)에 markpenBegin·End 가
+    // 따로 등록된다 — 시작과 끝이 짝을 이루는 범위 표식이다. rhwp 표본 30건 중 6건은 시작과 끝이
+    // 다른 hp:t 에 있었다(table_scattered_header_rowbreak.hwpx). 0.3.5 는 두 번째 run 부터 색을 잃었다.
+    const { id, file } = await newDoc('markpen-src');
+    await mcp.ok('insert_paragraph', { doc_id: id, section_index: 0, after_index: -1, text: 'placeholder' });
+    await mcp.ok('save_document', { doc_id: id });
+    const doc = await reopenEdited(file, 'markpen', x => x.replace(
+      /(<hp:run charPrIDRef="(\d+)">)<hp:t>placeholder<\/hp:t><\/hp:run>/,
+      '$1<hp:t>·<hp:markpenBegin color="#00FF00"/></hp:t></hp:run><hp:run charPrIDRef="$2"><hp:t>전체 말뚝<hp:markpenEnd/>)</hp:t></hp:run>'));
+    const target = ((await mcp.ok('get_paragraphs', { doc_id: doc, section_index: 0 })).paragraphs as Array<{ index: number; text: string }>)
+      .find(p => p.text === '·전체 말뚝)');
+    expect(target).toBeDefined();
+    const para = await mcp.ok('get_paragraph', { doc_id: doc, section_index: 0, paragraph_index: target!.index });
+    const runs = para.runs as Array<{ text: string; markPen?: { color: string } }>;
+    expect(runs.filter(r => r.text).map(r => [r.text, r.markPen?.color ?? null])).toEqual([['·', null], ['전체 말뚝', '#00FF00'], [')', null]]);
+
+    const out = path.join(workDir, 'markpen-out.hwpx');
+    await mcp.ok('save_document', { doc_id: doc, output_path: out, verify_integrity: true });
+    const xml = await savedSection(out);
+    expect((xml.match(/<hp:markpenBegin color="#00FF00"\/>/g) || []).length).toBe(1);
+    expect((xml.match(/<hp:markpenEnd\/>/g) || []).length).toBe(1);
+  });
+
   // Last on purpose: every call above has run by now, so this covers stdout
   // from the whole session, not just start-up.
   it('서버가 stdout 에 JSON-RPC 외의 출력을 쓰지 않는다 (MCP stdio 규약)', () => {

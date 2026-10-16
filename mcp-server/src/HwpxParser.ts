@@ -60,6 +60,11 @@ function generateId(): string {
   return Math.random().toString(36).substring(2, 11);
 }
 
+/** Open 형광펜 range while walking one paragraph's runs; undefined colour = closed. */
+interface MarkPenState {
+  color: string | undefined;
+}
+
 export class HwpxParser {
   private static styles: HwpxStyles = {
     charShapes: new Map(),
@@ -2230,10 +2235,14 @@ export class HwpxParser {
 
     const runRegex = /<hp:run[^>]*>([\s\S]*?)<\/hp:run>/g;
     let runMatch;
+    // A 형광펜 range is a begin/end pair that Hancom may open in one run and close
+    // in a later one, or place directly under <hp:run> (HwpApp.dylib registers
+    // both tags under hp:run and hp:t). Carry it across runs, never across paragraphs.
+    const markPen: MarkPenState = { color: undefined };
 
     while ((runMatch = runRegex.exec(xml)) !== null) {
       const runContent = runMatch[0];
-      const parsedRuns = this.parseRun(runContent);
+      const parsedRuns = this.parseRun(runContent, markPen);
       paragraph.runs.push(...parsedRuns);
     }
 
@@ -2271,7 +2280,7 @@ export class HwpxParser {
     return paragraph;
   }
 
-  private static parseRun(xml: string): TextRun[] {
+  private static parseRun(xml: string, markPen: MarkPenState = { color: undefined }): TextRun[] {
     const runs: TextRun[] = [];
     
     let charStyle: TextRun['charStyle'] | undefined;
@@ -2416,14 +2425,20 @@ export class HwpxParser {
     textSearchXml = textSearchXml.replace(/<hp:footNote\b[^>]*>[\s\S]*?<\/hp:footNote>/gi, '');
     textSearchXml = textSearchXml.replace(/<hp:endNote\b[^>]*>[\s\S]*?<\/hp:endNote>/gi, '');
 
-    const allTextTagsRegex = /<hp:t(?:\s[^>]*)?>(?:([\s\S]*?)<\/hp:t>)?|<hp:t\s*\/>/g;
+    // Walk <hp:t> and run-level markpen tags in document order, so a range opened
+    // outside <hp:t> colours the text that follows it. Markers may be self-closing or expanded (<x></x>).
+    const allTextTagsRegex = /<hp:t(?:\s[^>]*)?>(?:([\s\S]*?)<\/hp:t>)?|<hp:t\s*\/>|<hp:markpen(Begin|End)\b([^>]*?)\s*(?:\/>|>\s*<\/hp:markpen\2>)/gi;
     let tMatch;
     let foundTextTags = false;
 
     while ((tMatch = allTextTagsRegex.exec(textSearchXml)) !== null) {
+      if (tMatch[2]) {
+        markPen.color = tMatch[2].toLowerCase() === 'begin' ? this.markPenColor(tMatch[3]) : undefined;
+        continue;
+      }
       foundTextTags = true;
       const tContent = tMatch[1] || '';
-      this.processTextContent(tContent, charStyle, runs, hyperlink, field);
+      this.processTextContent(tContent, charStyle, runs, hyperlink, field, markPen);
     }
 
     if (!foundTextTags) {
@@ -2475,7 +2490,8 @@ export class HwpxParser {
     charStyle: TextRun['charStyle'] | undefined,
     runs: TextRun[],
     hyperlink?: import('./types').HyperlinkField,
-    field?: import('./types').FieldControl
+    field?: import('./types').FieldControl,
+    markPen: MarkPenState = { color: undefined }
   ): void {
     // Combined regex to match all special elements including:
     // tab, lineBreak, hypen, nbSpace, fwSpace, titleMark, markPenBegin, markPenEnd,
@@ -2483,7 +2499,11 @@ export class HwpxParser {
     const specialElementRegex = /<hp:(tab|lineBreak|hypen|nbSpace|fwSpace|titleMark|markPenBegin|markPenEnd|autoNum|newNum|compose|dutmal|indexMark|pageHiding|pageNumCtrl|pageNum)(?:\s+([^>]*))?\s*(?:\/>|>([\s\S]*?)<\/hp:\1>)/gi;
     let lastIndex = 0;
     let specialMatch;
-    let currentMarkPenColor: string | undefined;
+    // Every run produced while a 형광펜 range is open carries its colour — text and special characters alike.
+    const push = (run: TextRun) => {
+      if (markPen.color) run.markPen = { color: markPen.color };
+      runs.push(run);
+    };
 
     while ((specialMatch = specialElementRegex.exec(tContent)) !== null) {
       // Process text before this special element
@@ -2491,11 +2511,7 @@ export class HwpxParser {
         const textBefore = tContent.substring(lastIndex, specialMatch.index);
         const cleanText = textBefore.replace(/<[^>]+>/g, '');
         if (cleanText) {
-          const run: TextRun = { text: this.decodeXmlEntities(cleanText), charStyle, hyperlink, field };
-          if (currentMarkPenColor) {
-            run.markPen = { color: currentMarkPenColor };
-          }
-          runs.push(run);
+          push({ text: this.decodeXmlEntities(cleanText), charStyle, hyperlink, field });
         }
       }
 
@@ -2515,27 +2531,27 @@ export class HwpxParser {
           else if (leaderType === 3) leader = 'dot';
           else if (leaderType === 4) leader = 'dashDot';
           else if (leaderType === 5) leader = 'dashDotDot';
-          runs.push({ text: '', charStyle, tab: { width, leader }, hyperlink, field });
+          push({ text: '', charStyle, tab: { width, leader }, hyperlink, field });
           break;
         }
         case 'linebreak': {
           // Line break (강제 줄 나눔, SHIFT-ENTER)
-          runs.push({ text: '\n', charStyle, hyperlink, field });
+          push({ text: '\n', charStyle, hyperlink, field });
           break;
         }
         case 'hypen': {
           // Soft hyphen (하이픈, CTRL-SHIFT-'-')
-          runs.push({ text: '\u00AD', charStyle, hyperlink, field });
+          push({ text: '\u00AD', charStyle, hyperlink, field });
           break;
         }
         case 'nbspace': {
           // Non-breaking space (묶음 빈칸, CTRL-ALT-SPACE)
-          runs.push({ text: '\u00A0', charStyle, hyperlink, field });
+          push({ text: '\u00A0', charStyle, hyperlink, field });
           break;
         }
         case 'fwspace': {
           // Full-width space (고정폭 빈칸, ALT-SPACE)
-          runs.push({ text: '\u3000', charStyle, hyperlink, field });
+          push({ text: '\u3000', charStyle, hyperlink, field });
           break;
         }
         case 'titlemark': {
@@ -2543,18 +2559,16 @@ export class HwpxParser {
           const ignoreMatch = attrs.match(/ignore="(true|false|1|0)"/i);
           const ignore = ignoreMatch ? (ignoreMatch[1] === 'true' || ignoreMatch[1] === '1') : false;
           // Title mark doesn't produce visible text but marks the title for TOC
-          runs.push({ text: '', charStyle, hyperlink, field });
+          push({ text: '', charStyle, hyperlink, field });
           break;
         }
         case 'markpenbegin': {
-          // Highlight/mark pen start (형광펜 시작)
-          const colorMatch = attrs.match(/color="([^"]*)"/);
-          currentMarkPenColor = colorMatch ? colorMatch[1] : '#FFFF00'; // default yellow
+          // 형광펜 시작 — the range stays open until markpenEnd, possibly in a later run.
+          markPen.color = this.markPenColor(attrs);
           break;
         }
         case 'markpenend': {
-          // Highlight/mark pen end (형광펜 끝)
-          currentMarkPenColor = undefined;
+          markPen.color = undefined;
           break;
         }
         case 'autonum': {
@@ -2562,7 +2576,7 @@ export class HwpxParser {
           const numTypeMatch = attrs.match(/numType="([^"]*)"/);
           const numType = numTypeMatch ? numTypeMatch[1] : 'Page';
           // AutoNum generates a number based on context, we just mark its presence
-          runs.push({ text: '', charStyle, hyperlink, field });
+          push({ text: '', charStyle, hyperlink, field });
           break;
         }
         case 'newnum': {
@@ -2570,7 +2584,7 @@ export class HwpxParser {
           const numTypeMatch = attrs.match(/numType="([^"]*)"/);
           const numMatch = attrs.match(/num="(\d+)"/);
           // NewNum resets the numbering
-          runs.push({ text: '', charStyle, hyperlink, field });
+          push({ text: '', charStyle, hyperlink, field });
           break;
         }
         case 'compose': {
@@ -2579,7 +2593,7 @@ export class HwpxParser {
           // Compose overlaps characters - we extract the text content
           const composeText = innerContent.replace(/<[^>]+>/g, '');
           if (composeText) {
-            runs.push({ text: this.decodeXmlEntities(composeText), charStyle, hyperlink, field });
+            push({ text: this.decodeXmlEntities(composeText), charStyle, hyperlink, field });
           }
           break;
         }
@@ -2591,7 +2605,7 @@ export class HwpxParser {
           const subText = subTextMatch ? subTextMatch[1] : '';
           // For now, just output the main text (subText is annotation above/below)
           if (mainText) {
-            runs.push({ text: this.decodeXmlEntities(mainText), charStyle, hyperlink, field });
+            push({ text: this.decodeXmlEntities(mainText), charStyle, hyperlink, field });
           }
           break;
         }
@@ -2600,25 +2614,25 @@ export class HwpxParser {
           const keyFirstMatch = attrs.match(/keyFirst="([^"]*)"/);
           const keySecondMatch = attrs.match(/keySecond="([^"]*)"/);
           // Index mark is invisible but marks text for index
-          runs.push({ text: '', charStyle, hyperlink, field });
+          push({ text: '', charStyle, hyperlink, field });
           break;
         }
         case 'pagehiding': {
           // Page hiding (감추기)
           // This is a control element, doesn't produce visible text
-          runs.push({ text: '', charStyle, hyperlink, field });
+          push({ text: '', charStyle, hyperlink, field });
           break;
         }
         case 'pagenumctrl': {
           // Page number control (쪽 번호 컨트롤)
           // This is a control element for page number settings
-          runs.push({ text: '', charStyle, hyperlink, field });
+          push({ text: '', charStyle, hyperlink, field });
           break;
         }
         case 'pagenum': {
           // Page number (쪽 번호)
           // This displays the page number - we use a placeholder
-          runs.push({ text: '#', charStyle, hyperlink, field });
+          push({ text: '#', charStyle, hyperlink, field });
           break;
         }
       }
@@ -2631,18 +2645,14 @@ export class HwpxParser {
       const remainingText = tContent.substring(lastIndex);
       const cleanText = remainingText.replace(/<[^>]+>/g, '');
       if (cleanText) {
-        const run: TextRun = { text: this.decodeXmlEntities(cleanText), charStyle, hyperlink, field };
-        if (currentMarkPenColor) {
-          run.markPen = { color: currentMarkPenColor };
-        }
-        runs.push(run);
-      }
-    } else if (lastIndex === 0 && tContent.length > 0) {
-      const cleanText = tContent.replace(/<[^>]+>/g, '');
-      if (cleanText) {
-        runs.push({ text: this.decodeXmlEntities(cleanText), charStyle, hyperlink, field });
+        push({ text: this.decodeXmlEntities(cleanText), charStyle, hyperlink, field });
       }
     }
+  }
+
+  /** Colour of a <hp:markpenBegin> from its attribute text; Hancom's default is yellow. */
+  private static markPenColor(attrs: string): string {
+    return attrs.match(/color="([^"]*)"/)?.[1] ?? '#FFFF00';
   }
 
   private static parseTable(xml: string): HwpxTable {
