@@ -329,9 +329,14 @@ describe('형광펜 범위 (hp:markpenBegin … hp:markpenEnd)', () => {
   it('범위 안의 특수 문자(묶음 빈칸·탭)도 같은 색으로 읽는다', async () => {
     const doc = await docWith(x => x.replace(/(<hp:run charPrIDRef="(\d+)">)<hp:t>A<\/hp:t><\/hp:run>/,
       '$1<hp:t><hp:markpenBegin color="#00FF00"/>가</hp:t></hp:run><hp:run charPrIDRef="$2"><hp:t><hp:nbSpace/>나<hp:tab/>다<hp:markpenEnd/></hp:t></hp:run>'));
-    const runs = doc.getParagraph(0, 1)!.runs.filter(r => r.text);
+    const all = doc.getParagraph(0, 1)!.runs;
+    const runs = all.filter(r => r.text);
     expect(runs.length).toBeGreaterThan(3);
     expect(runs.every(r => r.markPen?.color === '#00FF00')).toBe(true);
+    // A tab run has empty text, so check it on its own.
+    const tabs = all.filter(r => r.tab);
+    expect(tabs).toHaveLength(1);
+    expect(tabs[0].markPen?.color).toBe('#00FF00');
   });
 
   it('저장해도 원래 표식이 그대로 남는다', async () => {
