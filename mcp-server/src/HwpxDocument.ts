@@ -400,17 +400,13 @@ export class HwpxDocument {
     const extension = path.toLowerCase();
 
     if (extension.endsWith('.hwp')) {
-      // HWP parsing would go here - for now return empty content
-      const content: HwpxContent = {
-        metadata: {},
-        sections: [],
-        images: new Map(),
-        binItems: new Map(),
-        binData: new Map(),
-        footnotes: [],
-        endnotes: [],
-      };
-      return new HwpxDocument(id, path, null, content, 'hwp');
+      // The HWP 5 binary format is not parsed. Opening it used to succeed with
+      // zero sections, so callers read an empty document and reported that the
+      // file had no text. Say so instead.
+      throw new Error(
+        'HWP (HWP 5 binary) files are not supported: the content cannot be read. ' +
+        'Save the file as HWPX in Hancom Office (or convert it) and open the .hwpx.'
+      );
     } else {
       const zip = await JSZip.loadAsync(data);
       const content = await HwpxParser.parse(zip);
@@ -10307,6 +10303,17 @@ export class HwpxDocument {
   /**
    * Sync metadata to header.xml
    */
+  /**
+   * Metadata fields that save would silently drop for this document.
+   * syncMetadataToZip only rewrites an hh:<field> element header.xml already
+   * has; documents from createNew or Hancom Office have none (Hancom keeps
+   * metadata in content.hpf), so set_document_metadata refuses those fields.
+   */
+  async unsavableMetadataFields(fields: string[]): Promise<string[]> {
+    const headerXml = (await this._zip?.file('Contents/header.xml')?.async('string')) ?? '';
+    return fields.filter(field => !new RegExp(`<hh:${field}[^>]*>[^<]*</hh:${field}>`).test(headerXml));
+  }
+
   private async syncMetadataToZip(): Promise<void> {
     if (!this._zip) return;
 

@@ -84,7 +84,7 @@ npm run build
 | `close_document` | 문서 닫기 |
 | `list_open_documents` | 열린 문서 목록 |
 | `get_document_metadata` | 메타데이터 조회 |
-| `set_document_metadata` | 메타데이터 설정 |
+| `set_document_metadata` | 메타데이터 설정 (header.xml 에 자리가 없는 필드·빈 값은 오류) |
 
 ### 문서 조회 (9개)
 | 도구 | 설명 |
@@ -118,15 +118,15 @@ npm run build
 | 도구 | 설명 |
 |------|------|
 | `get_text_style` | 문자 스타일 조회 |
-| `set_text_style` | 문자 스타일 설정 (폰트, 크기, 볼드 등) |
+| `set_text_style` | 문자 스타일 설정 (폰트, 크기, 볼드 등) (글자색·배경색·밑줄·취소선은 저장을 보장하지 못해 끄기를 포함해 쓰면 오류) |
 | `get_paragraph_style` | 문단 스타일 조회 |
-| `set_paragraph_style` | 문단 스타일 설정 (정렬, 줄간격 등) |
+| `set_paragraph_style` | 문단 스타일 설정 (정렬, 줄간격 등) (여백·첫 줄 들여쓰기는 저장을 보장하지 못해 쓰면 오류) |
 | `get_styles` | 스타일 목록 |
 | `get_char_shapes` | 문자 모양 전체 |
 | `get_para_shapes` | 문단 모양 전체 |
-| `apply_style` | 스타일 적용 |
+| `apply_style` | 스타일 적용 ⛔ 저장 미지원 — 호출 시 오류 |
 | `get_column_def` | 단 설정 조회 |
-| `set_column_def` | 단 설정 |
+| `set_column_def` | 단 설정 ⛔ 저장 미지원 — 호출 시 오류 |
 
 ### 내어쓰기 (8개)
 | 도구 | 설명 |
@@ -158,7 +158,7 @@ npm run build
 | `delete_table` | 테이블 삭제 |
 | `update_table_cell` | 셀 수정 |
 | `replace_text_in_cell` | 셀 텍스트 치환 |
-| `set_cell_properties` | 셀 속성 |
+| `set_cell_properties` | 셀 속성 ⛔ 저장 미지원 — 호출 시 오류 |
 | `insert_table_row` | 행 추가 |
 | `delete_table_row` | 행 삭제 |
 | `insert_table_column` | 열 추가 |
@@ -176,16 +176,16 @@ npm run build
 | `get_footer` | 꼬리글 조회 |
 | `set_footer` | 꼬리글 설정 |
 | `get_footnotes` | 각주 목록 |
-| `insert_footnote` | 각주 삽입 |
+| `insert_footnote` | 각주 삽입 ⛔ 저장 미지원 — 호출 시 오류 |
 | `get_endnotes` | 미주 목록 |
-| `insert_endnote` | 미주 삽입 |
+| `insert_endnote` | 미주 삽입 ⛔ 저장 미지원 — 호출 시 오류 |
 
 ### 이미지 (7개)
 | 도구 | 설명 |
 |------|------|
 | `get_images` | 이미지 목록 |
 | `insert_image` | 이미지 삽입 |
-| `update_image_size` | 이미지 크기 변경 |
+| `update_image_size` | 이미지 크기 변경 ⛔ 저장 미지원 — 호출 시 오류 |
 | `delete_image` | 이미지 삭제 |
 | `render_mermaid` | Mermaid 다이어그램 삽입 |
 | `insert_image_in_cell` | 셀에 이미지 삽입 |
@@ -195,25 +195,25 @@ npm run build
 | 도구 | 설명 |
 |------|------|
 | `get_bookmarks` | 북마크 목록 |
-| `insert_bookmark` | 북마크 삽입 |
+| `insert_bookmark` | 북마크 삽입 ⛔ 저장 미지원 — 호출 시 오류 |
 | `get_hyperlinks` | 하이퍼링크 목록 |
-| `insert_hyperlink` | 하이퍼링크 삽입 |
+| `insert_hyperlink` | 하이퍼링크 삽입 ⛔ 저장 미지원 — 호출 시 오류 |
 
 ### 수식/메모 (6개)
 | 도구 | 설명 |
 |------|------|
 | `get_equations` | 수식 목록 |
-| `insert_equation` | 수식 삽입 |
+| `insert_equation` | 수식 삽입 ⛔ 저장 미지원 — 호출 시 오류 |
 | `get_memos` | 메모 목록 |
-| `insert_memo` | 메모 삽입 |
-| `delete_memo` | 메모 삭제 |
+| `insert_memo` | 메모 삽입 ⛔ 저장 미지원 — 호출 시 오류 |
+| `delete_memo` | 메모 삭제 ⛔ 저장 미지원 — 호출 시 오류 |
 
 ### 도형 (3개)
 | 도구 | 설명 |
 |------|------|
-| `insert_line` | 선 삽입 |
-| `insert_rect` | 사각형 삽입 |
-| `insert_ellipse` | 타원 삽입 |
+| `insert_line` | 선 삽입 ⛔ 저장 미지원 — 호출 시 오류 |
+| `insert_rect` | 사각형 삽입 ⛔ 저장 미지원 — 호출 시 오류 |
+| `insert_ellipse` | 타원 삽입 ⛔ 저장 미지원 — 호출 시 오류 |
 
 ### 섹션/페이지 (5개)
 | 도구 | 설명 |
@@ -222,7 +222,7 @@ npm run build
 | `insert_section` | 섹션 삽입 |
 | `delete_section` | 섹션 삭제 |
 | `get_page_settings` | 페이지 설정 조회 |
-| `set_page_settings` | 페이지 설정 |
+| `set_page_settings` | 페이지 설정 ⛔ 저장 미지원 — 호출 시 오류 |
 
 ### 실행 취소/다시 실행 (2개)
 | 도구 | 설명 |

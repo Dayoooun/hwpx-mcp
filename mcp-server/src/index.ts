@@ -11,6 +11,7 @@ import { HwpxDocument, ImagePositionOptions } from './HwpxDocument';
 import { HangingIndentCalculator } from './HangingIndentCalculator';
 import { findMalformedXmlParts } from './XmlWellFormed';
 import { success, error, findMissingArgs as missingArgsOf } from './ToolResult';
+import { UNSAVED_ARGS, UNSAVED_ARG_NOTE, UNSAVED_TOOLS, UNSAVED_TOOL_NOTE, unsavedToolError } from './unsavedTools';
 
 const MCP_VERSION: string = require('../package.json').version;
 console.error(`[HWPX MCP] Server starting - ${MCP_VERSION} - ${new Date().toISOString()}`);
@@ -2160,7 +2161,19 @@ const server = new Server(
   }
 );
 
-server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
+server.setRequestHandler(ListToolsRequestSchema, async () => ({
+  tools: tools.map(tool => {
+    if (UNSAVED_TOOLS.has(tool.name)) return { ...tool, description: UNSAVED_TOOL_NOTE + tool.description };
+    const unsavedArgs = UNSAVED_ARGS.get(tool.name);
+    if (!unsavedArgs) return tool;
+    const schema = tool.inputSchema as unknown as { properties?: Record<string, { description?: string }> };
+    const properties = { ...schema.properties };
+    for (const arg of unsavedArgs) {
+      if (properties[arg]) properties[arg] = { ...properties[arg], description: `${UNSAVED_ARG_NOTE}${properties[arg].description ?? ''}` };
+    }
+    return { ...tool, inputSchema: { ...tool.inputSchema, properties } };
+  }),
+}));
 
 // ============================================================
 // Required-argument validation
@@ -2183,6 +2196,9 @@ function findMissingArgs(toolName: string, args: Record<string, unknown> | undef
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
+
+  const unsaved = unsavedToolError(name, args as Record<string, unknown> | undefined);
+  if (unsaved) return error(unsaved);
 
   const missing = findMissingArgs(name, args as Record<string, unknown> | undefined);
   if (missing.length > 0) {
@@ -2536,12 +2552,25 @@ Call get_tool_guide with: template, table, image, search, read, create`
         if (!doc) return error('Document not found');
         if (doc.format === 'hwp') return error('HWP files are read-only');
 
+        const cleared = ['title', 'creator', 'subject', 'description'].filter(field => args?.[field] === '');
+        if (cleared.length > 0) {
+          return error(`set_document_metadata cannot clear ${cleared.join(', ')}: an empty value is not saved. Nothing was changed.`);
+        }
+
         const metadata: any = {};
         if (args?.title) metadata.title = args.title;
         if (args?.creator) metadata.creator = args.creator;
         if (args?.subject) metadata.subject = args.subject;
         if (args?.description) metadata.description = args.description;
 
+        const unsavable = await doc.unsavableMetadataFields(Object.keys(metadata));
+        if (unsavable.length > 0) {
+          return error(
+            `set_document_metadata cannot save ${unsavable.join(', ')} for this document: save_document ` +
+            'writes metadata only into fields header.xml already holds, and this file has none for them ' +
+            '(Hancom Office keeps metadata in content.hpf). Nothing was changed.'
+          );
+        }
         doc.setMetadata(metadata);
         return success({ metadata: doc.getMetadata() });
       }

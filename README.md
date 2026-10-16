@@ -231,7 +231,7 @@ npm 서버의 저장 임시 파일·백업 보호는 파일 접근 범위 제한
 | `get_document_text` | 문서 전체 텍스트 추출 | `doc_id` |
 | `get_document_structure` | 문서 구조 조회 (섹션/단락/테이블/이미지 수) | `doc_id` |
 | `get_document_metadata` | 메타데이터 조회 (제목, 저자, 날짜 등) | `doc_id` |
-| `set_document_metadata` | 메타데이터 수정 | `doc_id`, `title?`, `creator?`, `subject?`, `description?` |
+| `set_document_metadata` | 메타데이터 수정 (header.xml 에 자리가 없는 필드·빈 값으로 지우기는 저장되지 않아 오류 — 새 문서·한컴 저장본) | `doc_id`, `title?`, `creator?`, `subject?`, `description?` |
 | `get_word_count` | 글자수/단어수 통계 | `doc_id` |
 
 ### 📝 단락 (Paragraphs) - 8개
@@ -252,9 +252,9 @@ npm 서버의 저장 임시 파일·백업 보호는 파일 접근 범위 제한
 | Tool | 설명 | 주요 파라미터 |
 |------|------|--------------|
 | `get_text_style` | 글자 서식 조회 (폰트/크기/색상 등) | `doc_id`, `section_index`, `paragraph_index`, `run_index?` |
-| `set_text_style` | 글자 서식 설정 | `doc_id`, `section_index`, `paragraph_index`, `bold?`, `italic?`, `underline?`, `strikethrough?`, `font_name?`, `font_size?`, `font_color?`, `background_color?` |
+| `set_text_style` | 글자 서식 설정 (글자색·배경색·밑줄·취소선은 저장을 보장하지 못해 끄기를 포함해 쓰면 오류) | `doc_id`, `section_index`, `paragraph_index`, `bold?`, `italic?`, `underline?`, `strikethrough?`, `font_name?`, `font_size?`, `font_color?`, `background_color?` |
 | `get_paragraph_style` | 문단 서식 조회 (정렬/줄간격/여백 등) | `doc_id`, `section_index`, `paragraph_index` |
-| `set_paragraph_style` | 문단 서식 설정 | `doc_id`, `section_index`, `paragraph_index`, `align?`, `line_spacing?`, `margin_*?`, `first_line_indent?` |
+| `set_paragraph_style` | 문단 서식 설정 (여백·첫 줄 들여쓰기는 저장을 보장하지 못해 쓰면 오류) | `doc_id`, `section_index`, `paragraph_index`, `align?`, `line_spacing?`, `margin_*?`, `first_line_indent?` |
 
 ### 🔍 검색/치환 (Search & Replace) - 4개
 
@@ -273,7 +273,7 @@ npm 서버의 저장 임시 파일·백업 보호는 파일 접근 범위 제한
 | `get_table` | 특정 테이블 전체 데이터 조회 | `doc_id`, `section_index`, `table_index` |
 | `get_table_cell` | 특정 셀 내용 조회 | `doc_id`, `section_index`, `table_index`, `row`, `col` |
 | `update_table_cell` | 셀 내용 수정 (스타일 보존) | `doc_id`, `section_index`, `table_index`, `row`, `col`, `text`, `char_shape_id?` |
-| `set_cell_properties` | 셀 속성 설정 (크기/배경색/정렬) | `doc_id`, `section_index`, `table_index`, `row`, `col`, `width?`, `height?`, `background_color?`, `vertical_align?` |
+| `set_cell_properties` | 셀 속성 설정 (크기/배경색/정렬) ⛔ 저장 미지원 — 호출 시 오류 | `doc_id`, `section_index`, `table_index`, `row`, `col`, `width?`, `height?`, `background_color?`, `vertical_align?` |
 | `insert_table` | 새 테이블 삽입 | `doc_id`, `section_index`, `after_index`, `rows`, `cols`, `width?` |
 | `insert_table_row` | 테이블에 행 삽입 | `doc_id`, `section_index`, `table_index`, `after_row`, `cell_texts?` |
 | `delete_table_row` | 테이블에서 행 삭제 | `doc_id`, `section_index`, `table_index`, `row_index` |
@@ -287,7 +287,7 @@ npm 서버의 저장 임시 파일·백업 보호는 파일 접근 범위 제한
 | Tool | 설명 | 주요 파라미터 |
 |------|------|--------------|
 | `get_page_settings` | 페이지 설정 조회 (용지 크기/여백) | `doc_id`, `section_index?` |
-| `set_page_settings` | 페이지 설정 변경 | `doc_id`, `section_index?`, `width?`, `height?`, `margin_*?`, `orientation?` |
+| `set_page_settings` | 페이지 설정 변경 ⛔ 저장 미지원 — 호출 시 오류 | `doc_id`, `section_index?`, `width?`, `height?`, `margin_*?`, `orientation?` |
 
 ### 🖼️ 이미지 (Images) - 5개
 
@@ -295,7 +295,7 @@ npm 서버의 저장 임시 파일·백업 보호는 파일 접근 범위 제한
 |------|------|--------------|
 | `get_images` | 문서 내 모든 이미지 목록 | `doc_id` |
 | `insert_image` | 이미지 파일 삽입 (BinData 자동 등록) | `doc_id`, `section_index`, `after_index`, `image_path`, `width?`, `height?` |
-| `update_image_size` | 기존 이미지 크기 변경 | `doc_id`, `section_index`, `image_index`, `width`, `height` |
+| `update_image_size` | 기존 이미지 크기 변경 ⛔ 저장 미지원 — 호출 시 오류 | `doc_id`, `section_index`, `image_index`, `width`, `height` |
 | `delete_image` | 이미지 삭제 | `doc_id`, `section_index`, `image_index` |
 | `render_mermaid` | **Mermaid 다이어그램을 이미지로 삽입** | `doc_id`, `mermaid_code`, `after_index`, `section_index?`, `width?`, `height?`, `theme?`, `background_color?` |
 
@@ -303,9 +303,9 @@ npm 서버의 저장 임시 파일·백업 보호는 파일 접근 범위 제한
 
 | Tool | 설명 | 주요 파라미터 |
 |------|------|--------------|
-| `insert_line` | 선 도형 삽입 | `doc_id`, `section_index`, `after_index`, `x1`, `y1`, `x2`, `y2`, `stroke_color?`, `stroke_width?` |
-| `insert_rect` | 사각형 도형 삽입 | `doc_id`, `section_index`, `after_index`, `x`, `y`, `width`, `height`, `fill_color?`, `stroke_color?` |
-| `insert_ellipse` | 타원 도형 삽입 | `doc_id`, `section_index`, `after_index`, `cx`, `cy`, `rx`, `ry`, `fill_color?`, `stroke_color?` |
+| `insert_line` | 선 도형 삽입 ⛔ 저장 미지원 — 호출 시 오류 | `doc_id`, `section_index`, `after_index`, `x1`, `y1`, `x2`, `y2`, `stroke_color?`, `stroke_width?` |
+| `insert_rect` | 사각형 도형 삽입 ⛔ 저장 미지원 — 호출 시 오류 | `doc_id`, `section_index`, `after_index`, `x`, `y`, `width`, `height`, `fill_color?`, `stroke_color?` |
+| `insert_ellipse` | 타원 도형 삽입 ⛔ 저장 미지원 — 호출 시 오류 | `doc_id`, `section_index`, `after_index`, `cx`, `cy`, `rx`, `ry`, `fill_color?`, `stroke_color?` |
 
 ### 📑 머리글/바닥글 (Header/Footer) - 4개
 
@@ -321,33 +321,33 @@ npm 서버의 저장 임시 파일·백업 보호는 파일 접근 범위 제한
 | Tool | 설명 | 주요 파라미터 |
 |------|------|--------------|
 | `get_footnotes` | 문서 내 모든 각주 목록 | `doc_id` |
-| `insert_footnote` | 특정 위치에 각주 삽입 | `doc_id`, `section_index`, `paragraph_index`, `text` |
+| `insert_footnote` | 특정 위치에 각주 삽입 ⛔ 저장 미지원 — 호출 시 오류 | `doc_id`, `section_index`, `paragraph_index`, `text` |
 | `get_endnotes` | 문서 내 모든 미주 목록 | `doc_id` |
-| `insert_endnote` | 특정 위치에 미주 삽입 | `doc_id`, `section_index`, `paragraph_index`, `text` |
+| `insert_endnote` | 특정 위치에 미주 삽입 ⛔ 저장 미지원 — 호출 시 오류 | `doc_id`, `section_index`, `paragraph_index`, `text` |
 
 ### 🔗 북마크/하이퍼링크 (Bookmarks/Hyperlinks) - 4개
 
 | Tool | 설명 | 주요 파라미터 |
 |------|------|--------------|
 | `get_bookmarks` | 문서 내 모든 북마크 목록 | `doc_id` |
-| `insert_bookmark` | 특정 위치에 북마크 삽입 | `doc_id`, `section_index`, `paragraph_index`, `name` |
+| `insert_bookmark` | 특정 위치에 북마크 삽입 ⛔ 저장 미지원 — 호출 시 오류 | `doc_id`, `section_index`, `paragraph_index`, `name` |
 | `get_hyperlinks` | 문서 내 모든 하이퍼링크 목록 | `doc_id` |
-| `insert_hyperlink` | 하이퍼링크 삽입 | `doc_id`, `section_index`, `paragraph_index`, `url`, `text` |
+| `insert_hyperlink` | 하이퍼링크 삽입 ⛔ 저장 미지원 — 호출 시 오류 | `doc_id`, `section_index`, `paragraph_index`, `url`, `text` |
 
 ### ➗ 수식 (Equations) - 2개
 
 | Tool | 설명 | 주요 파라미터 |
 |------|------|--------------|
 | `get_equations` | 문서 내 모든 수식 목록 | `doc_id` |
-| `insert_equation` | 수식 삽입 (HWP 수식 스크립트 형식) | `doc_id`, `section_index`, `after_index`, `script` |
+| `insert_equation` | 수식 삽입 (HWP 수식 스크립트 형식) ⛔ 저장 미지원 — 호출 시 오류 | `doc_id`, `section_index`, `after_index`, `script` |
 
 ### 💬 메모 (Memos/Comments) - 3개
 
 | Tool | 설명 | 주요 파라미터 |
 |------|------|--------------|
 | `get_memos` | 문서 내 모든 메모/주석 목록 | `doc_id` |
-| `insert_memo` | 메모/주석 삽입 | `doc_id`, `section_index`, `paragraph_index`, `content`, `author?` |
-| `delete_memo` | 메모/주석 삭제 | `doc_id`, `memo_id` |
+| `insert_memo` | 메모/주석 삽입 ⛔ 저장 미지원 — 호출 시 오류 | `doc_id`, `section_index`, `paragraph_index`, `content`, `author?` |
+| `delete_memo` | 메모/주석 삭제 ⛔ 저장 미지원 — 호출 시 오류 | `doc_id`, `memo_id` |
 
 ### 📚 섹션 (Sections) - 5개
 
@@ -366,14 +366,14 @@ npm 서버의 저장 임시 파일·백업 보호는 파일 접근 범위 제한
 | `get_styles` | 문서에 정의된 스타일 목록 | `doc_id` |
 | `get_char_shapes` | 글자 모양(CharShape) 정의 목록 | `doc_id` |
 | `get_para_shapes` | 문단 모양(ParaShape) 정의 목록 | `doc_id` |
-| `apply_style` | 단락에 스타일 적용 | `doc_id`, `section_index`, `paragraph_index`, `style_id` |
+| `apply_style` | 단락에 스타일 적용 ⛔ 저장 미지원 — 호출 시 오류 | `doc_id`, `section_index`, `paragraph_index`, `style_id` |
 
 ### 📰 단 설정 (Column Layout) - 2개
 
 | Tool | 설명 | 주요 파라미터 |
 |------|------|--------------|
 | `get_column_def` | 단(Column) 설정 조회 | `doc_id`, `section_index?` |
-| `set_column_def` | 단 설정 변경 (다단 편집) | `doc_id`, `count`, `section_index?`, `type?`, `same_size?`, `gap?` |
+| `set_column_def` | 단 설정 변경 (다단 편집) ⛔ 저장 미지원 — 호출 시 오류 | `doc_id`, `count`, `section_index?`, `type?`, `same_size?`, `gap?` |
 
 ### 📤 내보내기 (Export) - 2개
 
