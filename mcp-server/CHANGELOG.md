@@ -5,7 +5,10 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/) 를 따르고,
 버전은 [유의적 버전](https://semver.org/lang/ko/) 을 따릅니다.
 
-## [Unreleased]
+## [0.3.7] - 2026-10-17
+
+새 도구 `export_to_pdf` 를 넣었습니다. 같은 e2e 24개에서 0.3.6 은 18개, 이 버전은 23개를
+통과합니다(나머지 1개는 엔진이 없는 환경 전용이라 맥에서는 건너뜁니다).
 
 ### 추가
 - **`export_to_pdf` — 맥·윈도우 어디서나 한컴 엔진으로 PDF.** 서버가 도는 운영체제를 보고 엔진을
