@@ -76,6 +76,9 @@ npm install
 npm run build
 ```
 
+
+맥에서는 `npm run build` 가 PDF 변환기(`native/hwp2pdf`)도 함께 만듭니다. Xcode 명령줄 도구(`xcode-select --install`)가 필요하고, `export_to_pdf` 를 쓰려면 한/글 for Mac 이 설치돼 있어야 합니다. 다른 위치에 설치했다면 `HWP_APP` 에 앱 경로를 주세요.
+
 ### 2. MCP 클라이언트 설정
 
 아래에서 사용하는 클라이언트를 선택하세요.

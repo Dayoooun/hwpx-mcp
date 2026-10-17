@@ -5127,6 +5127,20 @@ export class HwpxDocument {
     });
   }
 
+  /**
+   * Bytes of the document as it stands, for a read-only consumer (PDF export). save() folds pending edits
+   * into the zip and marks the document clean; nothing reached doc.path here, so it stays dirty and the
+   * user is still prompted to save it.
+   */
+  async serializeForExport(): Promise<Buffer> {
+    const wasDirty = this._isDirty;
+    try {
+      return await this.save();
+    } finally {
+      this._isDirty = wasDirty;
+    }
+  }
+
   // WARNING: syncContentToZip reads and writes header.xml and section XML files sequentially.
   // Each apply*ToXml() method may read header.xml independently, so the order of operations matters.
   // If multiple methods modify header.xml, later methods will see changes from earlier ones.

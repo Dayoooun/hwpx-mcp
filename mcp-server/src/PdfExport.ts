@@ -141,18 +141,33 @@ export interface ExportOptions {
   platform?: NodeJS.Platform;
   env?: NodeJS.ProcessEnv;
   timeoutMs?: number;
+  /** Files output must never be (the open document behind a staged copy). `input` is always included. */
+  protect?: string[];
+}
+
+/** Same file on disk — by device+inode, so `./`, symlinks and case-insensitive names all match. */
+function sameFile(a: string, b: string): boolean {
+  const sa = fs.statSync(a, { throwIfNoEntry: false });
+  const sb = fs.statSync(b, { throwIfNoEntry: false });
+  return !!sa && !!sb && sa.dev === sb.dev && sa.ino === sb.ino;
 }
 
 /** Convert `input` (HWP/HWPX on disk) to `output`. Throws on any failure; `output` is untouched then. */
 export async function exportPdf(input: string, output: string, opts: ExportOptions = {}): Promise<PdfResult> {
   const env = opts.env ?? process.env;
+  const src = path.resolve(input);
+  const dest = path.resolve(output);
+  if (!fs.existsSync(src)) throw new Error(`Input not found: ${src}`);
+  // The final rename would replace the document itself with a PDF. Checked first, on every platform.
+  for (const p of [src, ...(opts.protect ?? [])]) {
+    if (path.resolve(p) === dest || sameFile(p, dest)) {
+      throw new Error(`output_path is the source document (${p}); choose a .pdf path`);
+    }
+  }
   const engine = pickEngine(opts.engine, opts.platform ?? process.platform);
   const missing = engineUnavailable(engine, env);
   if (missing) throw new Error(missing);
 
-  const src = path.resolve(input);
-  const dest = path.resolve(output);
-  if (!fs.existsSync(src)) throw new Error(`Input not found: ${src}`);
   const destDir = path.dirname(dest);
   if (!fs.existsSync(destDir)) throw new Error(`Directory does not exist: ${destDir}`);
   const existing = fs.lstatSync(dest, { throwIfNoEntry: false });

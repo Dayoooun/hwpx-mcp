@@ -49,8 +49,8 @@
     "access": "public"
   },
   "scripts": {
-    "build": "tsc",
-    "prepublishOnly": "npm run build && npm run build:native && test -x native/hwp2pdf",
+    "build": "tsc && bash native/build.sh",
+    "prepublishOnly": "npm run build && test -x native/hwp2pdf",
     "start": "node dist/index.js",
     "test": "vitest run",
     "test:unit": "vitest run src tests/unit",

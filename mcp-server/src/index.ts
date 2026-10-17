@@ -3539,8 +3539,8 @@ Call get_tool_guide with: template, table, image, search, read, create`
           const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'hwpx-pdf-src-'));
           try {
             const src = path.join(stage, 'document.hwpx');
-            fs.writeFileSync(src, await doc.save());
-            return success(await exportPdf(src, outputPath, { engine }));
+            fs.writeFileSync(src, await doc.serializeForExport());
+            return success(await exportPdf(src, outputPath, { engine, protect: [doc.path] }));
           } finally {
             fs.rmSync(stage, { recursive: true, force: true });
           }

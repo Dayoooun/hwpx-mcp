@@ -98,6 +98,26 @@ describe('export_to_pdf', () => {
     expect(r.pages).toBeGreaterThan(1);
     expect(readPdf(out).pages).toBe(r.pages);
     expect(readPdf(before).pages).toBe(1);
+    // 내보내기는 저장이 아니다 — 저장 안 한 편집은 여전히 저장 안 한 것으로 보여야 닫기 전에 저장한다.
+    const { documents } = await mcp.ok('list_open_documents', {});
+    expect(documents.find((d: { id: string }) => d.id === doc_id)?.isDirty).toBe(true);
+    await mcp.ok('save_document', { doc_id });
+    const saved = path.join(workDir, 'saved.pdf');
+    expect((await mcp.ok('export_to_pdf', { file_path: file, output_path: saved })).pages).toBe(r.pages);
+  });
+
+  it('export-pdf#AC-9 출력 경로가 원본 문서면 거절하고 원본을 그대로 둔다', async () => {
+    const { doc_id, file } = await docWithText('self', '덮어쓰면 안 되는 원본');
+    await mcp.ok('save_document', { doc_id });
+    const before = fs.readFileSync(file);
+    const viaFile = await mcp.call('export_to_pdf', { file_path: file, output_path: file });
+    const viaDoc = await mcp.call('export_to_pdf', { doc_id, output_path: file });
+    const viaAlias = await mcp.call('export_to_pdf', { file_path: file, output_path: path.join(workDir, '.', 'self.hwpx') });
+    for (const r of [viaFile, viaDoc, viaAlias]) {
+      expect(r.isError).toBe(true);
+      expect(r.raw).toMatch(/source document/);
+    }
+    expect(fs.readFileSync(file).equals(before)).toBe(true);
   });
 
   it.runIf(hasMacEngine)('export-pdf#AC-7 열 수 없는 문서는 isError 이고 있던 출력 파일은 그대로다', async () => {
