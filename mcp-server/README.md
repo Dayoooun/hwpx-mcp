@@ -236,7 +236,7 @@ npm run build
 |------|------|
 | `export_to_text` | TXT 내보내기 |
 | `export_to_html` | HTML 내보내기 |
-| `export_to_pdf` | PDF 내보내기 — 한컴 엔진(맥: 한/글 for Mac, 창 안 뜸 · 윈도우: 한/글 COM). 저장 안 한 편집 포함 |
+| `export_to_pdf` | PDF 내보내기 — 한컴 엔진(맥: 한/글 for Mac, 창 안 뜸 · 윈도우: 한/글 COM). `doc_id` 로 열린 HWPX 를 주면 저장 안 한 편집까지, `file_path` 는 디스크의 파일 그대로 |
 
 ### 고급/디버깅 (8개)
 | 도구 | 설명 |

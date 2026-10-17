@@ -156,6 +156,9 @@ jobs:
           cache-dependency-path: mcp-server/package-lock.json
       - run: npm ci
       - name: Version matrix (published vs local)
+        # shell: bash 는 -o pipefail 로 돈다. 기본(bash -e)에서는 tee 가 성공하면 단계가 성공이라
+        # 회귀(exit 1)·latest 조회 실패가 가려졌다.
+        shell: bash
         run: npm run test:versions -- 0.3.0 0.3.3 0.3.4 0.3.5 0.3.6 latest local | tee version-matrix.txt
       - name: Summary
         if: always()
