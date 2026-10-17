@@ -37,3 +37,4 @@ Thumbs.db
 # pnpm
 pnpm-lock.yaml
 mcp-server/pnpm-lock.yaml
+mcp-server/native/hwp2pdf

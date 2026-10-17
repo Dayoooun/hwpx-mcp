@@ -13,11 +13,11 @@ AI 도구(Claude 등)와 연동하여 한글(HWPX) 문서를 자동으로 편집
 
 **모든 운영체제에서 작동합니다!**
 
-| OS | MCP 서버 | HWPX 편집 | 결과물 확인 |
+| OS | MCP 서버 | HWPX 편집 | PDF (`export_to_pdf`) |
 |:---:|:---:|:---:|:---|
-| ✅ Windows | ✅ | ✅ | 한컴오피스 |
-| ✅ macOS | ✅ | ✅ | 한컴오피스 Mac |
-| ✅ Linux | ✅ | ✅ | 한컴오피스 Linux / LibreOffice* |
+| ✅ Windows | ✅ | ✅ | 한/글 COM (한컴오피스 설치 필요) |
+| ✅ macOS | ✅ | ✅ | 한/글 for Mac 의 한컴 엔진 — **윈도우 없이**, 창도 안 뜸 |
+| ✅ Linux | ✅ | ✅ | 지원 안 함 (한컴 엔진이 없음) |
 
 > **왜 가능한가요?**
 > HWPX 파일은 **ZIP + XML 구조**입니다. 한글 프로그램 없이도 Node.js만으로 완벽하게 읽고 쓸 수 있습니다.
@@ -375,12 +375,13 @@ npm 서버의 저장 임시 파일·백업 보호는 파일 접근 범위 제한
 | `get_column_def` | 단(Column) 설정 조회 | `doc_id`, `section_index?` |
 | `set_column_def` | 단 설정 변경 (다단 편집) | `doc_id`, `count`, `section_index?`, `type?`, `same_size?`, `gap?` |
 
-### 📤 내보내기 (Export) - 2개
+### 📤 내보내기 (Export) - 3개
 
 | Tool | 설명 | 주요 파라미터 |
 |------|------|--------------|
 | `export_to_text` | 문서를 텍스트 파일로 내보내기 | `doc_id`, `output_path` |
 | `export_to_html` | 문서를 HTML 파일로 내보내기 | `doc_id`, `output_path` |
+| `export_to_pdf` | 한컴 엔진으로 PDF — 운영체제를 보고 엔진을 고름(맥: 한/글 for Mac, 윈도우: 한/글 COM). `doc_id` 면 저장 전 편집까지 반영 | `doc_id` 또는 `file_path`, `output_path`, `engine?` |
 
 ### ↩️ 실행 취소 (Undo/Redo) - 2개
 

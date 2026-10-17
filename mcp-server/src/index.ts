@@ -7,10 +7,12 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
 import { HwpxDocument, ImagePositionOptions } from './HwpxDocument';
 import { HangingIndentCalculator } from './HangingIndentCalculator';
 import { findMalformedXmlParts } from './XmlWellFormed';
 import { success, error, findMissingArgs as missingArgsOf } from './ToolResult';
+import { exportPdf, type PdfEngineRequest } from './PdfExport';
 
 const MCP_VERSION: string = require('../package.json').version;
 console.error(`[HWPX MCP] Server starting - ${MCP_VERSION} - ${new Date().toISOString()}`);
@@ -1234,6 +1236,28 @@ batch_fill_table({
         output_path: { type: 'string', description: 'Output file path' },
       },
       required: ['doc_id', 'output_path'],
+    },
+  },
+  {
+    name: 'export_to_pdf',
+    description:
+      'Render an HWP/HWPX document to PDF with Hancom\'s own layout engine (same page breaks and fonts as 한/글). ' +
+      'Picks the engine for this OS: macOS uses the engine of the installed 한/글 for Mac (no window opens), ' +
+      'Windows uses 한/글 COM. Pass doc_id to render an open document including unsaved edits, or file_path for a file on disk. ' +
+      'Returns { output_path, pages, engine }.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        doc_id: { type: 'string', description: 'Open document to render (unsaved edits included). Give this or file_path.' },
+        file_path: { type: 'string', description: 'HWP/HWPX file on disk to render. Give this or doc_id.' },
+        output_path: { type: 'string', description: 'PDF to write. An existing file is replaced only after the conversion succeeds.' },
+        engine: {
+          type: 'string',
+          enum: ['auto', 'hancom-mac', 'hancom-windows'],
+          description: 'auto (default) picks by OS.',
+        },
+      },
+      required: ['output_path'],
     },
   },
 
@@ -3496,6 +3520,31 @@ Call get_tool_guide with: template, table, image, search, read, create`
         const outputPath = args?.output_path as string;
         fs.writeFileSync(outputPath, text, 'utf-8');
         return success({ message: `Exported to ${outputPath}`, characters: text.length });
+      }
+
+      case 'export_to_pdf': {
+        const outputPath = args?.output_path as string;
+        const docId = args?.doc_id as string | undefined;
+        const filePath = args?.file_path as string | undefined;
+        if (!docId === !filePath) return error('Give exactly one of doc_id or file_path');
+        const engine = args?.engine as PdfEngineRequest | undefined;
+        if (filePath) {
+          return success(await exportPdf(filePath, outputPath, { engine }));
+        }
+        const doc = getDoc(docId!);
+        if (!doc) return error('Document not found');
+        // HWP is opened read-only, so its file on disk is exactly what is open.
+        if (doc.format === 'hwp') return success(await exportPdf(doc.path, outputPath, { engine }));
+        return await withDocumentLock(docId!, async () => {
+          const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'hwpx-pdf-src-'));
+          try {
+            const src = path.join(stage, 'document.hwpx');
+            fs.writeFileSync(src, await doc.save());
+            return success(await exportPdf(src, outputPath, { engine }));
+          } finally {
+            fs.rmSync(stage, { recursive: true, force: true });
+          }
+        });
       }
 
       case 'export_to_html': {
