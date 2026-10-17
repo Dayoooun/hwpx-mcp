@@ -157,7 +157,6 @@ export async function exportPdf(input: string, output: string, opts: ExportOptio
   const env = opts.env ?? process.env;
   const src = path.resolve(input);
   const dest = path.resolve(output);
-  if (!fs.existsSync(src)) throw new Error(`Input not found: ${src}`);
   // The final rename would replace the document itself with a PDF. Checked first, on every platform.
   for (const p of [src, ...(opts.protect ?? [])]) {
     if (path.resolve(p) === dest || sameFile(p, dest)) {
@@ -167,6 +166,7 @@ export async function exportPdf(input: string, output: string, opts: ExportOptio
   const engine = pickEngine(opts.engine, opts.platform ?? process.platform);
   const missing = engineUnavailable(engine, env);
   if (missing) throw new Error(missing);
+  if (!fs.existsSync(src)) throw new Error(`Input not found: ${src}`);
 
   const destDir = path.dirname(dest);
   if (!fs.existsSync(destDir)) throw new Error(`Directory does not exist: ${destDir}`);

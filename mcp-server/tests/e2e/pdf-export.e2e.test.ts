@@ -63,11 +63,12 @@ describe('export_to_pdf', () => {
   });
 
   it.runIf(!hasMacEngine && process.platform !== 'win32')('export-pdf#AC-4 엔진이 없으면 isError 이고 PDF 를 만들지 않는다', async () => {
-    const { file } = await docWithText('noengine', '엔진 없음');
+    const { doc_id, file } = await docWithText('noengine', '엔진 없음');
+    await mcp.ok('save_document', { doc_id });
     const out = path.join(workDir, 'noengine.pdf');
     const r = await mcp.call('export_to_pdf', { file_path: file, output_path: out });
     expect(r.isError).toBe(true);
-    expect(r.raw).toMatch(/macOS|Windows|not installed/);
+    expect(r.raw).toMatch(/macOS|Windows|not installed|converter missing/);
     expect(fs.existsSync(out)).toBe(false);
   });
 
