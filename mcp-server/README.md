@@ -12,9 +12,10 @@ HWP/HWPX 문서를 AI로 읽고 편집할 수 있는 Model Context Protocol (MCP
 
 ## 특징
 
-- **125개 도구**: 문서의 모든 요소를 프로그래밍 방식으로 제어
+- **126개 도구**: 문서의 모든 요소를 프로그래밍 방식으로 제어
 - **HWPX 완전 편집**: 텍스트, 테이블, 이미지, 스타일, 머리글/꼬리글 등
 - **HWP 읽기 지원**: 레거시 HWP 바이너리 포맷 읽기
+- **PDF 내보내기**: 한컴 엔진 그대로 — 맥은 한/글 for Mac 만 있으면 윈도우 없이(`HWP_APP` 으로 다른 설치 위치), 윈도우는 한/글 COM
 - **XML 무결성 보장**: 모든 편집이 HWPML 규격에 맞게 XML에 저장
 - **24개 E2E 테스트 통과**: save-reload 검증 완료
 
@@ -72,7 +73,7 @@ npm run build
 }
 ```
 
-## 도구 목록 (125개)
+## 도구 목록 (126개)
 
 ### 문서 관리 (7개)
 | 도구 | 설명 |
@@ -230,11 +231,12 @@ npm run build
 | `undo` | 실행 취소 |
 | `redo` | 다시 실행 |
 
-### 내보내기 (2개)
+### 내보내기 (3개)
 | 도구 | 설명 |
 |------|------|
 | `export_to_text` | TXT 내보내기 |
 | `export_to_html` | HTML 내보내기 |
+| `export_to_pdf` | PDF 내보내기 — 한컴 엔진(맥: 한/글 for Mac, 창 안 뜸 · 윈도우: 한/글 COM). 저장 안 한 편집 포함 |
 
 ### 고급/디버깅 (8개)
 | 도구 | 설명 |
@@ -309,7 +311,7 @@ npm run test:module         # 모듈: 문서 API → 저장 → 다시 열기로
 npm run test:regression     # 회귀: 신고 1건당 파일 1개, 신고 문장을 주석으로 붙임
 npm run test:e2e            # 종단간: 빌드한 MCP 서버를 stdio 로 띄워 호출
 npm run test:security       # 빌드 후 실제 MCP 저장 경로 공격·반복 저장·실패 정리 검사
-npm run test:versions -- 0.3.6 local   # 같은 e2e 를 게시된 버전과 로컬 빌드에 돌려 표로 비교
+npm run test:versions -- latest local   # 같은 e2e 를 npm 최신 게시본과 로컬 빌드에 돌려 표로 비교
 ```
 
 e2e 는 `HWPX_MCP_SERVER` 로 대상 서버를 고릅니다. `local`(기본)은 이 저장소의
