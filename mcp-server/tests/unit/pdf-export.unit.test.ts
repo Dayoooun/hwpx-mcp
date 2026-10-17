@@ -57,4 +57,28 @@ describe('exportPdf', () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it.skipIf(process.platform === 'win32')('export-pdf#AC-6 시간이 다 되면 충돌이 아니라 시간 초과로 알리고 있던 파일은 그대로 둔다', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pdf-unit-'));
+    try {
+      const app = path.join(dir, 'Fake.app');
+      fs.mkdirSync(path.join(app, 'Contents', 'PlugIns', 'HwpQLExtPreview.appex'), { recursive: true });
+      const bin = path.join(dir, 'hang.sh');
+      fs.writeFileSync(bin, '#!/bin/sh\nexec sleep 30\n', { mode: 0o755 });
+      const src = path.join(dir, 'a.hwpx');
+      fs.writeFileSync(src, 'x');
+      const out = path.join(dir, 'a.pdf');
+      fs.writeFileSync(out, 'old');
+      const err = await exportPdf(src, out, {
+        platform: 'darwin', timeoutMs: 300, env: { ...process.env, HWP_APP: app, HWPX_HWP2PDF: bin },
+      }).catch(e => e as Error);
+      expect(err).toBeInstanceOf(Error);
+      expect(err.message).toMatch(/timed out after 0\.3s/);
+      expect(err.message).not.toMatch(/crashed/);
+      expect(fs.readFileSync(out, 'utf8')).toBe('old');
+      expect(fs.readdirSync(dir).sort()).toEqual(['Fake.app', 'a.hwpx', 'a.pdf', 'hang.sh']);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

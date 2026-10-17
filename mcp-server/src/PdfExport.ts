@@ -94,19 +94,25 @@ export function engineUnavailable(engine: PdfEngine, env: NodeJS.ProcessEnv = pr
   return null;
 }
 
-interface RunResult { code: number | null; signal: NodeJS.Signals | null; stdout: string; stderr: string }
+interface RunResult { code: number | null; signal: NodeJS.Signals | null; timedOut: boolean; stdout: string; stderr: string }
 
 function run(command: string, args: string[], env: NodeJS.ProcessEnv, timeoutMs: number): Promise<RunResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
     let stdout = '';
     let stderr = '';
+    let timedOut = false;
     child.stdout.on('data', d => { stdout += d; });
     child.stderr.on('data', d => { stderr += d; });
-    const timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs);
+    const timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL'); }, timeoutMs);
     child.on('error', e => { clearTimeout(timer); reject(e); });
-    child.on('close', (code, signal) => { clearTimeout(timer); resolve({ code, signal, stdout, stderr }); });
+    child.on('close', (code, signal) => { clearTimeout(timer); resolve({ code, signal, timedOut, stdout, stderr }); });
   });
+}
+
+/** Our own kill on timeout must not read as an engine crash or a conversion error. */
+function throwIfTimedOut(r: RunResult, timeoutMs: number): void {
+  if (r.timedOut) throw new Error(`PDF conversion timed out after ${timeoutMs / 1000}s and was stopped`);
 }
 
 /** hwp2pdf exit codes (native/hwp2pdf.m). */
@@ -159,6 +165,7 @@ export async function exportPdf(input: string, output: string, opts: ExportOptio
     let pages: number;
     if (engine === 'hancom-mac') {
       const r = await run(hwp2pdfBinary(env), [src, staged], { ...env, TMPDIR: work }, timeoutMs);
+      throwIfTimedOut(r, timeoutMs);
       if (r.code !== 0) {
         const why = r.signal ? `the Hancom engine crashed on this document (${r.signal})`
           : MAC_EXIT[r.code ?? -1] ?? `converter exited with ${r.code}`;
@@ -171,6 +178,7 @@ export async function exportPdf(input: string, output: string, opts: ExportOptio
       fs.writeFileSync(script, '\ufeff' + WINDOWS_SCRIPT, 'utf8');
       const inv = windowsInvocation(script, src, staged);
       const r = await run(inv.command, inv.args, { ...env, ...inv.env }, timeoutMs);
+      throwIfTimedOut(r, timeoutMs);
       if (r.code !== 0) {
         const why = (r.stderr || r.stdout).trim().split(/\r?\n/).slice(-3).join(' ');
         throw new Error(`PDF conversion failed in 한/글 (Windows): ${why || `exit ${r.code}`}`);
