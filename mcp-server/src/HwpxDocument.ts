@@ -5127,6 +5127,34 @@ export class HwpxDocument {
     });
   }
 
+  /**
+   * Bytes of the document as it stands, for a read-only consumer (PDF export), leaving this document
+   * exactly as it was. save() folds pending edits into the zip, clears them and marks the document clean;
+   * running it here would let a later undo() + save() write the exported edits anyway. So the save runs
+   * on a deep copy: content and pending queues cloned in one structuredClone call (shared references stay
+   * shared, and the table-op sequence numbers stay attached to their ops), the zip rebuilt from its bytes.
+   */
+  async serializeForExport(): Promise<Buffer> {
+    if (!this._zip) throw new Error('Cannot save HWP files');
+    const skip = new Set(['_zip', '_tableOpSeq', '_undoStack', '_redoStack']);
+    const fields = Object.fromEntries(Object.entries(this).filter(([k]) => !skip.has(k)));
+    const seqs: Array<[object, number]> = [];
+    for (const v of Object.values(fields)) {
+      if (!Array.isArray(v)) continue;
+      for (const op of v) {
+        const seq = op && typeof op === 'object' ? this._tableOpSeq.get(op) : undefined;
+        if (seq !== undefined) seqs.push([op, seq]);
+      }
+    }
+    const cloned = structuredClone({ fields, seqs });
+    const copy = Object.assign(Object.create(HwpxDocument.prototype), cloned.fields) as HwpxDocument;
+    copy._tableOpSeq = new WeakMap(cloned.seqs);
+    copy._undoStack = [];
+    copy._redoStack = [];
+    copy._zip = await JSZip.loadAsync(await this._zip.generateAsync({ type: 'nodebuffer' }));
+    return copy.save();
+  }
+
   // WARNING: syncContentToZip reads and writes header.xml and section XML files sequentially.
   // Each apply*ToXml() method may read header.xml independently, so the order of operations matters.
   // If multiple methods modify header.xml, later methods will see changes from earlier ones.
