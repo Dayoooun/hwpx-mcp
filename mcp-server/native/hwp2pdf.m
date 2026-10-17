@@ -102,10 +102,12 @@ int main(int argc,char**argv){@autoreleasepool{
   // (measured: 3/180 blank PDFs with 12 concurrent runs, 0/180 when serialized). Serialize the engine work
   // with a per-user flock; the kernel drops it when the process exits, crash included. The lock lives at a
   // fixed per-user path, not under TMPDIR: callers with different TMPDIRs must still share one lock.
-  // HOME may be unset (launchd, some MCP hosts); the passwd entry gives the same directory, so every caller of
-  // this user still meets on one lock file. If the lock cannot be taken, do not convert at all.
-  const char *home=getenv("HOME");
-  if(!home||!*home){ struct passwd *pw=getpwuid(getuid()); home=pw&&pw->pw_dir?pw->pw_dir:NULL; }
+  // The directory comes from the passwd entry, not $HOME: HOME may be unset (launchd, some MCP hosts) or
+  // differ between callers of the same user, and every caller must meet on one lock file. $HOME is only the
+  // fallback when the passwd lookup fails. If the lock cannot be taken, do not convert at all.
+  struct passwd *pw=getpwuid(getuid());
+  const char *home=pw&&pw->pw_dir&&*pw->pw_dir?pw->pw_dir:getenv("HOME");
+  if(home&&!*home) home=NULL;
   if(!home){fprintf(stderr,"lock: no home directory\n");QUIT(10);}
   char lockp[1100]; snprintf(lockp,sizeof lockp,"%s/Library/Caches/hwp2pdf.lock",home);
   fprintf(stderr,"lock: %s\n",lockp);
