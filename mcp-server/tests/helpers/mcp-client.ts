@@ -6,6 +6,8 @@
  * HWPX_MCP_SERVER:
  *   - unset / "local"      → node dist/index.js of this checkout (built first)
  *   - "npm:<version>"      → npx -y @kimdayoun/hwpx-mcp@<version>
+ *   - "path:<index.js>"    → node <index.js> of an installed copy (the version matrix installs each
+ *                            published version once, so parallel e2e files do not race on npx's cache)
  * The version matrix in CI runs the same e2e files against several values.
  *
  * HWPX_MCP_NODE picks the Node binary that runs the LOCAL server. The test
@@ -42,15 +44,22 @@ export class McpClient {
     proc.stderr.on('data', chunk => { this.stderr += chunk.toString(); });
   }
 
+  /** Which server runs, for test titles. A `path:` target names its version via HWPX_MCP_SERVER_LABEL. */
   static serverLabel(): string {
+    return process.env.HWPX_MCP_SERVER_LABEL || McpClient.serverTarget();
+  }
+
+  private static serverTarget(): string {
     return process.env.HWPX_MCP_SERVER || 'local';
   }
 
   static async start(cwd: string): Promise<McpClient> {
-    const target = McpClient.serverLabel();
+    const target = McpClient.serverTarget();
     const proc = target.startsWith('npm:')
       ? spawn('npx', ['-y', `@kimdayoun/hwpx-mcp@${target.slice(4)}`], { cwd, stdio: ['pipe', 'pipe', 'pipe'] })
-      : spawn(process.env.HWPX_MCP_NODE || process.execPath, [path.resolve(__dirname, '../../dist/index.js')], { cwd, stdio: ['pipe', 'pipe', 'pipe'] });
+      : spawn(process.env.HWPX_MCP_NODE || process.execPath,
+        [target.startsWith('path:') ? target.slice(5) : path.resolve(__dirname, '../../dist/index.js')],
+        { cwd, stdio: ['pipe', 'pipe', 'pipe'] });
     const client = new McpClient(proc as ChildProcessWithoutNullStreams);
     await client.request('initialize', {
       protocolVersion: '2024-11-05',

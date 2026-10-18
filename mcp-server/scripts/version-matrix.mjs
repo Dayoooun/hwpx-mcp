@@ -2,13 +2,16 @@
 /**
  * 버전 매트릭스 — 같은 종단간 시나리오를 여러 서버 버전에 돌려 표로 낸다.
  *
- *   npm run test:versions                 # 기본: 게시된 0.3.0, 0.3.3, 0.3.4, 0.3.5 + local
- *   npm run test:versions -- 0.3.5 local  # 원하는 것만
+ *   npm run test:versions                 # 기본: 게시된 0.3.0, 0.3.3, 0.3.4, 0.3.5 + npm latest + local
+ *   npm run test:versions -- 0.3.6 local  # 원하는 것만
+ *
+ * `latest` 는 npm 에 지금 게시된 최신 버전으로 바뀐다. 그래서 새 버전을 게시하면 다음 PR 부터
+ * 그 버전이 회귀 기준이 된다 — 목록을 손으로 고치지 않아도 된다.
  *
  * 쓰임:
  *   - 리뷰어가 "0.3.0 에서 5개, 0.3.3 에서 10개 통과"라고 알려 주면, 같은 표를
  *     우리 쪽에서 만들어 대조한다.
- *   - 새 버전을 내기 전에 local 이 게시된 최신 버전보다 나빠진 칸이 없는지 본다
+ *   - 새 버전을 내기 전에 local 이 게시된 버전 중 가장 높은 버전보다 나빠진 칸이 없는지 본다
  *     (나빠진 칸이 있으면 exit 1).
  *
  * 각 버전은 tests/e2e 를 HWPX_MCP_SERVER=<target> 으로 한 번 돌린다.
@@ -19,8 +22,19 @@ import os from 'node:os';
 import path from 'node:path';
 
 const args = process.argv.slice(2);
-const targets = (args.length ? args : ['0.3.0', '0.3.3', '0.3.4', '0.3.5', 'local'])
-  .map(t => (t === 'local' || t.startsWith('npm:') ? t : `npm:${t}`));
+const wanted = args.length ? args : ['0.3.0', '0.3.3', '0.3.4', '0.3.5', 'latest', 'local'];
+let latestVersion;
+if (wanted.includes('latest')) {
+  const v = spawnSync('npm', ['view', '@kimdayoun/hwpx-mcp@latest', 'version'], { encoding: 'utf8' });
+  latestVersion = v.status === 0 ? v.stdout.trim() : '';
+  if (!/^\d+\.\d+\.\d+$/.test(latestVersion)) {
+    console.error(`npm 의 latest 버전을 알 수 없습니다: ${(v.stderr || v.stdout).trim()}`);
+    process.exit(1);
+  }
+}
+const targets = [...new Set(wanted
+  .map(t => (t === 'latest' ? latestVersion : t))
+  .map(t => (t === 'local' || t.startsWith('npm:') ? t : `npm:${t}`)))];
 
 if (targets.includes('local')) {
   const b = spawnSync('npm', ['run', 'build'], { stdio: 'inherit' });
@@ -34,8 +48,24 @@ for (const target of targets) {
   // A fresh path per run, so a report left over from an earlier run can never
   // be read as this run's result.
   const report = path.join(runDir, `${target.replace(/[^a-z0-9.]/gi, '_')}.json`);
+  // Install a published version once, before the run. The e2e files run in parallel and each starts the
+  // server; with `npx -y pkg@ver` they all unpacked into the same ~/.npm/_npx dir at once and collided
+  // (CI: "ENOTEMPTY: directory not empty, rmdir …/_npx/…/node_modules/zod/v4/mini" → initialize timeout).
+  let server = target;
+  if (target.startsWith('npm:')) {
+    const dir = path.join(runDir, `pkg-${target.slice(4)}`);
+    fs.mkdirSync(dir);
+    const inst = spawnSync('npm', ['install', '--prefix', dir, '--no-audit', '--no-fund', '--omit=dev',
+      `@kimdayoun/hwpx-mcp@${target.slice(4)}`], { stdio: ['ignore', 'ignore', 'inherit'] });
+    if (inst.status !== 0) {
+      console.error(`[${target}] npm install failed (exit ${inst.status})`);
+      broken.push(target);
+      continue;
+    }
+    server = `path:${path.join(dir, 'node_modules', '@kimdayoun', 'hwpx-mcp', 'dist', 'index.js')}`;
+  }
   const r = spawnSync('npx', ['vitest', 'run', 'tests/e2e', '--reporter=json', `--outputFile=${report}`], {
-    env: { ...process.env, HWPX_MCP_SERVER: target },
+    env: { ...process.env, HWPX_MCP_SERVER: server, HWPX_MCP_SERVER_LABEL: target },
     stdio: ['ignore', 'ignore', 'inherit'],
   });
   // No report, a report with zero tests, or a suite that failed before its
@@ -49,7 +79,9 @@ for (const target of targets) {
     (n, f) => n + (f.assertionResults ?? []).filter(a => a.status === 'passed' || a.status === 'failed').length, 0) ?? 0;
   const suiteError = json?.testResults?.find(f => f.status === 'failed' && f.message)?.message;
   if (!json || ran === 0) {
-    console.error(`[${target}] no test ran (exit ${r.status})${suiteError ? `: ${suiteError.split('\n')[0]}` : ''}`);
+    // The whole suite error, not its first line: "MCP timeout: initialize" alone does not say why the
+    // server never answered — the server's stderr that follows it does.
+    console.error(`[${target}] no test ran (exit ${r.status})${suiteError ? `:\n${suiteError.slice(0, 1500)}` : ''}`);
     broken.push(target);
     continue;
   }
@@ -81,9 +113,12 @@ for (const [title, row] of results) {
 console.log('-'.repeat(header.length));
 console.log(['통과'.padEnd(col), ...targets.map(t => `${passCount[t]}/${results.size}`.padStart(7))].join(' | '));
 
-// local 이 비교 대상 중 가장 최근 게시 버전보다 나빠진 칸이 있으면 실패.
-const published = targets.filter(t => t.startsWith('npm:'));
-const latest = published[published.length - 1];
+// local 이 비교 대상 중 가장 높은 게시 버전보다 나빠진 칸이 있으면 실패. 목록 순서가 아니라 버전으로
+// 고른다 — `latest` 가 앞에 오거나 목록이 섞여도 기준은 늘 최신 게시본이다.
+const semver = t => t.slice(4).split('.').map(Number);
+const newer = (a, b) => { const x = semver(a), y = semver(b); for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] > y[i]; return false; };
+const latest = targets.filter(t => t.startsWith('npm:')).reduce((m, t) => (!m || newer(t, m) ? t : m), undefined);
+console.log(`\n회귀 기준: ${latest ? latest.slice(4) : '(게시 버전 없음)'}`);
 if (targets.includes('local') && latest) {
   const worse = [...results].filter(([, row]) => row[latest] === 'pass' && row.local !== 'pass').map(([t]) => t);
   if (worse.length) {
