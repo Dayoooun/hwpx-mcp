@@ -48,8 +48,24 @@ for (const target of targets) {
   // A fresh path per run, so a report left over from an earlier run can never
   // be read as this run's result.
   const report = path.join(runDir, `${target.replace(/[^a-z0-9.]/gi, '_')}.json`);
+  // Install a published version once, before the run. The e2e files run in parallel and each starts the
+  // server; with `npx -y pkg@ver` they all unpacked into the same ~/.npm/_npx dir at once and collided
+  // (CI: "ENOTEMPTY: directory not empty, rmdir …/_npx/…/node_modules/zod/v4/mini" → initialize timeout).
+  let server = target;
+  if (target.startsWith('npm:')) {
+    const dir = path.join(runDir, `pkg-${target.slice(4)}`);
+    fs.mkdirSync(dir);
+    const inst = spawnSync('npm', ['install', '--prefix', dir, '--no-audit', '--no-fund', '--omit=dev',
+      `@kimdayoun/hwpx-mcp@${target.slice(4)}`], { stdio: ['ignore', 'ignore', 'inherit'] });
+    if (inst.status !== 0) {
+      console.error(`[${target}] npm install failed (exit ${inst.status})`);
+      broken.push(target);
+      continue;
+    }
+    server = `path:${path.join(dir, 'node_modules', '@kimdayoun', 'hwpx-mcp', 'dist', 'index.js')}`;
+  }
   const r = spawnSync('npx', ['vitest', 'run', 'tests/e2e', '--reporter=json', `--outputFile=${report}`], {
-    env: { ...process.env, HWPX_MCP_SERVER: target },
+    env: { ...process.env, HWPX_MCP_SERVER: server, HWPX_MCP_SERVER_LABEL: target },
     stdio: ['ignore', 'ignore', 'inherit'],
   });
   // No report, a report with zero tests, or a suite that failed before its
