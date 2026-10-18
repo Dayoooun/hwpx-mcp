@@ -63,7 +63,9 @@ for (const target of targets) {
     (n, f) => n + (f.assertionResults ?? []).filter(a => a.status === 'passed' || a.status === 'failed').length, 0) ?? 0;
   const suiteError = json?.testResults?.find(f => f.status === 'failed' && f.message)?.message;
   if (!json || ran === 0) {
-    console.error(`[${target}] no test ran (exit ${r.status})${suiteError ? `: ${suiteError.split('\n')[0]}` : ''}`);
+    // The whole suite error, not its first line: "MCP timeout: initialize" alone does not say why the
+    // server never answered — the server's stderr that follows it does.
+    console.error(`[${target}] no test ran (exit ${r.status})${suiteError ? `:\n${suiteError.slice(0, 1500)}` : ''}`);
     broken.push(target);
     continue;
   }
