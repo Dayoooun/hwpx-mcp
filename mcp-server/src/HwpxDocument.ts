@@ -2910,20 +2910,27 @@ export class HwpxDocument {
       return null; // the position is a master cell
     }
 
-    // Merged cells can only originate at or before (row, col), and a table with
-    // no spans at all — the common case — exits on the first row scan.
+    // `cells[]` holds a row's <hp:tc> in document order, while spans are measured in
+    // grid columns. Hancom tables omit covered cells, so after a colSpan=2 cell the
+    // array index and the grid column differ (a 4-cell row on a 5-column grid). Compare
+    // in grid coordinates (colAddr/rowAddr) whenever the parser recorded them.
+    const gridCol = (cell: TableCell | undefined, index: number) => cell?.colAddr ?? index;
+    const gridRow = (cell: TableCell | undefined, index: number) => cell?.rowAddr ?? index;
+    const targetCol = gridCol(target, col);
+    const targetRow = gridRow(target, row);
+
     for (let r = 0; r <= row && r < rows.length; r++) {
       const cells = rows[r]?.cells;
       if (!cells) continue;
-      const lastCol = Math.min(col, cells.length - 1);
-      for (let c = 0; c <= lastCol; c++) {
+      for (let c = 0; c < cells.length; c++) {
         const cell = cells[c];
-        if (!cell) continue;
+        if (!cell || cell === target) continue;
         const rowSpan = cell.rowSpan ?? 1;
         const colSpan = cell.colSpan ?? 1;
         if (rowSpan <= 1 && colSpan <= 1) continue;
-        if (r === row && c === col) continue;
-        if (row < r + rowSpan && col < c + colSpan) {
+        const top = gridRow(cell, r);
+        const left = gridCol(cell, c);
+        if (top <= targetRow && targetRow < top + rowSpan && left <= targetCol && targetCol < left + colSpan) {
           return { row: r, col: c };
         }
       }
