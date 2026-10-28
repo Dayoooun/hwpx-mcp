@@ -192,6 +192,7 @@ export class HwpxDocument {
     orgWidth: number;  // original image width in pixels
     orgHeight: number; // original image height in pixels
     afterText?: string; // Text to search for - insert image after the paragraph containing this text
+    align?: 'LEFT' | 'CENTER' | 'RIGHT'; // Horizontal position of the image in the cell
   }> = [];
   private _pendingTableInserts: Array<{
     sectionIndex: number;
@@ -1234,13 +1235,11 @@ export class HwpxDocument {
     const style = paragraph.paraStyle;
     if (!style) return 0;
 
-    // Hanging indent: firstLineIndent is negative and marginLeft is positive
+    // Hanging indent is a negative first-line indent (Hancom writes left=0, intent=-X;
+    // older files from this server also carry left=X). Its size is -intent either way.
     const firstLineIndent = style.firstLineIndent || 0;
-    const marginLeft = style.marginLeft || 0;
-
-    if (firstLineIndent < 0 && marginLeft > 0) {
-      // Return the indent amount (positive value)
-      return marginLeft;
+    if (firstLineIndent < 0) {
+      return -firstLineIndent;
     }
 
     return 0;
@@ -1575,12 +1574,11 @@ export class HwpxDocument {
     const style = paragraph.paraStyle;
     if (!style) return 0;
 
-    // Hanging indent: firstLineIndent is negative and marginLeft is positive
+    // Hanging indent is a negative first-line indent (Hancom writes left=0, intent=-X;
+    // older files from this server also carry left=X). Its size is -intent either way.
     const firstLineIndent = style.firstLineIndent || 0;
-    const marginLeft = style.marginLeft || 0;
-
-    if (firstLineIndent < 0 && marginLeft > 0) {
-      return marginLeft;
+    if (firstLineIndent < 0) {
+      return -firstLineIndent;
     }
 
     return 0;
@@ -4497,6 +4495,7 @@ export class HwpxDocument {
       height?: number;
       preserveAspectRatio?: boolean;
       afterText?: string; // Text to search for - insert image after the paragraph containing this text
+      align?: 'LEFT' | 'CENTER' | 'RIGHT'; // Horizontal position in the cell (default LEFT)
     }
   ): { id: string; actualWidth: number; actualHeight: number } | null {
     const table = this.findTable(sectionIndex, tableIndex);
@@ -4590,6 +4589,7 @@ export class HwpxDocument {
       orgWidth: orgDimensions.width,
       orgHeight: orgDimensions.height,
       afterText: imageData.afterText,
+      align: imageData.align,
     });
 
     this.markModified();
@@ -7993,6 +7993,7 @@ export class HwpxDocument {
       orgWidth: number;
       orgHeight: number;
       afterText?: string;
+      align?: 'LEFT' | 'CENTER' | 'RIGHT';
     }>>();
 
     for (const insert of this._pendingCellImageInserts) {
@@ -8008,6 +8009,7 @@ export class HwpxDocument {
         orgWidth: insert.orgWidth,
         orgHeight: insert.orgHeight,
         afterText: insert.afterText,
+        align: insert.align,
       });
       insertsBySection.set(insert.sectionIndex, sectionInserts);
     }
@@ -8125,7 +8127,7 @@ export class HwpxDocument {
   <hp:imgDim dimwidth="${hwpWidth}" dimheight="${hwpHeight}"/>
   <hp:effects/>
   <hp:sz width="${hwpWidth}" widthRelTo="ABSOLUTE" height="${hwpHeight}" heightRelTo="ABSOLUTE" protect="0"/>
-  <hp:pos treatAsChar="0" affectLSpacing="0" flowWithText="1" allowOverlap="0" holdAnchorAndSO="0" vertRelTo="PARA" horzRelTo="COLUMN" vertAlign="TOP" horzAlign="LEFT" vertOffset="0" horzOffset="0"/>
+  <hp:pos treatAsChar="0" affectLSpacing="0" flowWithText="1" allowOverlap="0" holdAnchorAndSO="0" vertRelTo="PARA" horzRelTo="COLUMN" vertAlign="TOP" horzAlign="${insert.align ?? 'LEFT'}" vertOffset="0" horzOffset="0"/>
   <hp:outMargin left="0" right="0" top="0" bottom="0"/>
   <hp:shapeComment>Inserted in cell by HWPX MCP</hp:shapeComment>
 </hp:pic><hp:t/></hp:run>`;
@@ -13134,12 +13136,14 @@ export class HwpxDocument {
   }
 
   private hangingParaPrXml(id: number, indentPt: number, spacing: { type: string; value: string }): string {
-    // HWPUNIT = pt * 100
+    // HWPUNIT = pt * 100. Hancom's own hanging indent is left=0, intent=-X: the first
+    // line starts at the margin and wrapped lines start X later. left=X on top of that
+    // pushed the whole paragraph, first line included, X to the right.
     return `\n      <hh:paraPr id="${id}" tabPrIDRef="0">
         <hh:align horizontal="LEFT" vertical="BASELINE"/>
         <hh:margin>
           <hc:intent value="${-indentPt * 100}" unit="HWPUNIT"/>
-          <hc:left value="${indentPt * 100}" unit="HWPUNIT"/>
+          <hc:left value="0" unit="HWPUNIT"/>
           <hc:right value="0" unit="HWPUNIT"/>
           <hc:prev value="0" unit="HWPUNIT"/>
           <hc:next value="0" unit="HWPUNIT"/>

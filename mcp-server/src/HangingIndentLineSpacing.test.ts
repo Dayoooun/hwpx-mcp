@@ -71,6 +71,11 @@ describe('내어쓰기 문단 모양은 원래 줄 간격을 지킨다', () => {
       expect(Number(s.intentOf(id))).toBeLessThan(0);   // 내어쓰기는 걸렸고
       expect(s.spacingOf(id)).toBe('130');               // 줄 간격은 양식 그대로
     }
+    // 한/글 내어쓰기 모양: 첫 줄은 그대로(left=0), 둘째 줄부터 들여쓰기만큼 안쪽(intent<0).
+    // left 를 들여쓰기만큼 주면 □ 줄까지 통째로 밀려 위계가 무너진다(실측: □ 155pt → 170pt).
+    const leftOf = (id: string) =>
+      s.header.match(new RegExp(`<hh:paraPr\\b[^>]*\\sid="${id}"[\\s\\S]*?<hc:left value="(-?\\d+)"`))?.[1];
+    for (const id of refs) expect(leftOf(id)).toBe('0');
   });
 
   it('같은 들여쓰기라도 줄 간격이 다른 칸은 서로 다른 문단 모양을 받는다', async () => {
