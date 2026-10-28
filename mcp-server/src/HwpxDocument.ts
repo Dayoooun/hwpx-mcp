@@ -270,11 +270,13 @@ export class HwpxDocument {
   private _pendingParagraphStyles: Array<{
     sectionIndex: number;
     elementIndex: number;
+    paragraph: HwpxParagraph;
     style: Partial<ParagraphStyle>;
   }> = [];
   private _pendingCharacterStyles: Array<{
     sectionIndex: number;
     elementIndex: number;
+    paragraph: HwpxParagraph;
     runIndex: number;
     style: Partial<CharacterStyle>;
   }> = [];
@@ -1128,6 +1130,7 @@ export class HwpxDocument {
     this._pendingCharacterStyles.push({
       sectionIndex,
       elementIndex,
+      paragraph,
       runIndex,
       style,
     });
@@ -1160,6 +1163,7 @@ export class HwpxDocument {
     this._pendingParagraphStyles.push({
       sectionIndex,
       elementIndex,
+      paragraph,
       style,
     });
 
@@ -5672,6 +5676,24 @@ export class HwpxDocument {
       seen++;
     }
     return null;
+  }
+
+  /**
+   * XML range of a memory paragraph, found by id and occurrence. Call once the
+   * structural edits are replayed, so memory and XML agree. Counting top-level
+   * XML elements instead goes wrong whenever memory holds elements without a
+   * top-level node of their own: a paragraph with a picture adds an 'image'
+   * element, and every style edit after it landed that many paragraphs late
+   * (measured on the 예비창업패키지 form: two pictures, the font change hit the
+   * paragraph two below).
+   */
+  private locateMemoryParagraph(xml: string, sectionIndex: number, paragraph: HwpxParagraph): { start: number; end: number } | null {
+    const elements = this._content.sections[sectionIndex]?.elements ?? [];
+    const index = elements.findIndex(e => e.type === 'paragraph' && e.data === paragraph);
+    if (index === -1) return null;
+    const anchor = this.resolveElementAnchor(sectionIndex, index);
+    if (!anchor || anchor.kind !== 'paragraph' || anchor.id !== String(paragraph.id ?? '')) return null;
+    return this.findParsedParagraph(xml, anchor);
   }
 
   /**
@@ -12827,7 +12849,7 @@ export class HwpxDocument {
     };
 
     // Group updates by section
-    const updatesBySection = new Map<number, Array<{ elementIndex: number; style: Partial<ParagraphStyle>; newParaPrId: number }>>();
+    const updatesBySection = new Map<number, Array<{ paragraph: HwpxParagraph; newParaPrId: number }>>();
 
     // Create new paraPr elements for each style change
     const newParaPrs: string[] = [];
@@ -12877,8 +12899,7 @@ export class HwpxDocument {
         updatesBySection.set(update.sectionIndex, []);
       }
       updatesBySection.get(update.sectionIndex)!.push({
-        elementIndex: update.elementIndex,
-        style: update.style,
+        paragraph: update.paragraph,
         newParaPrId: newId,
       });
     }
@@ -12906,30 +12927,18 @@ export class HwpxDocument {
     // Update section XMLs
     for (const [sectionIndex, updates] of updatesBySection) {
       const sectionPath = `Contents/section${sectionIndex}.xml`;
-      let sectionXml = await this._zip.file(sectionPath)?.async('string');
+      let sectionXml: string | undefined = await this._zip.file(sectionPath)?.async('string');
       if (!sectionXml) continue;
 
-      // Find all top-level elements (paragraphs AND tables) to match elementIndex
-      // Uses depth-aware helper to avoid matching elements nested inside tables/secPr
-      const allElements = this.findTopLevelElements(sectionXml);
-
-      // Update paraPrIDRef for each affected paragraph
-      // Sort updates by elementIndex in reverse order to avoid offset issues
-      const sortedUpdates = [...updates].sort((a, b) => b.elementIndex - a.elementIndex);
-
-      for (const update of sortedUpdates) {
-        if (update.elementIndex < allElements.length) {
-          const elem = allElements[update.elementIndex];
-          if (elem.type !== 'p') continue; // Skip tables
-          // Replace paraPrIDRef in the paragraph element
-          const updatedContent = elem.content.replace(
-            /paraPrIDRef="(\d+)"/,
-            `paraPrIDRef="${update.newParaPrId}"`
-          );
-          sectionXml = sectionXml.substring(0, elem.start) +
-            updatedContent +
-            sectionXml.substring(elem.start + elem.tagLength);
-        }
+      // Only the opening tag changes, so offsets after it stay valid for the
+      // next lookup; each lookup still runs on the current XML.
+      for (const update of updates) {
+        const range = this.locateMemoryParagraph(sectionXml, sectionIndex, update.paragraph);
+        if (!range) continue;
+        const openEnd: number = sectionXml.indexOf('>', range.start) + 1;
+        const openTag: string = sectionXml.slice(range.start, openEnd)
+          .replace(/paraPrIDRef="\d+"/, `paraPrIDRef="${update.newParaPrId}"`);
+        sectionXml = sectionXml.slice(0, range.start) + openTag + sectionXml.slice(openEnd);
       }
 
       this._zip.file(sectionPath, sectionXml);
@@ -13052,22 +13061,9 @@ export class HwpxDocument {
         }
 
         // Update section XML - find the paragraph and update run's charPrIDRef
-        // Uses depth-aware helper to only match top-level elements
-        const allTopElements = this.findTopLevelElements(sectionXml);
-        let targetParagraphStart = -1;
-        let targetParagraphEnd = -1;
-
-        if (update.elementIndex < allTopElements.length) {
-          const elem = allTopElements[update.elementIndex];
-          if (elem.type === 'p') {
-            targetParagraphStart = elem.start;
-            // Find end of this paragraph - need to find matching close tag
-            const prefixMatch = elem.content.match(/<(hp|hs):p/);
-            const pPrefix = prefixMatch ? prefixMatch[1] : 'hp';
-            const closeTag = `</${pPrefix}:p>`;
-            targetParagraphEnd = sectionXml.indexOf(closeTag, targetParagraphStart) + closeTag.length;
-          }
-        }
+        const range = this.locateMemoryParagraph(sectionXml, sectionIndex, update.paragraph);
+        const targetParagraphStart = range ? range.start : -1;
+        const targetParagraphEnd = range ? range.end : -1;
 
         if (targetParagraphStart >= 0 && targetParagraphEnd > targetParagraphStart) {
           let paraXml = sectionXml.slice(targetParagraphStart, targetParagraphEnd);
