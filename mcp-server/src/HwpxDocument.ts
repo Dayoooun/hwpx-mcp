@@ -45,6 +45,14 @@ type DocumentFormat = 'hwpx' | 'hwp';
  * `occurrence` disambiguates repeated ids — Hancom writes id="0" and
  * id="2147483648" on many paragraphs of the same section.
  */
+/** One undo/redo history entry: memory model plus the edits not yet in XML. */
+interface UndoEntry {
+  content: string;
+  pending: Record<string, unknown[]>;
+  /** Direct text updates with their paragraph stored as an element index. */
+  textUpdates: Array<{ update: Record<string, unknown> & { sectionIndex: number }; at: number }>;
+}
+
 interface ElementAnchor {
   kind: 'paragraph' | 'table';
   id: string;
@@ -133,8 +141,8 @@ export class HwpxDocument {
   private _structureChanged = false;
   private _format: DocumentFormat;
 
-  private _undoStack: string[] = [];
-  private _redoStack: string[] = [];
+  private _undoStack: UndoEntry[] = [];
+  private _redoStack: UndoEntry[] = [];
   private _pendingTextReplacements: Array<{ oldText: string; newText: string; options: { caseSensitive?: boolean; regex?: boolean; replaceAll?: boolean } }> = [];
   private _pendingDirectTextUpdates: Array<{
     sectionIndex: number;
@@ -585,8 +593,7 @@ export class HwpxDocument {
   // ============================================================
 
   private saveState(): void {
-    const state = this.serializeContent();
-    this._undoStack.push(state);
+    this._undoStack.push(this.captureState());
     if (this._undoStack.length > MAX_UNDO_STACK_SIZE) {
       this._undoStack.shift();
     }
@@ -608,27 +615,82 @@ export class HwpxDocument {
     this.markStructureChanged();
   }
 
+  /**
+   * Snapshot of the memory model AND the edits still waiting to be written to
+   * XML. Edits reach the file only through the _pending* queues, so a history
+   * entry that restored memory but emptied the queues made save drop every
+   * edit that undo/redo was supposed to keep (measured on 0.3.5: edit A, edit B,
+   * undo, save -> neither A nor B on disk; edit, undo, redo, save -> the edit
+   * missing on disk while get_table_cell still showed it).
+   */
+  /**
+   * Copy a queue so history and the live document never share an op object.
+   * Later edits change queued ops in place (a second hanging indent rewrites
+   * indentPt, insert/delete section renumbers sectionIndex), and a shared op
+   * would carry that change into the history entry, so undo restored memory
+   * but saved the newer value. Those in-place changes touch top-level fields
+   * only, so one level is copied; nested values (style, position, cellTexts)
+   * stay shared and must not be changed in place after queueing.
+   * The call-order number lives in _tableOpSeq keyed by the op object; the
+   * copy takes over the original's number.
+   */
+  private copyQueue(ops: unknown[]): unknown[] {
+    return ops.map(op => {
+      if (!op || typeof op !== 'object') return op;
+      const copy = { ...(op as object) };
+      const seq = this._tableOpSeq.get(op);
+      if (seq !== undefined) this._tableOpSeq.set(copy, seq);
+      return copy;
+    });
+  }
+
+  private captureState(): UndoEntry {
+    const pending: Record<string, unknown[]> = {};
+    for (const key of Object.keys(this)) {
+      const value = (this as unknown as Record<string, unknown>)[key];
+      if (key.startsWith('_pending') && Array.isArray(value)) pending[key] = this.copyQueue(value);
+    }
+    // Direct text updates find their paragraph by object identity at save time
+    // (applyDirectTextUpdatesToXml). The memory model comes back from JSON, so
+    // store where each paragraph sits and re-link it to the restored object.
+    const textUpdates = this._pendingDirectTextUpdates.map(update => {
+      const elements = this._content.sections[update.sectionIndex]?.elements ?? [];
+      const at = update.paragraph
+        ? elements.findIndex(e => e.type === 'paragraph' && e.data === update.paragraph)
+        : -1;
+      return { update: { ...update, paragraph: undefined }, at };
+    });
+    delete pending._pendingDirectTextUpdates;
+    return { content: this.serializeContent(), pending, textUpdates };
+  }
+
+  private restoreState(entry: UndoEntry): void {
+    this.deserializeContent(entry.content);
+    this.clearAllPendingArrays();
+    const self = this as unknown as Record<string, unknown>;
+    for (const [key, ops] of Object.entries(entry.pending)) self[key] = this.copyQueue(ops);
+    this._pendingDirectTextUpdates = entry.textUpdates.map(({ update, at }) => {
+      const element = this._content.sections[update.sectionIndex]?.elements[at];
+      const paragraph = at >= 0 && element?.type === 'paragraph' ? element.data : undefined;
+      return { ...update, paragraph } as (typeof this._pendingDirectTextUpdates)[number];
+    });
+  }
+
   canUndo(): boolean { return this._undoStack.length > 0; }
   canRedo(): boolean { return this._redoStack.length > 0; }
 
   undo(): boolean {
     if (!this.canUndo()) return false;
-    const currentState = this.serializeContent();
-    this._redoStack.push(currentState);
-    const previousState = this._undoStack.pop()!;
-    this.deserializeContent(previousState);
-    this.clearAllPendingArrays();
+    this._redoStack.push(this.captureState());
+    this.restoreState(this._undoStack.pop()!);
     this.markModified();
     return true;
   }
 
   redo(): boolean {
     if (!this.canRedo()) return false;
-    const currentState = this.serializeContent();
-    this._undoStack.push(currentState);
-    const nextState = this._redoStack.pop()!;
-    this.deserializeContent(nextState);
-    this.clearAllPendingArrays();
+    this._undoStack.push(this.captureState());
+    this.restoreState(this._redoStack.pop()!);
     this.markModified();
     return true;
   }
@@ -865,14 +927,14 @@ export class HwpxDocument {
 
     // Handle case where paragraph has no runs (e.g., run without hp:t tag)
     // We need to create a run in memory and track the update for XML modification
+    if (!paragraph.runs[runIndex] && !(runIndex === 0 && paragraph.runs.length === 0)) {
+      return; // Can't update non-existent run
+    }
+    // History first: the entry must not already contain this edit's queued op.
+    this.saveState();
     if (!paragraph.runs[runIndex]) {
-      // Only allow creating run 0 if no runs exist
-      if (runIndex === 0 && paragraph.runs.length === 0) {
-        // Create a new run in memory
-        paragraph.runs.push({ text: '' });
-      } else {
-        return; // Can't update non-existent run
-      }
+      // Only run 0 of a run-less paragraph gets here; create it in memory
+      paragraph.runs.push({ text: '' });
     }
 
     // Track for XML update - always add if we have a zip (HWPX file)
@@ -910,7 +972,6 @@ export class HwpxDocument {
       }
     }
 
-    this.saveState();
     paragraph.runs[runIndex].text = text;
 
     // Clear other runs in memory too
@@ -2949,9 +3010,10 @@ export class HwpxDocument {
     // Track cell update for XML sync (works for both empty and non-empty cells)
     // Store table ID for reliable XML matching
     // charShapeId is optional - if provided, it will override the existing charPrIDRef
+    // History first: the entry must not already contain this edit's queued op.
+    this.saveState();
     this.queueTableOp(this._pendingTableCellUpdates, { sectionIndex, tableIndex, tableId: table.id, row, col, colAddr: cell.colAddr, text, charShapeId });
 
-    this.saveState();
     if (cell.paragraphs.length > 0 && cell.paragraphs[0].runs.length > 0) {
       cell.paragraphs[0].runs[0].text = text;
     } else {
@@ -5292,6 +5354,13 @@ export class HwpxDocument {
 
     // Invalidate cached XML positions since XML structure may have changed
     this.invalidateXmlPositions();
+
+    // The queued edits are now in the zip. A history entry from before this
+    // point would restore memory without being able to take those edits back
+    // out of the XML, so memory and file would disagree after the next save.
+    // Saving is therefore an undo boundary.
+    this._undoStack = [];
+    this._redoStack = [];
 
     this._isDirty = false;
   }
