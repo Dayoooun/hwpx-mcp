@@ -1621,6 +1621,7 @@ Positioning within cell:
         height: { type: 'number', description: 'Image height in points (optional, default: 150)' },
         preserve_aspect_ratio: { type: 'boolean', description: 'If true, maintains original image aspect ratio. Default: false.' },
         after_text: { type: 'string', description: 'Insert the image after the paragraph containing this text. If not found, falls back to beginning of cell.' },
+        align: { type: 'string', enum: ['LEFT', 'CENTER', 'RIGHT'], description: 'Horizontal position of the image within the cell (default: LEFT). Use CENTER for figure cells.' },
       },
       required: ['doc_id', 'table_index', 'row', 'col', 'image_path'],
     },
@@ -4051,6 +4052,7 @@ Call get_tool_guide with: template, table, image, search, read, create`
             height: args?.height as number | undefined,
             preserveAspectRatio: args?.preserve_aspect_ratio as boolean | undefined,
             afterText,
+            align: args?.align as 'LEFT' | 'CENTER' | 'RIGHT' | undefined,
           }
         );
 

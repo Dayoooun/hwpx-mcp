@@ -139,7 +139,7 @@ describe('HwpxDocument - Hanging Indent (내어쓰기)', () => {
 
       // 새 paraPr이 추가되었는지 확인 (음수 intent)
       expect(headerXml).toContain('intent value="-2000"'); // -20pt = -2000 HWPUNIT
-      expect(headerXml).toContain('left value="2000"');    // 20pt = 2000 HWPUNIT
+      expect(headerXml).toMatch(/intent value="-2000" unit="HWPUNIT"\/>\s*<hc:left value="0"/);  // 한/글 내어쓰기: 첫 줄은 여백에서, 둘째 줄부터 20pt 안쪽
     });
 
     it('should update paragraph paraPrIDRef after setting hanging indent', async () => {

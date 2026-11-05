@@ -192,6 +192,7 @@ export class HwpxDocument {
     orgWidth: number;  // original image width in pixels
     orgHeight: number; // original image height in pixels
     afterText?: string; // Text to search for - insert image after the paragraph containing this text
+    align?: 'LEFT' | 'CENTER' | 'RIGHT'; // Horizontal position of the image in the cell
   }> = [];
   private _pendingTableInserts: Array<{
     sectionIndex: number;
@@ -269,11 +270,13 @@ export class HwpxDocument {
   private _pendingParagraphStyles: Array<{
     sectionIndex: number;
     elementIndex: number;
+    paragraph: HwpxParagraph;
     style: Partial<ParagraphStyle>;
   }> = [];
   private _pendingCharacterStyles: Array<{
     sectionIndex: number;
     elementIndex: number;
+    paragraph: HwpxParagraph;
     runIndex: number;
     style: Partial<CharacterStyle>;
   }> = [];
@@ -1127,6 +1130,7 @@ export class HwpxDocument {
     this._pendingCharacterStyles.push({
       sectionIndex,
       elementIndex,
+      paragraph,
       runIndex,
       style,
     });
@@ -1159,6 +1163,7 @@ export class HwpxDocument {
     this._pendingParagraphStyles.push({
       sectionIndex,
       elementIndex,
+      paragraph,
       style,
     });
 
@@ -1234,13 +1239,11 @@ export class HwpxDocument {
     const style = paragraph.paraStyle;
     if (!style) return 0;
 
-    // Hanging indent: firstLineIndent is negative and marginLeft is positive
+    // Hanging indent is a negative first-line indent (Hancom writes left=0, intent=-X;
+    // older files from this server also carry left=X). Its size is -intent either way.
     const firstLineIndent = style.firstLineIndent || 0;
-    const marginLeft = style.marginLeft || 0;
-
-    if (firstLineIndent < 0 && marginLeft > 0) {
-      // Return the indent amount (positive value)
-      return marginLeft;
+    if (firstLineIndent < 0) {
+      return -firstLineIndent;
     }
 
     return 0;
@@ -1575,12 +1578,11 @@ export class HwpxDocument {
     const style = paragraph.paraStyle;
     if (!style) return 0;
 
-    // Hanging indent: firstLineIndent is negative and marginLeft is positive
+    // Hanging indent is a negative first-line indent (Hancom writes left=0, intent=-X;
+    // older files from this server also carry left=X). Its size is -intent either way.
     const firstLineIndent = style.firstLineIndent || 0;
-    const marginLeft = style.marginLeft || 0;
-
-    if (firstLineIndent < 0 && marginLeft > 0) {
-      return marginLeft;
+    if (firstLineIndent < 0) {
+      return -firstLineIndent;
     }
 
     return 0;
@@ -2910,20 +2912,27 @@ export class HwpxDocument {
       return null; // the position is a master cell
     }
 
-    // Merged cells can only originate at or before (row, col), and a table with
-    // no spans at all — the common case — exits on the first row scan.
+    // `cells[]` holds a row's <hp:tc> in document order, while spans are measured in
+    // grid columns. Hancom tables omit covered cells, so after a colSpan=2 cell the
+    // array index and the grid column differ (a 4-cell row on a 5-column grid). Compare
+    // in grid coordinates (colAddr/rowAddr) whenever the parser recorded them.
+    const gridCol = (cell: TableCell | undefined, index: number) => cell?.colAddr ?? index;
+    const gridRow = (cell: TableCell | undefined, index: number) => cell?.rowAddr ?? index;
+    const targetCol = gridCol(target, col);
+    const targetRow = gridRow(target, row);
+
     for (let r = 0; r <= row && r < rows.length; r++) {
       const cells = rows[r]?.cells;
       if (!cells) continue;
-      const lastCol = Math.min(col, cells.length - 1);
-      for (let c = 0; c <= lastCol; c++) {
+      for (let c = 0; c < cells.length; c++) {
         const cell = cells[c];
-        if (!cell) continue;
+        if (!cell || cell === target) continue;
         const rowSpan = cell.rowSpan ?? 1;
         const colSpan = cell.colSpan ?? 1;
         if (rowSpan <= 1 && colSpan <= 1) continue;
-        if (r === row && c === col) continue;
-        if (row < r + rowSpan && col < c + colSpan) {
+        const top = gridRow(cell, r);
+        const left = gridCol(cell, c);
+        if (top <= targetRow && targetRow < top + rowSpan && left <= targetCol && targetCol < left + colSpan) {
           return { row: r, col: c };
         }
       }
@@ -4490,6 +4499,7 @@ export class HwpxDocument {
       height?: number;
       preserveAspectRatio?: boolean;
       afterText?: string; // Text to search for - insert image after the paragraph containing this text
+      align?: 'LEFT' | 'CENTER' | 'RIGHT'; // Horizontal position in the cell (default LEFT)
     }
   ): { id: string; actualWidth: number; actualHeight: number } | null {
     const table = this.findTable(sectionIndex, tableIndex);
@@ -4583,6 +4593,7 @@ export class HwpxDocument {
       orgWidth: orgDimensions.width,
       orgHeight: orgDimensions.height,
       afterText: imageData.afterText,
+      align: imageData.align,
     });
 
     this.markModified();
@@ -5665,6 +5676,24 @@ export class HwpxDocument {
       seen++;
     }
     return null;
+  }
+
+  /**
+   * XML range of a memory paragraph, found by id and occurrence. Call once the
+   * structural edits are replayed, so memory and XML agree. Counting top-level
+   * XML elements instead goes wrong whenever memory holds elements without a
+   * top-level node of their own: a paragraph with a picture adds an 'image'
+   * element, and every style edit after it landed that many paragraphs late
+   * (measured on the 예비창업패키지 form: two pictures, the font change hit the
+   * paragraph two below).
+   */
+  private locateMemoryParagraph(xml: string, sectionIndex: number, paragraph: HwpxParagraph): { start: number; end: number } | null {
+    const elements = this._content.sections[sectionIndex]?.elements ?? [];
+    const index = elements.findIndex(e => e.type === 'paragraph' && e.data === paragraph);
+    if (index === -1) return null;
+    const anchor = this.resolveElementAnchor(sectionIndex, index);
+    if (!anchor || anchor.kind !== 'paragraph' || anchor.id !== String(paragraph.id ?? '')) return null;
+    return this.findParsedParagraph(xml, anchor);
   }
 
   /**
@@ -7986,6 +8015,7 @@ export class HwpxDocument {
       orgWidth: number;
       orgHeight: number;
       afterText?: string;
+      align?: 'LEFT' | 'CENTER' | 'RIGHT';
     }>>();
 
     for (const insert of this._pendingCellImageInserts) {
@@ -8001,6 +8031,7 @@ export class HwpxDocument {
         orgWidth: insert.orgWidth,
         orgHeight: insert.orgHeight,
         afterText: insert.afterText,
+        align: insert.align,
       });
       insertsBySection.set(insert.sectionIndex, sectionInserts);
     }
@@ -8118,7 +8149,7 @@ export class HwpxDocument {
   <hp:imgDim dimwidth="${hwpWidth}" dimheight="${hwpHeight}"/>
   <hp:effects/>
   <hp:sz width="${hwpWidth}" widthRelTo="ABSOLUTE" height="${hwpHeight}" heightRelTo="ABSOLUTE" protect="0"/>
-  <hp:pos treatAsChar="0" affectLSpacing="0" flowWithText="1" allowOverlap="0" holdAnchorAndSO="0" vertRelTo="PARA" horzRelTo="COLUMN" vertAlign="TOP" horzAlign="LEFT" vertOffset="0" horzOffset="0"/>
+  <hp:pos treatAsChar="0" affectLSpacing="0" flowWithText="1" allowOverlap="0" holdAnchorAndSO="0" vertRelTo="PARA" horzRelTo="COLUMN" vertAlign="TOP" horzAlign="${insert.align ?? 'LEFT'}" vertOffset="0" horzOffset="0"/>
   <hp:outMargin left="0" right="0" top="0" bottom="0"/>
   <hp:shapeComment>Inserted in cell by HWPX MCP</hp:shapeComment>
 </hp:pic><hp:t/></hp:run>`;
@@ -12818,7 +12849,7 @@ export class HwpxDocument {
     };
 
     // Group updates by section
-    const updatesBySection = new Map<number, Array<{ elementIndex: number; style: Partial<ParagraphStyle>; newParaPrId: number }>>();
+    const updatesBySection = new Map<number, Array<{ paragraph: HwpxParagraph; newParaPrId: number }>>();
 
     // Create new paraPr elements for each style change
     const newParaPrs: string[] = [];
@@ -12868,8 +12899,7 @@ export class HwpxDocument {
         updatesBySection.set(update.sectionIndex, []);
       }
       updatesBySection.get(update.sectionIndex)!.push({
-        elementIndex: update.elementIndex,
-        style: update.style,
+        paragraph: update.paragraph,
         newParaPrId: newId,
       });
     }
@@ -12897,30 +12927,18 @@ export class HwpxDocument {
     // Update section XMLs
     for (const [sectionIndex, updates] of updatesBySection) {
       const sectionPath = `Contents/section${sectionIndex}.xml`;
-      let sectionXml = await this._zip.file(sectionPath)?.async('string');
+      let sectionXml: string | undefined = await this._zip.file(sectionPath)?.async('string');
       if (!sectionXml) continue;
 
-      // Find all top-level elements (paragraphs AND tables) to match elementIndex
-      // Uses depth-aware helper to avoid matching elements nested inside tables/secPr
-      const allElements = this.findTopLevelElements(sectionXml);
-
-      // Update paraPrIDRef for each affected paragraph
-      // Sort updates by elementIndex in reverse order to avoid offset issues
-      const sortedUpdates = [...updates].sort((a, b) => b.elementIndex - a.elementIndex);
-
-      for (const update of sortedUpdates) {
-        if (update.elementIndex < allElements.length) {
-          const elem = allElements[update.elementIndex];
-          if (elem.type !== 'p') continue; // Skip tables
-          // Replace paraPrIDRef in the paragraph element
-          const updatedContent = elem.content.replace(
-            /paraPrIDRef="(\d+)"/,
-            `paraPrIDRef="${update.newParaPrId}"`
-          );
-          sectionXml = sectionXml.substring(0, elem.start) +
-            updatedContent +
-            sectionXml.substring(elem.start + elem.tagLength);
-        }
+      // Only the opening tag changes, so offsets after it stay valid for the
+      // next lookup; each lookup still runs on the current XML.
+      for (const update of updates) {
+        const range = this.locateMemoryParagraph(sectionXml, sectionIndex, update.paragraph);
+        if (!range) continue;
+        const openEnd: number = sectionXml.indexOf('>', range.start) + 1;
+        const openTag: string = sectionXml.slice(range.start, openEnd)
+          .replace(/paraPrIDRef="\d+"/, `paraPrIDRef="${update.newParaPrId}"`);
+        sectionXml = sectionXml.slice(0, range.start) + openTag + sectionXml.slice(openEnd);
       }
 
       this._zip.file(sectionPath, sectionXml);
@@ -13043,22 +13061,9 @@ export class HwpxDocument {
         }
 
         // Update section XML - find the paragraph and update run's charPrIDRef
-        // Uses depth-aware helper to only match top-level elements
-        const allTopElements = this.findTopLevelElements(sectionXml);
-        let targetParagraphStart = -1;
-        let targetParagraphEnd = -1;
-
-        if (update.elementIndex < allTopElements.length) {
-          const elem = allTopElements[update.elementIndex];
-          if (elem.type === 'p') {
-            targetParagraphStart = elem.start;
-            // Find end of this paragraph - need to find matching close tag
-            const prefixMatch = elem.content.match(/<(hp|hs):p/);
-            const pPrefix = prefixMatch ? prefixMatch[1] : 'hp';
-            const closeTag = `</${pPrefix}:p>`;
-            targetParagraphEnd = sectionXml.indexOf(closeTag, targetParagraphStart) + closeTag.length;
-          }
-        }
+        const range = this.locateMemoryParagraph(sectionXml, sectionIndex, update.paragraph);
+        const targetParagraphStart = range ? range.start : -1;
+        const targetParagraphEnd = range ? range.end : -1;
 
         if (targetParagraphStart >= 0 && targetParagraphEnd > targetParagraphStart) {
           let paraXml = sectionXml.slice(targetParagraphStart, targetParagraphEnd);
@@ -13113,6 +13118,51 @@ export class HwpxDocument {
   // ============================================================
 
   /**
+   * Line spacing of an existing paraPr, so a hanging-indent paraPr derived from it
+   * keeps the form's spacing. Hancom files wrap it in <hp:switch>; the first
+   * <hh:lineSpacing> is the HwpUnitChar case, which is what Hancom renders.
+   */
+  private readParaPrLineSpacing(headerXml: string, paraPrId: string | undefined): { type: string; value: string } {
+    const fallback = { type: 'PERCENT', value: '160' };
+    if (paraPrId === undefined) return fallback;
+    const block = headerXml.match(new RegExp(`<hh:paraPr\\b[^>]*\\sid="${paraPrId}"[^>]*>([\\s\\S]*?)</hh:paraPr>`));
+    if (!block) return fallback;
+    const ls = block[1].match(/<hh:lineSpacing\b[^>]*\btype="([^"]+)"[^>]*\bvalue="(-?\d+)"/);
+    return ls ? { type: ls[1], value: ls[2] } : fallback;
+  }
+
+  private hangingParaPrXml(id: number, indentPt: number, spacing: { type: string; value: string }): string {
+    // HWPUNIT = pt * 100. Hancom's own hanging indent is left=0, intent=-X: the first
+    // line starts at the margin and wrapped lines start X later. left=X on top of that
+    // pushed the whole paragraph, first line included, X to the right.
+    return `\n      <hh:paraPr id="${id}" tabPrIDRef="0">
+        <hh:align horizontal="LEFT" vertical="BASELINE"/>
+        <hh:margin>
+          <hc:intent value="${-indentPt * 100}" unit="HWPUNIT"/>
+          <hc:left value="0" unit="HWPUNIT"/>
+          <hc:right value="0" unit="HWPUNIT"/>
+          <hc:prev value="0" unit="HWPUNIT"/>
+          <hc:next value="0" unit="HWPUNIT"/>
+        </hh:margin>
+        <hh:lineSpacing type="${spacing.type}" value="${spacing.value}" unit="HWPUNIT"/>
+      </hh:paraPr>`;
+  }
+
+  private insertParaPrs(headerXml: string, newParaPrXml: string, count: number): string {
+    const end = headerXml.match(/<\/hh:paraProperties>/);
+    if (!newParaPrXml || !end || end.index === undefined) return headerXml;
+    headerXml = headerXml.slice(0, end.index) + newParaPrXml + '\n    ' + headerXml.slice(end.index);
+    const itemCnt = headerXml.match(/<hh:paraProperties[^>]*itemCnt="(\d+)"/);
+    if (itemCnt) {
+      headerXml = headerXml.replace(
+        /<hh:paraProperties([^>]*)itemCnt="\d+"/,
+        `<hh:paraProperties$1itemCnt="${parseInt(itemCnt[1], 10) + count}"`
+      );
+    }
+    return headerXml;
+  }
+
+  /**
    * Apply hanging indent changes to XML files.
    * This adds new paraPr elements to header.xml and updates paragraph references in section XML.
    */
@@ -13140,57 +13190,34 @@ export class HwpxDocument {
       changesBySection.set(change.sectionIndex, existing);
     }
 
-    // Create new paraPr for each unique indent value
-    const indentToParaPrId = new Map<number, number>();
-    let newParaPrXml = '';
-
-    for (const change of this._pendingHangingIndents) {
-      if (change.indentPt === 0) continue; // Skip removal (use existing paraPr 0)
-      if (indentToParaPrId.has(change.indentPt)) continue;
-
-      maxParaPrId++;
-      const newId = maxParaPrId;
-      indentToParaPrId.set(change.indentPt, newId);
-
-      // HWPUNIT = pt * 100
-      const intentValue = -change.indentPt * 100; // Negative for hanging indent
-      const leftValue = change.indentPt * 100;    // Positive for left margin
-
-      // Create new paraPr with hanging indent
-      newParaPrXml += `\n      <hh:paraPr id="${newId}" tabPrIDRef="0">
-        <hh:align horizontal="LEFT" vertical="BASELINE"/>
-        <hh:margin>
-          <hc:intent value="${intentValue}" unit="HWPUNIT"/>
-          <hc:left value="${leftValue}" unit="HWPUNIT"/>
-          <hc:right value="0" unit="HWPUNIT"/>
-          <hc:prev value="0" unit="HWPUNIT"/>
-          <hc:next value="0" unit="HWPUNIT"/>
-        </hh:margin>
-        <hh:lineSpacing type="PERCENT" value="160" unit="HWPUNIT"/>
-      </hh:paraPr>`;
+    // Each paragraph's current paraPr, so the hanging-indent paraPr keeps its line spacing
+    const originalParaPr = new Map<string, string>();
+    for (const sectionIndex of changesBySection.keys()) {
+      const xml = await this._zip.file(`Contents/section${sectionIndex}.xml`)?.async('string');
+      if (!xml) continue;
+      for (const m of xml.matchAll(/<hp:p\b([^>]*)>/g)) {
+        const id = m[1].match(/\bid="([^"]+)"/)?.[1];
+        const ref = m[1].match(/\bparaPrIDRef="(\d+)"/)?.[1];
+        if (id && ref && !originalParaPr.has(id)) originalParaPr.set(id, ref);
+      }
     }
 
-    // Insert new paraPr elements into header.xml
+    // One new paraPr per (indent, line spacing)
+    const keyToParaPrId = new Map<string, number>();
+    const changeKey = new Map<typeof this._pendingHangingIndents[number], string>();
+    let newParaPrXml = '';
+    for (const change of this._pendingHangingIndents) {
+      if (change.indentPt === 0) continue; // Skip removal (use existing paraPr 0)
+      const spacing = this.readParaPrLineSpacing(headerXml, originalParaPr.get(change.paragraphId));
+      const key = `${change.indentPt}|${spacing.type}|${spacing.value}`;
+      changeKey.set(change, key);
+      if (keyToParaPrId.has(key)) continue;
+      maxParaPrId++;
+      keyToParaPrId.set(key, maxParaPrId);
+      newParaPrXml += this.hangingParaPrXml(maxParaPrId, change.indentPt, spacing);
+    }
     if (newParaPrXml) {
-      // Find the closing tag of paraProperties
-      const paraPropsEndMatch = headerXml.match(/<\/hh:paraProperties>/);
-      if (paraPropsEndMatch && paraPropsEndMatch.index !== undefined) {
-        headerXml = headerXml.slice(0, paraPropsEndMatch.index) +
-          newParaPrXml + '\n    ' +
-          headerXml.slice(paraPropsEndMatch.index);
-
-        // Update itemCnt attribute
-        const itemCntMatch = headerXml.match(/<hh:paraProperties[^>]*itemCnt="(\d+)"/);
-        if (itemCntMatch) {
-          const oldCount = parseInt(itemCntMatch[1], 10);
-          const newCount = oldCount + indentToParaPrId.size;
-          headerXml = headerXml.replace(
-            /<hh:paraProperties([^>]*)itemCnt="\d+"/,
-            `<hh:paraProperties$1itemCnt="${newCount}"`
-          );
-        }
-      }
-
+      headerXml = this.insertParaPrs(headerXml, newParaPrXml, keyToParaPrId.size);
       this._zip.file(headerPath, headerXml);
     }
 
@@ -13206,7 +13233,7 @@ export class HwpxDocument {
       for (const change of changes) {
         const targetParaPrId = change.indentPt === 0
           ? 0
-          : (indentToParaPrId.get(change.indentPt) || 0);
+          : (keyToParaPrId.get(changeKey.get(change)!) || 0);
         paragraphIdToParaPrId.set(change.paragraphId, targetParaPrId);
       }
 
@@ -13271,57 +13298,38 @@ export class HwpxDocument {
       changesBySection.set(change.sectionIndex, existing);
     }
 
-    // Create new paraPr for each unique indent value
-    const indentToParaPrId = new Map<number, number>();
-    let newParaPrXml = '';
-
-    for (const change of this._pendingTableCellHangingIndents) {
-      if (change.indentPt === 0) continue; // Skip removal (use existing paraPr 0)
-      if (indentToParaPrId.has(change.indentPt)) continue;
-
-      maxParaPrId++;
-      const newId = maxParaPrId;
-      indentToParaPrId.set(change.indentPt, newId);
-
-      // HWPUNIT = pt * 100
-      const intentValue = -change.indentPt * 100; // Negative for hanging indent
-      const leftValue = change.indentPt * 100;    // Positive for left margin
-
-      // Create new paraPr with hanging indent
-      newParaPrXml += `\n      <hh:paraPr id="${newId}" tabPrIDRef="0">
-        <hh:align horizontal="LEFT" vertical="BASELINE"/>
-        <hh:margin>
-          <hc:intent value="${intentValue}" unit="HWPUNIT"/>
-          <hc:left value="${leftValue}" unit="HWPUNIT"/>
-          <hc:right value="0" unit="HWPUNIT"/>
-          <hc:prev value="0" unit="HWPUNIT"/>
-          <hc:next value="0" unit="HWPUNIT"/>
-        </hh:margin>
-        <hh:lineSpacing type="PERCENT" value="160" unit="HWPUNIT"/>
-      </hh:paraPr>`;
+    // Each target cell paragraph's current paraPr, so the hanging-indent paraPr keeps its line spacing
+    const originalParaPr = new Map<typeof this._pendingTableCellHangingIndents[number], string>();
+    for (const [sectionIndex, changes] of changesBySection) {
+      const xml = await this._zip.file(`Contents/section${sectionIndex}.xml`)?.async('string');
+      if (!xml) continue;
+      const tables = this.findAllTables(xml);
+      for (const change of changes) {
+        const table = tables[change.tableIndex];
+        const cell = table && this.findTableCellInXml(table.xml, change.row, change.col);
+        if (!cell) continue;
+        const paragraphs = [...cell.xml.matchAll(/<hp:p\b([^>]*)>/g)];
+        const ref = paragraphs[change.paragraphIndex]?.[1].match(/\bparaPrIDRef="(\d+)"/)?.[1];
+        if (ref) originalParaPr.set(change, ref);
+      }
     }
 
-    // Insert new paraPr elements into header.xml
+    // One new paraPr per (indent, line spacing)
+    const keyToParaPrId = new Map<string, number>();
+    const changeKey = new Map<typeof this._pendingTableCellHangingIndents[number], string>();
+    let newParaPrXml = '';
+    for (const change of this._pendingTableCellHangingIndents) {
+      if (change.indentPt === 0) continue; // Skip removal (use existing paraPr 0)
+      const spacing = this.readParaPrLineSpacing(headerXml, originalParaPr.get(change));
+      const key = `${change.indentPt}|${spacing.type}|${spacing.value}`;
+      changeKey.set(change, key);
+      if (keyToParaPrId.has(key)) continue;
+      maxParaPrId++;
+      keyToParaPrId.set(key, maxParaPrId);
+      newParaPrXml += this.hangingParaPrXml(maxParaPrId, change.indentPt, spacing);
+    }
     if (newParaPrXml) {
-      // Find the closing tag of paraProperties
-      const paraPropsEndMatch = headerXml.match(/<\/hh:paraProperties>/);
-      if (paraPropsEndMatch && paraPropsEndMatch.index !== undefined) {
-        headerXml = headerXml.slice(0, paraPropsEndMatch.index) +
-          newParaPrXml + '\n    ' +
-          headerXml.slice(paraPropsEndMatch.index);
-
-        // Update itemCnt attribute
-        const itemCntMatch = headerXml.match(/<hh:paraProperties[^>]*itemCnt="(\d+)"/);
-        if (itemCntMatch) {
-          const oldCount = parseInt(itemCntMatch[1], 10);
-          const newCount = oldCount + indentToParaPrId.size;
-          headerXml = headerXml.replace(
-            /<hh:paraProperties([^>]*)itemCnt="\d+"/,
-            `<hh:paraProperties$1itemCnt="${newCount}"`
-          );
-        }
-      }
-
+      headerXml = this.insertParaPrs(headerXml, newParaPrXml, keyToParaPrId.size);
       this._zip.file(headerPath, headerXml);
     }
 
@@ -13364,7 +13372,7 @@ export class HwpxDocument {
         for (const change of sortedChanges) {
           const targetParaPrId = change.indentPt === 0
             ? 0
-            : (indentToParaPrId.get(change.indentPt) || 0);
+            : (keyToParaPrId.get(changeKey.get(change)!) || 0);
 
           // Find the cell
           const cellInfo = this.findTableCellInXml(tableXml, change.row, change.col);
