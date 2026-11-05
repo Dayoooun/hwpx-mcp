@@ -148,7 +148,7 @@ pnpm vitest run <file> # Run specific test file (e.g., pnpm vitest run src/HwpxD
 
 ## 이 저장소에서 승인이 필요한 일
 
-- OpenSpec 제안이 필요한 변경(새 기능·호환을 깨는 변경·아키텍처 변경)은 `proposal.md` 승인 전에 구현하지 않는다. 범위와 절차는 `openspec/AGENTS.md`
+- OpenSpec 제안이 필요한 변경(새 기능·호환을 깨는 변경·아키텍처 변경·행동을 바꾸는 성능 최적화·보안 패턴 변경, 그리고 해당 여부가 불분명한 작업)은 `proposal.md` 승인 전에 구현하지 않는다. 범위와 절차는 `openspec/AGENTS.md`
 - VSIX·npm 게시
 
 ## 하지 않는 것
