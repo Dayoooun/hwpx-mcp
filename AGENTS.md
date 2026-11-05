@@ -50,7 +50,7 @@ src/
 
 ### 2. MCP Server (mcp-server/)
 
-Standalone Model Context Protocol server for AI integration. Provides 77+ tools for document operations.
+Standalone Model Context Protocol server for AI integration. Provides 125 tools for document operations (see `mcp-server/package.json` description).
 
 ```
 mcp-server/src/
@@ -148,7 +148,7 @@ pnpm vitest run <file> # Run specific test file (e.g., pnpm vitest run src/HwpxD
 
 ## 이 저장소에서 승인이 필요한 일
 
-- 없음
+- OpenSpec 변경 제안(새 기능·breaking change·아키텍처 변경 등, `openspec/AGENTS.md` 기준)은 제안이 승인되기 전에 구현을 시작하지 않는다
 
 ## 하지 않는 것
 
