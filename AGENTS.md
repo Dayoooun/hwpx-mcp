@@ -50,7 +50,7 @@ src/
 
 ### 2. MCP Server (mcp-server/)
 
-Standalone Model Context Protocol server for AI integration. Provides 77+ tools for document operations.
+Standalone Model Context Protocol server for AI integration. Provides the document-operation tools listed in `mcp-server/package.json` (count lives there, not here).
 
 ```
 mcp-server/src/
@@ -142,13 +142,14 @@ pnpm vitest run <file> # Run specific test file (e.g., pnpm vitest run src/HwpxD
 
 ## 배포와 확인
 
-- 어디에 도나: VSCode 확장은 VSIX 패키징(`pnpm package`, vsce 필요, publisher `mjyoo2`). MCP 서버는 `mcp-server/` 의 npm 패키지(`prepublishOnly` 가 빌드 후 `native/hwp2pdf` 실행권한 확인). 구체 게시처는 미확인
+- 배포 위치: VSCode 확장은 VSIX 패키징(`pnpm package`, vsce 필요, publisher `mjyoo2`). MCP 서버는 `mcp-server/` 의 npm 패키지(`prepublishOnly` 가 빌드 후 `native/hwp2pdf` 실행권한 확인). 구체 게시처는 미확인
 - 자동/수동: PR 마다 `.github/workflows/mcp-server-ci.yml` 이 돈다 — static → unit·module·regression → e2e(Node 18·22) → versions(보고 전용). main 룰셋 필수 체크: static, unit, module, regression, e2e (18), e2e (22). 배포 자체는 미확인
 - 배포 확인: 미확인
 
 ## 이 저장소에서 승인이 필요한 일
 
-- 없음
+- OpenSpec 제안이 필요한 변경(새 기능·호환을 깨는 변경·아키텍처 변경)은 `proposal.md` 승인 전에 구현하지 않는다. 범위와 절차는 `openspec/AGENTS.md`
+- VSIX·npm 게시
 
 ## 하지 않는 것
 
